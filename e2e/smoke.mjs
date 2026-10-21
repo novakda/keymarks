@@ -1,13 +1,16 @@
 // Drives the real app through its WebView2 debugging port and checks search, modes, errors,
-// sorting and scrolling. Assertions are relations between results (e.g. `a b` <= `a`), so
-// they hold for any database. Read-only: never opens, edits or deletes bookmarks, takes no
-// screenshots, and restores the UI settings it changes.
+// sorting, scrolling, editing, deleting, undo/redo and backups. It runs on a temporary COPY of
+// the user's database (POWERMARKS_DATA_DIR), never the original. Assertions are relations
+// between results (e.g. `a b` <= `a`), so they hold for any database. No screenshots; output
+// is counts only; UI settings it changes are restored.
 //
 //   npm run smoke            (from e2e/, on Windows; closes and reopens the running app)
 
 import { chromium } from 'playwright-core';
 import { execSync, spawn } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,10 +56,18 @@ async function connect() {
 
 // ---- run ------------------------------------------------------------------------------
 
-setTimeout(() => { log('timed out after 4 minutes'); stopApp(); startApp(); process.exit(2); }, 240_000).unref();
-stopApp(); // a second instance can't start with different WebView2 arguments
-log(`starting ${exe} with debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}` });
+// The app must be closed first: one instance only, and the copy must be consistent.
+stopApp();
+const realData = path.join(process.env.APPDATA, 'com.xhiris.powermarks');
+const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-e2e-'));
+for (const f of ['bookmarks.db', 'bookmarks.db-wal', 'bookmarks.db-shm']) {
+  if (fs.existsSync(path.join(realData, f))) fs.copyFileSync(path.join(realData, f), path.join(work, f));
+}
+// The killed app can hold the files for a moment; retry rather than leave a copy behind.
+const cleanupWork = () => fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); startApp(); process.exit(2); }, 240_000).unref();
+log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
+startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, POWERMARKS_DATA_DIR: work });
 const { browser, page } = await connect();
 log(`connected to ${page.url()}`);
 const idle = () => page.waitForFunction(() => document.body.ariaBusy === 'false', null, { timeout: 15000 });
@@ -82,7 +93,8 @@ async function search(text) {
 async function count(text) {
   await search(text);
   const m = (await statusText()).match(/^(\d+) matching/);
-  if (!m) throw new Error(`no result count after ${JSON.stringify(text)}: ${await statusText()}`);
+  // Status messages can quote bookmark titles: mask quoted text before printing.
+  if (!m) throw new Error(`no result count after ${JSON.stringify(text)}: ${(await statusText()).replace(/"[^"]*"/g, '"…"')}`);
   return Number(m[1]);
 }
 async function setMode(mode) {
@@ -202,6 +214,52 @@ try {
   });
   // Details print counts only: never bookmark titles or keywords (the data is private).
   check('scrolls to the very last bookmark', last.rows > 0 && !last.trailingSpacer && last.loaded, `${last.rows} rows rendered`);
+
+  // 6. Edit, undo, redo (on the copy)
+  await page.$eval('#tablewrap', (el) => { el.scrollTop = 0; });
+  await idle();
+  await page.click('#table-body tr.vrow');
+  await idle();
+  const original = await page.inputValue('#f-title');
+  await page.fill('#f-title', `${original} [e2e]`);
+  await page.keyboard.press('Control+s');
+  await idle();
+  const savedTitle = await page.inputValue('#f-title');
+  check('edit saves', savedTitle.endsWith('[e2e]') && (await statusText()) === 'Saved.');
+  check('undo button names the edit', (await page.getAttribute('#undo', 'title')).startsWith('Undo: Edit'));
+  await page.click('#undo');
+  await idle();
+  check('undo restores the edit', (await page.inputValue('#f-title')) === original);
+  await page.click('#redo');
+  await idle();
+  check('redo reapplies it', (await page.inputValue('#f-title')).endsWith('[e2e]'));
+  await page.click('#undo');
+  await idle();
+
+  // 7. Delete and Ctrl+Z ("!zzzzqqq" matches everything and puts the count in the status bar)
+  const everything = () => count('!zzzzqqq');
+  const all = await everything();
+  await search('');
+  await page.click('#table-body tr.vrow');
+  await page.focus('#tablewrap');
+  page.once('dialog', (d) => d.accept());
+  await page.keyboard.press('Delete');
+  await idle();
+  const afterDelete = await everything();
+  check('Delete removes the bookmark', afterDelete === all - 1, `${all} → ${afterDelete}`);
+  await search('');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  const afterUndo = await everything();
+  check('Ctrl+Z brings it back', afterUndo === all, `→ ${afterUndo}`);
+
+  // 8. Backups (one is taken at startup, in the background)
+  await page.click('#backups-open');
+  await page.waitForSelector('#backup-list tbody tr', { timeout: 10000 }).catch(() => {});
+  const backupRows = await page.locator('#backup-list tbody tr').count();
+  check('Backups lists the startup backup', backupRows >= 1, `${backupRows} backups`);
+  await page.click('#backups button[value=close]');
 } catch (e) {
   check('run completed', false, e.message);
 } finally {
@@ -209,6 +267,7 @@ try {
   await page.evaluate((s) => { localStorage.clear(); Object.assign(localStorage, JSON.parse(s)); }, saved).catch(() => {});
   await browser.close().catch(() => {});
   stopApp();
+  cleanupWork();
   startApp();
 }
 

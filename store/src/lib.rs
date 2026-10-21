@@ -1,6 +1,7 @@
 //! SQLite bookmark store with full-text keyword search.
 //! Imports Powermarks 3.5 databases (field meanings: docs/pm35-format.md).
 
+mod history;
 mod query;
 
 use pm35::{Database, field};
@@ -130,6 +131,7 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
 
 pub struct Store {
     conn: Connection,
+    history: history::History,
 }
 
 impl Store {
@@ -139,8 +141,15 @@ impl Store {
         // The app and the browser's native-messaging host share this file.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(SCHEMA)?;
-        let mut store = Store { conn };
+        let mut store = Store { conn, history: Default::default() };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Bring the schema and data up to date (also after restoring an older backup).
+    fn migrate(&mut self) -> Result<()> {
+        self.conn.execute_batch(SCHEMA)?;
+        let store = self;
         // v1: keyword index. Backfill databases created before it existed.
         let version: i64 = store.conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version < 1 {
@@ -175,7 +184,7 @@ impl Store {
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
-        Ok(store)
+        Ok(())
     }
 
     pub fn count(&self) -> Result<i64> {
@@ -353,23 +362,42 @@ impl Store {
         rows.collect()
     }
 
-    pub fn set_tagged(&self, keyword: &str, tagged: bool) -> Result<()> {
-        let sql = if tagged {
-            "INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)"
-        } else {
-            "DELETE FROM tagged_keyword WHERE keyword = ?1"
-        };
-        self.conn.execute(sql, [keyword])?;
-        Ok(())
+    pub fn set_tagged(&mut self, keyword: &str, tagged: bool) -> Result<()> {
+        let name = format!("{} \"{keyword}\"", if tagged { "Tag" } else { "Untag" });
+        self.record(name, &[], true, |s| {
+            let sql = if tagged {
+                "INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)"
+            } else {
+                "DELETE FROM tagged_keyword WHERE keyword = ?1"
+            };
+            s.conn.execute(sql, [keyword])?;
+            Ok(())
+        })
     }
 
     /// Rename a keyword on every bookmark (case-insensitive). Renaming onto an existing
     /// keyword merges them; an empty `new` deletes the keyword. Returns bookmarks changed.
     pub fn rename_keyword(&mut self, old: &str, new: &str) -> Result<usize> {
-        let tx = self.conn.transaction()?;
-        let n = rename_in(&tx, old, new)?;
-        tx.commit()?;
-        Ok(n)
+        let ids = self.ids_with_keywords(&[old])?;
+        let name = if new.trim().is_empty() {
+            format!("Delete keyword \"{old}\"")
+        } else {
+            format!("Rename \"{old}\" to \"{}\"", new.trim())
+        };
+        self.record(name, &ids, true, |s| {
+            let tx = s.conn.transaction()?;
+            let n = rename_in(&tx, old, new)?;
+            tx.commit()?;
+            Ok(n)
+        })
+    }
+
+    fn ids_with_keywords(&self, keywords: &[&str]) -> Result<Vec<i64>> {
+        let json = serde_json::to_string(keywords).expect("keywords serialize");
+        self.conn
+            .prepare("SELECT DISTINCT bookmark_id FROM bookmark_keyword WHERE keyword IN (SELECT value FROM json_each(?1))")?
+            .query_map([json], |r| r.get(0))?
+            .collect()
     }
 
     /// Propose a dictionary cleanup (Powermarks' Dictionary Cleanup, plus stop words).
@@ -393,12 +421,16 @@ impl Store {
     /// Apply chosen cleanup changes as `(keyword, replacement)`; an empty replacement removes
     /// the keyword. All or nothing. Returns how many keywords were changed.
     pub fn apply_cleanup(&mut self, changes: &[(String, String)]) -> Result<usize> {
-        let tx = self.conn.transaction()?;
-        for (old, new) in changes {
-            rename_in(&tx, old, new)?;
-        }
-        tx.commit()?;
-        Ok(changes.len())
+        let olds: Vec<&str> = changes.iter().map(|(o, _)| o.as_str()).collect();
+        let ids = self.ids_with_keywords(&olds)?;
+        self.record(format!("Keyword cleanup ({} keywords)", changes.len()), &ids, true, |s| {
+            let tx = s.conn.transaction()?;
+            for (old, new) in changes {
+                rename_in(&tx, old, new)?;
+            }
+            tx.commit()?;
+            Ok(changes.len())
+        })
     }
 
     /// Consistent full copy of the database, safe while other connections write.
@@ -413,29 +445,34 @@ impl Store {
     }
 
     /// Save the user-editable fields. Returns false if the bookmark no longer exists.
-    pub fn update(&self, b: &Bookmark) -> Result<bool> {
+    pub fn update(&mut self, b: &Bookmark) -> Result<bool> {
         let keywords = normalize_keywords(&b.keywords);
-        let tx = self.conn.unchecked_transaction()?;
-        let n = tx.execute(
-            "UPDATE bookmark SET url = ?2, title = ?3, keywords = ?4, description = ?5,
-                notes = ?6, rating = ?7 WHERE id = ?1",
-            params![b.id, b.url, b.title, keywords, b.description, b.notes, b.rating.clamp(0, 10)],
-        )?;
-        if n == 1 {
-            index_keywords(&tx, b.id, &keywords)?;
-        }
-        tx.commit()?;
-        Ok(n == 1)
+        self.record(format!("Edit \"{}\"", b.title), &[b.id], false, |s| {
+            let tx = s.conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE bookmark SET url = ?2, title = ?3, keywords = ?4, description = ?5,
+                    notes = ?6, rating = ?7 WHERE id = ?1",
+                params![b.id, b.url, b.title, keywords, b.description, b.notes, b.rating.clamp(0, 10)],
+            )?;
+            if n == 1 {
+                index_keywords(&tx, b.id, &keywords)?;
+            }
+            tx.commit()?;
+            Ok(n == 1)
+        })
     }
 
     pub fn delete(&mut self, ids: &[i64]) -> Result<usize> {
-        let tx = self.conn.transaction()?;
-        let mut n = 0;
-        for id in ids {
-            n += tx.execute("DELETE FROM bookmark WHERE id = ?1", [id])?;
-        }
-        tx.commit()?;
-        Ok(n)
+        let name = format!("Delete {} bookmark{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let tx = s.conn.transaction()?;
+            let mut n = 0;
+            for id in ids {
+                n += tx.execute("DELETE FROM bookmark WHERE id = ?1", [id])?;
+            }
+            tx.commit()?;
+            Ok(n)
+        })
     }
 
     /// Record that a bookmark was opened (usage count and last-visited, as Powermarks did).
@@ -903,6 +940,8 @@ mod tests {
             eprintln!("search_ids {q:?}: {} ids + page of {page} in {:?}", ids.len(), t.elapsed());
             assert!(t.elapsed().as_secs() < 1);
         }
+        let dict_before: std::collections::HashMap<String, i64> = s.keywords("").unwrap().into_iter().map(|k| (k.keyword, k.count)).collect();
+        let rows_before: std::collections::HashMap<i64, String> = s.search("", usize::MAX).unwrap().into_iter().map(|b| (b.id, b.keywords)).collect();
         let t = std::time::Instant::now();
         let plan = s.cleanup_plan().unwrap();
         let mut by: std::collections::BTreeMap<&str, (usize, i64)> = Default::default();
@@ -920,5 +959,18 @@ mod tests {
         let t = std::time::Instant::now();
         s.apply_cleanup(&changes).unwrap();
         eprintln!("applied {} in {:?}; dictionary now {}", changes.len(), t.elapsed(), s.keywords("").unwrap().len());
+        let t = std::time::Instant::now();
+        s.undo().unwrap();
+        {
+            let after: std::collections::HashMap<String, i64> = s.keywords("").unwrap().into_iter().map(|k| (k.keyword, k.count)).collect();
+            let missing: Vec<_> = dict_before.iter().filter(|(k, _)| !after.contains_key(*k)).collect();
+            let changed = dict_before.iter().filter(|(k, c)| after.get(*k).is_some_and(|a| a != *c)).count();
+            let lower_dupes = missing.iter().filter(|(k, _)| after.keys().any(|a| a.to_lowercase() == k.to_lowercase())).count();
+            let rows_after: Vec<(i64, String)> = s.search("", usize::MAX).unwrap().into_iter().map(|b| (b.id, b.keywords)).collect();
+            let rows_diff = rows_after.iter().filter(|(id, k)| rows_before.get(id) != Some(k)).count();
+            eprintln!("undo check: {} missing ({} only differ in case), {} counts changed, {} rows' keywords differ", missing.len(), lower_dupes, changed, rows_diff);
+            assert!(missing.is_empty() && changed == 0 && rows_diff == 0, "undo did not restore the dictionary exactly");
+        }
+        eprintln!("undid cleanup in {:?}; dictionary back to {}", t.elapsed(), s.keywords("").unwrap().len());
     }
 }

@@ -7,6 +7,6 @@ description = "SQLite bookmark store with Powermarks import"
 [dependencies]
 html-escape = "0.3.0"
 pm35 = { path = "../pm35" }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

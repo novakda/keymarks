@@ -62,23 +62,31 @@ const lower = (s) => s.toLocaleLowerCase();
 
 // ---- data -------------------------------------------------------------------
 
-// aria-busy marks a search in flight (assistive tech, and the e2e tests wait on it).
-async function refresh(options) {
-  const mine = ++seq;
+// aria-busy is "true" while any search or user action is in flight (assistive tech, and the
+// e2e tests wait on it). A counter, because actions overlap: a save includes a refresh.
+let busy = 0;
+async function busyWhile(work) {
+  busy++;
   document.body.ariaBusy = 'true';
   try {
-    await runRefresh(mine, options);
+    return await work();
   } finally {
-    if (mine === seq) document.body.ariaBusy = 'false';
+    if (--busy === 0) document.body.ariaBusy = 'false';
   }
+}
+const busyAware = (fn) => (...args) => busyWhile(() => fn(...args));
+
+function refresh(options) {
+  const mine = ++seq;
+  return busyWhile(() => runRefresh(mine, options));
 }
 
 async function runRefresh(mine, { keepSelection = true } = {}) {
-  let n, found, v, kw;
+  let n, found, v, kw, hist;
   try {
-    [n, found, v, kw] = await Promise.all([
+    [n, found, v, kw, hist] = await Promise.all([
       invoke('count'), invoke('search_ids', { query: q.value, opts }), invoke('data_version'),
-      invoke('keywords', { query: q.value, opts }),
+      invoke('keywords', { query: q.value, opts }), invoke('history'),
     ]);
   } catch (e) {
     if (mine !== seq) return;
@@ -89,6 +97,7 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   }
   if (mine !== seq) return; // a newer search already rendered
   q.removeAttribute('aria-invalid');
+  showHistory(hist);
   const cursorId = ids[cursor];
   total = n;
   ids = found;
@@ -360,7 +369,7 @@ async function remove(toDelete) {
   if (!toDelete.length) return;
   const one = cache.get(toDelete[0]);
   const what = toDelete.length === 1 ? `"${one?.title || one?.url || 'this bookmark'}"` : `${toDelete.length} bookmarks`;
-  if (!confirm(`Delete ${what}? This can't be undone yet.`)) return;
+  if (!confirm(`Delete ${what}? (Ctrl+Z undoes it.)`)) return;
   try {
     const n = await invoke('delete_bookmarks', { ids: toDelete });
     dirty = false;
@@ -370,6 +379,84 @@ async function remove(toDelete) {
     say(`Deleted ${n} bookmark${n === 1 ? '' : 's'}.`);
   } catch (e) { fail('Delete')(e); }
 }
+
+// ---- undo / redo ----------------------------------------------------------------
+
+function showHistory({ undo, redo }) {
+  for (const [id, label, verb] of [['undo', undo, 'Undo'], ['redo', redo, 'Redo']]) {
+    $(id).disabled = !label;
+    $(id).title = label ? `${verb}: ${label} (${id === 'undo' ? 'Ctrl+Z' : 'Ctrl+Y'})` : `Nothing to ${verb.toLowerCase()}`;
+  }
+}
+
+async function runHistory(which) {
+  if (!confirmDiscard()) return;
+  try {
+    const name = await invoke(which);
+    await refreshDictionary();
+    await refresh();
+    say(name ? `${which === 'undo' ? 'Undid' : 'Redid'}: ${name}` : `Nothing to ${which}.`);
+  } catch (e) { fail(which === 'undo' ? 'Undo' : 'Redo')(e); }
+}
+
+$('undo').onclick = () => runHistory('undo');
+$('redo').onclick = () => runHistory('redo');
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  // Inside text fields Ctrl+Z is the field's own text undo.
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  const key = e.key.toLowerCase();
+  if (key === 'z' && !e.shiftKey) runHistory('undo');
+  else if (key === 'y' || (key === 'z' && e.shiftKey)) runHistory('redo');
+  else return;
+  e.preventDefault();
+});
+
+// ---- backups --------------------------------------------------------------------
+
+async function showBackups() {
+  const items = await invoke('list_backups');
+  const kb = (n) => `${Math.max(1, Math.round(n / 1024)).toLocaleString()} KB`;
+  if (!items.length) {
+    $('backup-list').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'No backups yet.' }));
+    return;
+  }
+  const table = document.createElement('table');
+  const head = table.createTHead().insertRow();
+  for (const h of ['Taken', 'Kind', 'Size', '']) head.append(Object.assign(document.createElement('th'), { textContent: h }));
+  const body = table.createTBody();
+  for (const b of items) {
+    const tr = body.insertRow();
+    const when = new Date(b.created * 1000).toLocaleString();
+    tr.insertCell().textContent = when;
+    tr.insertCell().textContent = b.kind;
+    Object.assign(tr.insertCell(), { textContent: kb(b.bytes), className: 'num' });
+    const btn = Object.assign(document.createElement('button'), { type: 'button', className: 'secondary', textContent: 'Restore' });
+    btn.onclick = () => restoreBackup(b.name, when);
+    tr.insertCell().append(btn);
+  }
+  $('backup-list').replaceChildren(table);
+}
+
+async function restoreBackup(name, when) {
+  if (!confirmDiscard()) return;
+  if (!confirm(`Replace all bookmarks with the backup taken ${when}?\n\nYour current bookmarks are backed up first, so this can be reversed from this list.`)) return;
+  try {
+    const safety = await invoke('restore_backup', { name });
+    $('backups').close();
+    selected.clear();
+    await refreshDictionary();
+    await refresh({ keepSelection: false });
+    say(`Restored the backup from ${when}. Previous state saved as ${safety}.`);
+  } catch (e) { fail('Restore')(e); }
+}
+
+$('backups-open').onclick = async () => {
+  try { await showBackups(); $('backups').showModal(); } catch (e) { fail('Backups')(e); }
+};
+$('backup-now').onclick = async () => {
+  try { const name = await invoke('backup_now'); await showBackups(); say(`Backed up as ${name}.`); } catch (e) { fail('Backup')(e); }
+};
 
 // ---- keyword panel (Powermarks' Dictionary) ---------------------------------
 
@@ -543,7 +630,7 @@ function updateApply() {
   $('cleanup-apply').disabled = n === 0;
 }
 
-$('cleanup-apply').addEventListener('click', async () => {
+$('cleanup-apply').addEventListener('click', busyAware(async () => {
   const changes = cleanupItems.filter((i) => i.on).map((i) => [i.keyword, i.into ?? '']);
   $('cleanup-apply').disabled = true;
   try {
@@ -556,7 +643,7 @@ $('cleanup-apply').addEventListener('click', async () => {
     $('cleanup-apply').disabled = false;
     fail('Cleanup')(e);
   }
-});
+}));
 
 // ---- properties panel -------------------------------------------------------
 
@@ -728,14 +815,25 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
 });
 
-importBtn.addEventListener('click', async () => {
+importBtn.addEventListener('click', busyAware(async () => {
   say('Importing…');
   try {
     const n = await invoke('import_pm35');
     if (n !== null) { await refreshDictionary(); await refresh({ keepSelection: false }); }
     else render();
   } catch (e) { fail('Import')(e); }
-});
+}));
+
+// Every user action counts as busy until its follow-up refresh and message are done.
+/* eslint-disable no-func-assign */
+select = busyAware(select);
+open = busyAware(open);
+remove = busyAware(remove);
+save = busyAware(save);
+runHistory = busyAware(runHistory);
+restoreBackup = busyAware(restoreBackup);
+keywordChanged = busyAware(keywordChanged);
+/* eslint-enable no-func-assign */
 
 setView(view);
 refreshDictionary().then(() => refresh({ keepSelection: false }));
