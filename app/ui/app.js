@@ -21,9 +21,34 @@ let narrowed = [];         // keyword dictionary for the current search
 let dictionary = [];       // every keyword (autocomplete, tag state)
 
 // Search options persist per machine; storage may be unavailable, so never depend on it.
-const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false };
+const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false, sort: [] };
 let opts = { ...DEFAULT_OPTS };
 try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
+
+// View: card list or Powermarks-style table with chosen columns.
+const date = (t) => (t ? new Date(t * 1000).toLocaleDateString() : '');
+const shortUrl = (u) => u.replace(/^(https?|ftp):\/\/(www\.)?/i, '');
+const stars = (r) => (r > 0 ? '★'.repeat(Math.ceil(r / 2)) + ' ' : '');
+const COLUMNS = [
+  { id: 'title', label: 'Title', width: '34%', cell: (b) => stars(b.rating) + (b.title || b.url) },
+  { id: 'url', label: 'URL', width: '24%', cell: (b) => shortUrl(b.url) },
+  { id: 'keywords', label: 'Keywords', width: '18%', cell: (b) => b.keywords },
+  { id: 'description', label: 'Description', width: '20%', cell: (b) => b.description },
+  { id: 'notes', label: 'Notes', width: '16%', cell: (b) => b.notes },
+  { id: 'added', label: 'Added', width: '7em', cell: (b) => date(b.added), desc: true },
+  { id: 'last_visited', label: 'Last visited', width: '7em', cell: (b) => date(b.last_visited), desc: true },
+  { id: 'last_modified', label: 'Last modified', width: '7em', cell: (b) => date(b.last_modified), desc: true },
+  { id: 'last_checked', label: 'Last checked', width: '7em', cell: (b) => date(b.last_checked), desc: true },
+  { id: 'visits', label: 'Visits', width: '4.5em', cell: (b) => String(b.visits), num: true, desc: true },
+  { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
+];
+let view = 'cards';
+let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
+try {
+  view = localStorage.getItem('view') || view;
+  shownCols = JSON.parse(localStorage.getItem('columns') || 'null') || shownCols;
+} catch {}
+const tablewrap = $('tablewrap');
 
 const say = (text) => { status.textContent = text; };
 const fail = (what) => (e) => say(`${what} failed: ${e}`);
@@ -83,6 +108,67 @@ setInterval(async () => {
 
 // Titles come from imported files and web pages: textContent only, never innerHTML.
 function render() {
+  if (view === 'table') renderTable(); else renderCards();
+  renderPanel();
+  say(total === 0
+    ? 'No bookmarks yet. Import your Powermarks database to get started.'
+    : `${rows.length}${rows.length === LIMIT ? '+' : ''} shown · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+}
+
+function renderTable() {
+  const cols = COLUMNS.filter((c) => shownCols.includes(c.id));
+  $('table-cols').replaceChildren(...cols.map((c) => Object.assign(document.createElement('col'), { style: `width:${c.width}` })));
+  $('table-head').replaceChildren(...cols.map((c) => {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    const level = opts.sort.findIndex((k) => k.column === c.id);
+    th.ariaSort = level === 0 ? (opts.sort[0].desc ? 'descending' : 'ascending') : 'none';
+    const btn = document.createElement('button');
+    btn.textContent = c.label;
+    if (level >= 0) {
+      const mark = document.createElement('span');
+      mark.className = level ? 'sort2' : '';
+      mark.textContent = (opts.sort[level].desc ? ' ▼' : ' ▲') + (level ? '2' : '');
+      btn.append(mark);
+    }
+    btn.title = 'Sort (click again to reverse, a third time to clear)';
+    btn.onclick = () => sortBy(c);
+    th.append(btn);
+    return th;
+  }));
+  $('table-body').replaceChildren(...rows.map((b, i) => {
+    const tr = document.createElement('tr');
+    tr.ariaSelected = String(selected.has(b.id));
+    tr.classList.toggle('sel', selected.has(b.id));
+    tr.classList.toggle('cursor', i === cursor);
+    tr.append(...cols.map((c) => {
+      const td = document.createElement('td');
+      td.textContent = c.cell(b);
+      td.title = td.textContent;
+      if (c.num) td.className = 'num';
+      return td;
+    }));
+    tr.onclick = (e) => select(i, e);
+    tr.ondblclick = () => open(b.id);
+    return tr;
+  }));
+  $('table-body').children[cursor]?.scrollIntoView({ block: 'nearest' });
+}
+
+// Like Powermarks: the new column sorts first and the previous one breaks ties.
+function sortBy(c) {
+  const [first] = opts.sort;
+  if (first?.column === c.id) {
+    if (first.desc === !!c.desc) first.desc = !first.desc; // second click: reverse
+    else opts.sort.shift(); // third click: back to relevance
+  } else {
+    opts.sort = [{ column: c.id, desc: !!c.desc }, ...(first ? [first] : [])];
+  }
+  saveOpts();
+  refresh();
+}
+
+function renderCards() {
   list.replaceChildren(...rows.map((b, i) => {
     const li = document.createElement('li');
     li.role = 'option';
@@ -101,11 +187,35 @@ function render() {
     return li;
   }));
   list.children[cursor]?.scrollIntoView({ block: 'nearest' });
-  renderPanel();
-  say(total === 0
-    ? 'No bookmarks yet. Import your Powermarks database to get started.'
-    : `${rows.length}${rows.length === LIMIT ? '+' : ''} shown · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
 }
+
+function setView(v) {
+  view = v;
+  try { localStorage.setItem('view', v); } catch {}
+  list.hidden = v === 'table';
+  tablewrap.hidden = v !== 'table';
+  $('cols').hidden = v !== 'table';
+  $('view-cards').ariaPressed = String(v === 'cards');
+  $('view-table').ariaPressed = String(v === 'table');
+  render();
+}
+
+$('cols-menu').replaceChildren(...COLUMNS.map((c) => {
+  const label = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = shownCols.includes(c.id);
+  box.disabled = c.id === 'title';
+  box.onchange = () => {
+    shownCols = COLUMNS.map((x) => x.id).filter((id) => (id === c.id ? box.checked : shownCols.includes(id)));
+    try { localStorage.setItem('columns', JSON.stringify(shownCols)); } catch {}
+    render();
+  };
+  label.append(box, c.label);
+  return label;
+}));
+$('view-cards').onclick = () => setView('cards');
+$('view-table').onclick = () => setView('table');
 
 function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } = {}) {
   if (!rows[i] || !confirmDiscard()) return;
@@ -131,10 +241,10 @@ function onListKeys(e) {
     select(i, { shiftKey: e.shiftKey });
   } else if (e.key === 'Enter') {
     if (rows[cursor]) open(rows[cursor].id);
-  } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && e.target === list) {
+  } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && (e.target === list || e.target === tablewrap)) {
     rows.forEach((r) => selected.add(r.id));
     render();
-  } else if (e.key === 'Delete' && e.target === list) {
+  } else if (e.key === 'Delete' && (e.target === list || e.target === tablewrap)) {
     remove([...selected]);
   } else return;
   e.preventDefault();
@@ -484,21 +594,28 @@ function applyOptsToUi() {
   q.placeholder = opts.mode === 'exact' ? 'Type exact text (e.g. .edu/)…' : opts.mode === 'keywords' ? 'Type keywords (keywords field only)…' : 'Type keywords…';
 }
 
+function saveOpts() {
+  try { localStorage.setItem('searchOptions', JSON.stringify(opts)); } catch {}
+}
+
 function optsChanged() {
   opts = {
+    ...opts,
     mode: $('mode').value,
     partial: $('opt-partial').checked,
     fields: [...document.querySelectorAll('input[name=field]:checked')].map((b) => b.value),
     match_case: $('opt-case').checked,
   };
-  try { localStorage.setItem('searchOptions', JSON.stringify(opts)); } catch {}
+  saveOpts();
   applyOptsToUi();
   refresh({ keepSelection: false });
 }
 
 $('mode').addEventListener('change', optsChanged);
 $('opts').addEventListener('change', optsChanged);
-document.addEventListener('click', (e) => { if (!$('opts').contains(e.target)) $('opts').open = false; });
+document.addEventListener('click', (e) => {
+  for (const id of ['opts', 'cols']) if (!$(id).contains(e.target)) $(id).open = false;
+});
 applyOptsToUi();
 
 q.addEventListener('input', () => { if (confirmDiscard()) refresh({ keepSelection: false }); });
@@ -507,6 +624,7 @@ q.addEventListener('keydown', (e) => {
   onListKeys(e);
 });
 list.addEventListener('keydown', onListKeys);
+tablewrap.addEventListener('keydown', onListKeys);
 document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
 });
@@ -520,4 +638,5 @@ importBtn.addEventListener('click', async () => {
   } catch (e) { fail('Import')(e); }
 });
 
+setView(view);
 refreshDictionary().then(() => refresh({ keepSelection: false }));

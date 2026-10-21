@@ -30,6 +30,29 @@ pub struct SearchOptions {
     pub fields: Vec<String>,
     /// Exact mode: case-sensitive.
     pub match_case: bool,
+    /// Column sort, most significant first (the original kept the previous key as tiebreak).
+    pub sort: Vec<SortKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SortKey {
+    pub column: String,
+    #[serde(default)]
+    pub desc: bool,
+}
+
+impl SortKey {
+    /// ORDER BY term for a known column; None for anything else (never interpolate input).
+    pub fn sql(&self) -> Option<String> {
+        let expr = match self.column.as_str() {
+            "title" | "url" | "keywords" | "description" | "notes" => format!("b.{} COLLATE NOCASE", self.column),
+            "added" | "last_visited" | "last_modified" | "last_checked" | "visits" | "rating" | "status" => {
+                format!("b.{}", self.column)
+            }
+            _ => return None,
+        };
+        Some(format!("{expr} {} NULLS LAST", if self.desc { "DESC" } else { "ASC" }))
+    }
 }
 
 impl Default for SearchOptions {
@@ -39,6 +62,7 @@ impl Default for SearchOptions {
             partial: true,
             fields: FIELDS.map(String::from).to_vec(),
             match_case: false,
+            sort: Vec::new(),
         }
     }
 }
@@ -289,5 +313,13 @@ mod tests {
         assert_eq!(f.params, [".edu/"]);
         let none = SearchOptions { mode: Mode::Exact, fields: vec![], ..all };
         assert!(compile("x", &none).is_err());
+    }
+
+    #[test]
+    fn sort_keys_are_whitelisted() {
+        let key = |c: &str, desc| SortKey { column: c.into(), desc }.sql();
+        assert_eq!(key("rating", true).unwrap(), "b.rating DESC NULLS LAST");
+        assert_eq!(key("title", false).unwrap(), "b.title COLLATE NOCASE ASC NULLS LAST");
+        assert_eq!(key("id; DROP TABLE bookmark", false), None);
     }
 }

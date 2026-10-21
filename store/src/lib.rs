@@ -6,7 +6,7 @@ mod query;
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-pub use query::{FIELDS, Mode, SearchOptions};
+pub use query::{FIELDS, Mode, SearchOptions, SortKey};
 pub use rusqlite::Result;
 
 /// A search that couldn't run: bad query syntax (show it to the user) or a database error.
@@ -87,7 +87,8 @@ END;
 /// FTS5 bm25 weights per column (title, keywords, description, notes, url):
 /// keyword hits rank first, as Powermarks searched keywords by default.
 const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
-const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, b.last_visited, b.visits";
+const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, \
+                    b.last_visited, b.visits, b.last_modified, b.last_checked, b.status";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -101,6 +102,12 @@ pub struct Bookmark {
     pub added: Option<i64>,
     pub last_visited: Option<i64>,
     pub visits: i64,
+    #[serde(default)]
+    pub last_modified: Option<i64>,
+    #[serde(default)]
+    pub last_checked: Option<i64>,
+    #[serde(default)]
+    pub status: i64,
 }
 
 fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
@@ -115,6 +122,9 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
         added: r.get(7)?,
         last_visited: r.get(8)?,
         visits: r.get(9)?,
+        last_modified: r.get(10)?,
+        last_checked: r.get(11)?,
+        status: r.get(12)?,
     })
 }
 
@@ -245,7 +255,7 @@ impl Store {
     ) -> std::result::Result<Vec<Bookmark>, SearchError> {
         let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
         let mut params: Vec<Value> = Vec::new();
-        let (with, join, cond, order) = match &filter {
+        let (with, join, cond, default_order) = match &filter {
             None => (String::new(), "", "1".to_string(), "b.added DESC"),
             Some(f) => {
                 // MATERIALIZED: rank the matches once, not once per bookmark row.
@@ -268,6 +278,10 @@ impl Store {
             }
         };
         params.push(Value::Integer(limit.min(i64::MAX as usize) as i64));
+        // Chosen column sorts first; relevance / newest break the remaining ties.
+        let mut order: Vec<String> = opts.sort.iter().filter_map(SortKey::sql).collect();
+        order.push(default_order.to_string());
+        let order = order.join(", ");
         let sql = format!("{with} SELECT {COLS} FROM bookmark b {join} WHERE {cond} ORDER BY {order} LIMIT ?");
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt.query_map(params_from_iter(params), bookmark)?.collect::<Result<_>>()?)
@@ -797,6 +811,15 @@ mod tests {
         assert!(titles("COM/?", &cased).is_empty());
 
         assert!(matches!(s.search_with("(food", &all, 10), Err(SearchError::Syntax(_))));
+
+        // Column sort with a tiebreak: rating desc, then title asc.
+        s.add("https://c.example/", "Aardvark", "paris", "").unwrap();
+        let sorted = SearchOptions {
+            sort: vec![SortKey { column: "rating".into(), desc: true }, SortKey { column: "title".into(), desc: false }],
+            ..all.clone()
+        };
+        let order: Vec<_> = s.search_with("paris", &sorted, 10).unwrap().into_iter().map(|b| b.title).collect();
+        assert_eq!(order, [a.clone(), "Aardvark".to_string(), b.clone()]);
         let kws = s.keywords_with("paris ! food", &all).unwrap();
         assert_eq!(kws.iter().map(|k| k.keyword.as_str()).collect::<Vec<_>>(), ["museum", "paris"]);
     }
