@@ -13,6 +13,18 @@
   header { grid-column: 1 / -1; display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
   input, textarea, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; }
   #q { flex: 1; font-size: 16px; padding: 8px 10px; }
+  #q[aria-invalid=true] { border-color: var(--danger); }
+  #mode { width: auto; }
+  #opts { position: relative; }
+  #opts summary { list-style: none; padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; user-select: none; height: 100%; display: flex; align-items: center; }
+  #opts summary::-webkit-details-marker { display: none; }
+  #opts .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; width: 300px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); font-size: 13px; }
+  #opts label { display: block; margin: 4px 0; }
+  #opts input[type=checkbox] { width: auto; margin-right: 6px; vertical-align: -2px; }
+  #opts fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; padding: 4px 10px 6px; }
+  #opts fieldset:disabled { opacity: .5; }
+  .help { color: var(--muted); font-size: 12px; margin: 6px 0 0; line-height: 1.6; }
+  code { font-size: 12px; background: var(--chip); padding: 0 3px; border-radius: 3px; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   button { font: inherit; padding: 7px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; white-space: nowrap; }
   button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
@@ -81,7 +93,28 @@
 </head>
 <body>
 <header>
-  <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks">
+  <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks" aria-describedby="q-help">
+  <select id="mode" aria-label="Search mode">
+    <option value="all">All fields</option>
+    <option value="keywords">Keywords only</option>
+    <option value="exact">Exact text</option>
+  </select>
+  <details id="opts">
+    <summary class="secondary" aria-label="Search options">Options</summary>
+    <div class="menu">
+      <label><input type="checkbox" id="opt-partial"> Prefix match (<code>comp</code> finds computer)</label>
+      <fieldset id="exact-opts">
+        <legend>Exact text searches</legend>
+        <label><input type="checkbox" name="field" value="title"> Title</label>
+        <label><input type="checkbox" name="field" value="url"> URL</label>
+        <label><input type="checkbox" name="field" value="keywords"> Keywords</label>
+        <label><input type="checkbox" name="field" value="description"> Description</label>
+        <label><input type="checkbox" name="field" value="notes"> Notes</label>
+        <label><input type="checkbox" id="opt-case"> Match case</label>
+      </fieldset>
+      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · Esc clears</p>
+    </div>
+  </details>
   <button id="import" hidden>Import pm35.htm…</button>
 </header>
 

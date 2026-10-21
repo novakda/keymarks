@@ -1,10 +1,37 @@
 //! SQLite bookmark store with full-text keyword search.
 //! Imports Powermarks 3.5 databases (field meanings: docs/pm35-format.md).
 
-use pm35::{Database, field};
-use rusqlite::{Connection, OptionalExtension, params};
+mod query;
 
+use pm35::{Database, field};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
+
+pub use query::{FIELDS, Mode, SearchOptions};
 pub use rusqlite::Result;
+
+/// A search that couldn't run: bad query syntax (show it to the user) or a database error.
+#[derive(Debug)]
+pub enum SearchError {
+    Syntax(String),
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for SearchError {
+    fn from(e: rusqlite::Error) -> Self {
+        SearchError::Db(e)
+    }
+}
+
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            SearchError::Syntax(m) => write!(f, "{m}"),
+            SearchError::Db(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for SearchError {}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -204,35 +231,78 @@ impl Store {
         Ok(db.entries.len())
     }
 
-    /// Powermarks-style search: every word must prefix-match somewhere (title, keywords,
-    /// description, notes or URL), keyword matches ranked first. Empty query lists newest first.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bookmark>> {
-        let Some(m) = fts_query(query) else {
-            let sql = format!("SELECT {COLS} FROM bookmark b ORDER BY b.added DESC LIMIT ?1");
-            return self.conn.prepare(&sql)?.query_map(params![limit as i64], bookmark)?.collect();
-        };
-        let sql = format!(
-            "SELECT {COLS} FROM bookmark_fts f JOIN bookmark b ON b.id = f.rowid
-             WHERE bookmark_fts MATCH ?2 ORDER BY {RANK} LIMIT ?1"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        stmt.query_map(params![limit as i64, m], bookmark)?.collect()
+    /// Search with default options (all fields, prefix matching, keyword hits first).
+    pub fn search(&self, query: &str, limit: usize) -> std::result::Result<Vec<Bookmark>, SearchError> {
+        self.search_with(query, &SearchOptions::default(), limit)
     }
 
-    /// The keyword dictionary, narrowed to bookmarks matching `query` (all when empty),
+    /// Powermarks-style search (syntax: see `query`). Empty query lists newest first.
+    pub fn search_with(
+        &self,
+        query: &str,
+        opts: &SearchOptions,
+        limit: usize,
+    ) -> std::result::Result<Vec<Bookmark>, SearchError> {
+        let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
+        let mut params: Vec<Value> = Vec::new();
+        let (with, join, cond, order) = match &filter {
+            None => (String::new(), "", "1".to_string(), "b.added DESC"),
+            Some(f) => {
+                // MATERIALIZED: rank the matches once, not once per bookmark row.
+                let (with, join) = match &f.rank {
+                    Some(m) => {
+                        params.push(m.clone().into());
+                        (
+                            format!(
+                                "WITH ranked AS MATERIALIZED (SELECT rowid AS id, {RANK} AS r
+                                 FROM bookmark_fts WHERE bookmark_fts MATCH ?)"
+                            ),
+                            "LEFT JOIN ranked f ON f.id = b.id",
+                        )
+                    }
+                    None => (String::new(), ""),
+                };
+                params.extend(f.params.iter().cloned().map(Value::from));
+                let order = if f.rank.is_some() { "f.r IS NULL, f.r, b.added DESC" } else { "b.added DESC" };
+                (with, join, f.sql.clone(), order)
+            }
+        };
+        params.push(Value::Integer(limit.min(i64::MAX as usize) as i64));
+        let sql = format!("{with} SELECT {COLS} FROM bookmark b {join} WHERE {cond} ORDER BY {order} LIMIT ?");
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt.query_map(params_from_iter(params), bookmark)?.collect::<Result<_>>()?)
+    }
+
+    /// The whole keyword dictionary, alphabetical, with use counts.
+    pub fn keywords(&self, query: &str) -> std::result::Result<Vec<KeywordCount>, SearchError> {
+        self.keywords_with(query, &SearchOptions::default())
+    }
+
+    /// The keyword dictionary narrowed to bookmarks matching `query` (all when empty),
     /// alphabetical, with how many of those bookmarks use each keyword.
-    pub fn keywords(&self, query: &str) -> Result<Vec<KeywordCount>> {
-        let filter = if fts_query(query).is_some() {
-            "WHERE k.bookmark_id IN (SELECT rowid FROM bookmark_fts WHERE bookmark_fts MATCH ?1)"
-        } else {
-            "WHERE ?1 IS NULL"
+    pub fn keywords_with(
+        &self,
+        query: &str,
+        opts: &SearchOptions,
+    ) -> std::result::Result<Vec<KeywordCount>, SearchError> {
+        let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
+        Ok(self.keywords_where(filter.as_ref())?)
+    }
+
+    fn keywords_where(&self, filter: Option<&query::Filter>) -> Result<Vec<KeywordCount>> {
+        let (cond, params) = match filter {
+            Some(f) => (
+                format!("WHERE k.bookmark_id IN (SELECT b.id FROM bookmark b WHERE {})", f.sql),
+                f.params.clone(),
+            ),
+            None => (String::new(), Vec::new()),
         };
         let sql = format!(
             "SELECT k.keyword, count(*), k.keyword IN (SELECT keyword FROM tagged_keyword)
-             FROM bookmark_keyword k {filter} GROUP BY k.keyword ORDER BY k.keyword"
+             FROM bookmark_keyword k {cond} GROUP BY k.keyword ORDER BY k.keyword"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([fts_query(query)], |r| {
+        let rows = stmt.query_map(params_from_iter(params), |r| {
             Ok(KeywordCount { keyword: r.get(0)?, count: r.get(1)?, tagged: r.get(2)? })
         })?;
         rows.collect()
@@ -260,7 +330,7 @@ impl Store {
     /// Propose a dictionary cleanup (Powermarks' Dictionary Cleanup, plus stop words).
     /// Tagged keywords are never included. Nothing changes until `apply_cleanup`.
     pub fn cleanup_plan(&self) -> Result<Vec<CleanupItem>> {
-        let dict = self.keywords("")?;
+        let dict = self.keywords_where(None)?;
         let by_lower: std::collections::HashMap<String, &KeywordCount> =
             dict.iter().map(|k| (k.keyword.to_lowercase(), k)).collect();
         let mut plan = Vec::new();
@@ -343,15 +413,6 @@ pub struct KeywordCount {
     pub keyword: String,
     pub count: i64,
     pub tagged: bool,
-}
-
-/// FTS5 query for Powermarks-style search: every word prefix-matches. None for an empty query.
-fn fts_query(query: &str) -> Option<String> {
-    let words: Vec<String> = query
-        .split_whitespace()
-        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
-        .collect();
-    (!words.is_empty()).then(|| words.join(" "))
 }
 
 /// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
@@ -707,6 +768,39 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn search_syntax_modes_and_errors() {
+        let s = store(); // A: "food paris" desc Nice; B: "paris museum" title "It's UTF-8"
+        let titles = |q: &str, o: &SearchOptions| {
+            let mut t: Vec<_> = s.search_with(q, o, 10).unwrap().into_iter().map(|b| b.title).collect();
+            t.sort();
+            t
+        };
+        let all = SearchOptions::default();
+        let a = "Caf\u{e9} & Bar \u{2019}s".to_string();
+        let b = "It\u{2019}s UTF-8".to_string();
+        assert_eq!(titles("paris ! food", &all), [b.clone()]);
+        assert_eq!(titles("!food", &all), [b.clone()]);
+        assert_eq!(titles("food | museum", &all), [a.clone(), b.clone()]);
+        assert_eq!(titles("(food | museum) & nice", &all), [a.clone()]);
+        assert_eq!(titles("muse", &all), [b.clone()]);
+        assert!(titles("muse.", &all).is_empty()); // whole word only
+        assert_eq!(titles("museum.", &all), [b.clone()]);
+
+        let kw = SearchOptions { mode: Mode::Keywords, ..all.clone() };
+        assert!(titles("utf", &kw).is_empty()); // only in the title
+        assert_eq!(titles("utf", &all), [b.clone()]);
+
+        let url = SearchOptions { mode: Mode::Exact, fields: vec!["url".into()], ..all.clone() };
+        assert_eq!(titles("COM/?A=1&b", &url), [a.clone()]); // substring, case-insensitive
+        let cased = SearchOptions { match_case: true, ..url.clone() };
+        assert!(titles("COM/?", &cased).is_empty());
+
+        assert!(matches!(s.search_with("(food", &all, 10), Err(SearchError::Syntax(_))));
+        let kws = s.keywords_with("paris ! food", &all).unwrap();
+        assert_eq!(kws.iter().map(|k| k.keyword.as_str()).collect::<Vec<_>>(), ["museum", "paris"]);
+    }
+
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -727,6 +821,18 @@ mod tests {
             let t = std::time::Instant::now();
             let n = s.keywords(q).unwrap().len();
             eprintln!("keywords({q:?}): {n} in {:?}", t.elapsed());
+        }
+        for (q, o) in [
+            ("a", SearchOptions::default()),
+            ("(a | e) ! the", SearchOptions::default()),
+            ("!a", SearchOptions::default()),
+            ("com/", SearchOptions { mode: Mode::Exact, fields: vec!["url".into()], ..Default::default() }),
+        ] {
+            let t = std::time::Instant::now();
+            let n = s.search_with(q, &o, 500).unwrap().len();
+            let k = s.keywords_with(q, &o).unwrap().len();
+            eprintln!("search {q:?} {:?}: {n} hits + {k} keywords in {:?}", o.mode, t.elapsed());
+            assert!(t.elapsed().as_secs() < 1, "search {q:?} too slow: {:?}", t.elapsed());
         }
         let t = std::time::Instant::now();
         let plan = s.cleanup_plan().unwrap();

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
-use store::{Bookmark, CleanupItem, KeywordCount, Store};
+use store::{Bookmark, CleanupItem, KeywordCount, SearchOptions, Store};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -13,8 +13,8 @@ type Db = Mutex<Store>;
 const OPENABLE: [&str; 5] = ["http://", "https://", "ftp://", "file:", "mailto:"];
 
 #[tauri::command]
-fn search(db: State<Db>, query: String) -> Result<Vec<Bookmark>, String> {
-    db.lock().unwrap().search(&query, 500).map_err(|e| e.to_string())
+fn search(db: State<Db>, query: String, opts: SearchOptions) -> Result<Vec<Bookmark>, String> {
+    db.lock().unwrap().search_with(&query, &opts, 500).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -67,8 +67,8 @@ fn delete_bookmarks(db: State<Db>, ids: Vec<i64>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn keywords(db: State<Db>, query: String) -> Result<Vec<KeywordCount>, String> {
-    db.lock().unwrap().keywords(&query).map_err(|e| e.to_string())
+fn keywords(db: State<Db>, query: String, opts: SearchOptions) -> Result<Vec<KeywordCount>, String> {
+    db.lock().unwrap().keywords_with(&query, &opts).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

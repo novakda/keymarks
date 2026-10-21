@@ -20,20 +20,37 @@ let version = null;
 let narrowed = [];         // keyword dictionary for the current search
 let dictionary = [];       // every keyword (autocomplete, tag state)
 
+// Search options persist per machine; storage may be unavailable, so never depend on it.
+const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false };
+let opts = { ...DEFAULT_OPTS };
+try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
+
 const say = (text) => { status.textContent = text; };
 const fail = (what) => (e) => say(`${what} failed: ${e}`);
 const words = (s) => s.split(/[\s,]+/).filter(Boolean);
+// Search terms without operators, for "is this keyword already in the query?".
+const terms = (s) => s.split(/[\s&|!()]+/).map((w) => w.replace(/\.+$/, '')).filter((w) => w && !/^\.(and|or|not)$/i.test(w));
 const lower = (s) => s.toLocaleLowerCase();
 
 // ---- data -------------------------------------------------------------------
 
 async function refresh({ keepSelection = true } = {}) {
   const mine = ++seq;
-  const [n, found, v, kw] = await Promise.all([
-    invoke('count'), invoke('search', { query: q.value }), invoke('data_version'),
-    invoke('keywords', { query: q.value }),
-  ]);
+  let n, found, v, kw;
+  try {
+    [n, found, v, kw] = await Promise.all([
+      invoke('count'), invoke('search', { query: q.value, opts }), invoke('data_version'),
+      invoke('keywords', { query: q.value, opts }),
+    ]);
+  } catch (e) {
+    if (mine !== seq) return;
+    // Bad syntax: say why and keep showing the last good results.
+    q.setAttribute('aria-invalid', 'true');
+    say(`Search: ${e}`);
+    return;
+  }
   if (mine !== seq) return; // a newer search already rendered
+  q.removeAttribute('aria-invalid');
   const cursorId = rows[cursor]?.id;
   total = n;
   rows = found;
@@ -49,7 +66,7 @@ async function refresh({ keepSelection = true } = {}) {
 }
 
 async function refreshDictionary() {
-  dictionary = await invoke('keywords', { query: '' });
+  dictionary = await invoke('keywords', { query: '', opts: {} });
   // Tagged keywords first, then most used: the order autocomplete shows them in.
   const sorted = [...dictionary].sort((a, b) => (b.tagged - a.tagged) || (b.count - a.count));
   $('kw-options').replaceChildren(...sorted.map((k) => new Option(k.keyword)));
@@ -150,7 +167,7 @@ async function remove(ids) {
 function renderKeywords() {
   const find = lower($('kw-filter').value.trim());
   const taggedOnly = $('kw-tagged').checked;
-  const inQuery = new Set(words(lower(q.value)));
+  const inQuery = new Set(opts.mode === 'exact' ? [] : terms(lower(q.value)));
   const shown = narrowed.filter((k) =>
     (!taggedOnly || k.tagged) && (!find || lower(k.keyword).startsWith(find)) && !inQuery.has(lower(k.keyword)));
   $('kw-head').textContent = `Keywords [${shown.length}]`;
@@ -180,8 +197,8 @@ function setSearch(text) {
 }
 
 function addToSearch(keyword) {
-  const current = words(q.value);
-  if (!current.some((w) => lower(w) === lower(keyword))) setSearch([...current, keyword].join(' '));
+  if (opts.mode === 'exact') return setSearch(keyword);
+  if (!terms(q.value).some((w) => lower(w) === lower(keyword))) setSearch(`${q.value.trim()} ${keyword}`.trim());
 }
 
 let menuKeyword = null;
@@ -455,8 +472,40 @@ function confirmDiscard() {
 
 // ---- wiring -----------------------------------------------------------------
 
+// ---- search options -----------------------------------------------------------
+
+function applyOptsToUi() {
+  $('mode').value = opts.mode;
+  $('opt-partial').checked = opts.partial;
+  $('opt-partial').disabled = opts.mode === 'exact';
+  $('exact-opts').disabled = opts.mode !== 'exact';
+  $('opt-case').checked = opts.match_case;
+  document.querySelectorAll('input[name=field]').forEach((b) => { b.checked = opts.fields.includes(b.value); });
+  q.placeholder = opts.mode === 'exact' ? 'Type exact text (e.g. .edu/)…' : opts.mode === 'keywords' ? 'Type keywords (keywords field only)…' : 'Type keywords…';
+}
+
+function optsChanged() {
+  opts = {
+    mode: $('mode').value,
+    partial: $('opt-partial').checked,
+    fields: [...document.querySelectorAll('input[name=field]:checked')].map((b) => b.value),
+    match_case: $('opt-case').checked,
+  };
+  try { localStorage.setItem('searchOptions', JSON.stringify(opts)); } catch {}
+  applyOptsToUi();
+  refresh({ keepSelection: false });
+}
+
+$('mode').addEventListener('change', optsChanged);
+$('opts').addEventListener('change', optsChanged);
+document.addEventListener('click', (e) => { if (!$('opts').contains(e.target)) $('opts').open = false; });
+applyOptsToUi();
+
 q.addEventListener('input', () => { if (confirmDiscard()) refresh({ keepSelection: false }); });
-q.addEventListener('keydown', onListKeys);
+q.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && q.value) { e.preventDefault(); setSearch(''); return; }
+  onListKeys(e);
+});
 list.addEventListener('keydown', onListKeys);
 document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
