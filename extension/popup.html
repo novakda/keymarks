@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Add to Powermarks</title>
+<style>
+  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --accent: #60679f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --fg: #f2f2f7; --muted: #98989d; --line: #3a3a3c; --accent: #9aa2e0; } }
+  body { margin: 0; width: 360px; padding: 12px; font: 13px system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  label { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+  input, textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; margin-top: 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); }
+  textarea { height: 52px; resize: vertical; }
+  #url { color: var(--muted); font-size: 11px; word-break: break-all; margin: 0; }
+  button { margin-top: 10px; width: 100%; padding: 7px; font: inherit; font-weight: 600; border: 0; border-radius: 5px; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 1em; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<form id="form">
+  <p id="url"></p>
+  <label for="title">Title</label>
+  <input id="title" required>
+  <label for="keywords">Keywords (space separated)</label>
+  <input id="keywords">
+  <label for="desc">Description</label>
+  <textarea id="desc"></textarea>
+  <button id="add" type="submit">Add to Powermarks</button>
+  <p id="status" role="status"></p>
+</form>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[package]
+name = "powermarks-host"
+version = "0.1.0"
+edition = "2024"
+description = "Native messaging host: browser extension -> Powermarks database"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+store = { path = "../store" }

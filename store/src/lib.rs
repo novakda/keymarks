@@ -2,7 +2,7 @@
 //! Imports Powermarks 3.5 databases (field meanings: docs/pm35-format.md).
 
 use pm35::{Database, field};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub use rusqlite::Result;
 
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS bookmark (
     status INTEGER NOT NULL DEFAULT 0,
     pm_mdata TEXT -- raw Powermarks mdata fields joined by '][', kept for lossless export
 );
+CREATE INDEX IF NOT EXISTS bookmark_url ON bookmark(url);
 CREATE VIRTUAL TABLE IF NOT EXISTS bookmark_fts USING fts5(
     title, keywords, description, notes, url,
     content='bookmark', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
@@ -63,12 +64,32 @@ impl Store {
     /// Open or create a store. Use ":memory:" for a throwaway one.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // The app and the browser's native-messaging host share this file.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn })
     }
 
     pub fn count(&self) -> Result<i64> {
         self.conn.query_row("SELECT count(*) FROM bookmark", [], |r| r.get(0))
+    }
+
+    /// Add a bookmark unless its URL is already stored. Returns (id, already_existed).
+    pub fn add(&self, url: &str, title: &str, keywords: &str, description: &str) -> Result<(i64, bool)> {
+        let existing = self
+            .conn
+            .query_row("SELECT id FROM bookmark WHERE url = ?1", [url], |r| r.get(0))
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok((id, true));
+        }
+        self.conn.execute(
+            "INSERT INTO bookmark (url, title, keywords, description, added)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![url, title, keywords, description],
+        )?;
+        Ok((self.conn.last_insert_rowid(), false))
     }
 
     /// Import every Powermarks entry in one transaction. Returns the number imported.
@@ -202,6 +223,18 @@ mod tests {
         assert_eq!(titles("cafe"), vec!["Caf\u{e9} & Bar \u{2019}s"]); // diacritics folded
         assert!(titles("paris zzz").is_empty());
         assert_eq!(titles("\"quoted").len(), 0); // no FTS syntax error
+    }
+
+    #[test]
+    fn add_is_searchable_and_deduplicated() {
+        let s = store();
+        let (id, existed) = s.add("https://rust-lang.org/", "Rust", "programming language", "").unwrap();
+        assert!(!existed);
+        assert_eq!(s.add("https://rust-lang.org/", "Again", "", "").unwrap(), (id, true));
+        let hits = s.search("program", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].added.is_some());
+        assert_eq!(s.count().unwrap(), 3);
     }
 
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
