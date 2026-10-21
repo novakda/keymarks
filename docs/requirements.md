@@ -341,7 +341,14 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 ---
 
-## 4. Open questions
+## 4. Decisions (2026-10-21)
+
+- **Search (Q1):** match everywhere, rank keyword hits first (FTS5 column weights); keyword-only stays available as a mode.
+- **Round-trip (Q11):** one-time Export to pm35.htm as an escape hatch; new features are not limited to what 3.5 can store.
+- **Sync (Q5):** two-way multi-PC sync is wanted (SYNC-01 → P1-later, after core editing/search work).
+- **Data point for Q8:** every imported bookmark has the `Weekly` schedule; ~250 of 13,057 were ever checked.
+
+## 5. Open questions
 
 1. **Keyword vs everywhere search (SRCH-02).** Make strict keyword-only the default (original), or
    keep "matches anywhere" as the default with keyword-only as a mode? A third option: rank

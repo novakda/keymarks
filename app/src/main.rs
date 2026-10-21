@@ -40,13 +40,36 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>) -> Result<Option<usize>,
     store.import_pm35(&parsed).map(Some).map_err(|e| e.to_string())
 }
 
+/// Open a bookmark in the default browser and count the visit.
 #[tauri::command]
-fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+fn open_bookmark(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
+    let store = db.lock().unwrap();
+    let url = store.get(id).map_err(|e| e.to_string())?.ok_or("bookmark not found")?.url;
     let lower = url.to_ascii_lowercase();
     if !OPENABLE.iter().any(|p| lower.starts_with(p)) {
         return Err(format!("not opening {url}: unsupported scheme"));
     }
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+    store.mark_visited(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_bookmark(db: State<Db>, bookmark: Bookmark) -> Result<bool, String> {
+    if bookmark.url.trim().is_empty() {
+        return Err("URL can't be empty".into());
+    }
+    db.lock().unwrap().update(&bookmark).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_bookmarks(db: State<Db>, ids: Vec<i64>) -> Result<usize, String> {
+    db.lock().unwrap().delete(&ids).map_err(|e| e.to_string())
+}
+
+/// Polled by the UI; changes when the browser extension's host adds a bookmark.
+#[tauri::command]
+fn data_version(db: State<Db>) -> Result<i64, String> {
+    db.lock().unwrap().data_version().map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -61,7 +84,15 @@ fn main() {
             app.manage(Mutex::new(store));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![search, count, import_pm35, open_url])
+        .invoke_handler(tauri::generate_handler![
+            search,
+            count,
+            import_pm35,
+            open_bookmark,
+            update_bookmark,
+            delete_bookmarks,
+            data_version
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Powermarks");
 }

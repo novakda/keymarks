@@ -45,15 +45,38 @@ CREATE TRIGGER IF NOT EXISTS bookmark_au AFTER UPDATE ON bookmark BEGIN
 END;
 ";
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// FTS5 bm25 weights per column (title, keywords, description, notes, url):
+/// keyword hits rank first, as Powermarks searched keywords by default.
+const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
+const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, b.last_visited, b.visits";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
     pub id: i64,
     pub url: String,
     pub title: String,
     pub keywords: String,
     pub description: String,
+    pub notes: String,
     pub rating: i64,
     pub added: Option<i64>,
+    pub last_visited: Option<i64>,
+    pub visits: i64,
+}
+
+fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
+    Ok(Bookmark {
+        id: r.get(0)?,
+        url: r.get(1)?,
+        title: r.get(2)?,
+        keywords: r.get(3)?,
+        description: r.get(4)?,
+        notes: r.get(5)?,
+        rating: r.get(6)?,
+        added: r.get(7)?,
+        last_visited: r.get(8)?,
+        visits: r.get(9)?,
+    })
 }
 
 pub struct Store {
@@ -128,41 +151,61 @@ impl Store {
     }
 
     /// Powermarks-style search: every word must prefix-match somewhere (title, keywords,
-    /// description, notes or URL). Empty query lists newest first.
+    /// description, notes or URL), keyword matches ranked first. Empty query lists newest first.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bookmark>> {
-        let cols = "b.id, b.url, b.title, b.keywords, b.description, b.rating, b.added";
         let words: Vec<String> = query
             .split_whitespace()
             .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
             .collect();
-        let (sql, arg) = if words.is_empty() {
-            (format!("SELECT {cols} FROM bookmark b ORDER BY b.added DESC LIMIT ?1"), None)
-        } else {
-            (
-                format!(
-                    "SELECT {cols} FROM bookmark_fts f JOIN bookmark b ON b.id = f.rowid
-                     WHERE bookmark_fts MATCH ?2 ORDER BY f.rank LIMIT ?1"
-                ),
-                Some(words.join(" ")),
-            )
-        };
+        if words.is_empty() {
+            let sql = format!("SELECT {COLS} FROM bookmark b ORDER BY b.added DESC LIMIT ?1");
+            return self.conn.prepare(&sql)?.query_map(params![limit as i64], bookmark)?.collect();
+        }
+        let sql = format!(
+            "SELECT {COLS} FROM bookmark_fts f JOIN bookmark b ON b.id = f.rowid
+             WHERE bookmark_fts MATCH ?2 ORDER BY {RANK} LIMIT ?1"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
-        let row = |r: &rusqlite::Row| {
-            Ok(Bookmark {
-                id: r.get(0)?,
-                url: r.get(1)?,
-                title: r.get(2)?,
-                keywords: r.get(3)?,
-                description: r.get(4)?,
-                rating: r.get(5)?,
-                added: r.get(6)?,
-            })
-        };
-        let rows = match arg {
-            None => stmt.query_map(params![limit as i64], row)?,
-            Some(m) => stmt.query_map(params![limit as i64, m], row)?,
-        };
-        rows.collect()
+        stmt.query_map(params![limit as i64, words.join(" ")], bookmark)?.collect()
+    }
+
+    pub fn get(&self, id: i64) -> Result<Option<Bookmark>> {
+        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.id = ?1");
+        self.conn.query_row(&sql, [id], bookmark).optional()
+    }
+
+    /// Save the user-editable fields. Returns false if the bookmark no longer exists.
+    pub fn update(&self, b: &Bookmark) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE bookmark SET url = ?2, title = ?3, keywords = ?4, description = ?5,
+                notes = ?6, rating = ?7 WHERE id = ?1",
+            params![b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating.clamp(0, 10)],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn delete(&mut self, ids: &[i64]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        for id in ids {
+            n += tx.execute("DELETE FROM bookmark WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Record that a bookmark was opened (usage count and last-visited, as Powermarks did).
+    pub fn mark_visited(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE bookmark SET visits = visits + 1, last_visited = unixepoch() WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Changes whenever another connection (e.g. the browser host) commits to the database.
+    pub fn data_version(&self) -> Result<i64> {
+        self.conn.pragma_query_value(None, "data_version", |r| r.get(0))
     }
 }
 
@@ -235,6 +278,46 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].added.is_some());
         assert_eq!(s.count().unwrap(), 3);
+    }
+
+    #[test]
+    fn keyword_hits_rank_first() {
+        let s = store();
+        s.add("https://x.example/", "Museum guide", "travel", "").unwrap(); // "museum" in title only
+        let hits = s.search("museum", 10).unwrap();
+        assert_eq!(hits[0].title, "It\u{2019}s UTF-8"); // "museum" in keywords
+    }
+
+    #[test]
+    fn edit_delete_visit_and_change_detection() {
+        let path = std::env::temp_dir().join(format!("store-test-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut a = Store::open(path.to_str().unwrap()).unwrap();
+        let b = Store::open(path.to_str().unwrap()).unwrap(); // second connection, like the host
+        let (id, _) = a.add("https://a.example/", "A", "old", "").unwrap();
+
+        let mut bm = a.get(id).unwrap().unwrap();
+        bm.keywords = "new words".into();
+        bm.rating = 42;
+        assert!(a.update(&bm).unwrap());
+        assert_eq!(a.get(id).unwrap().unwrap().rating, 10);
+        assert!(a.search("old", 5).unwrap().is_empty());
+        assert_eq!(a.search("words", 5).unwrap().len(), 1);
+
+        a.mark_visited(id).unwrap();
+        assert_eq!(a.get(id).unwrap().unwrap().visits, 1);
+
+        let v = a.data_version().unwrap();
+        b.add("https://b.example/", "B", "", "").unwrap();
+        assert_ne!(a.data_version().unwrap(), v, "other connection's commit not detected");
+
+        assert_eq!(a.delete(&[id, 9999]).unwrap(), 1);
+        assert!(a.get(id).unwrap().is_none());
+        assert!(a.search("words", 5).unwrap().is_empty());
+        drop((a, b));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
     }
 
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
