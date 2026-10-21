@@ -253,6 +253,38 @@ impl Store {
         opts: &SearchOptions,
         limit: usize,
     ) -> std::result::Result<Vec<Bookmark>, SearchError> {
+        let (sql, params) = self.search_sql(COLS, query, opts, limit)?;
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt.query_map(params_from_iter(params), bookmark)?.collect::<Result<_>>()?)
+    }
+
+    /// Every matching bookmark id, in display order (for virtual scrolling).
+    pub fn search_ids(&self, query: &str, opts: &SearchOptions) -> std::result::Result<Vec<i64>, SearchError> {
+        let (sql, params) = self.search_sql("b.id", query, opts, usize::MAX)?;
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt.query_map(params_from_iter(params), |r| r.get(0))?.collect::<Result<_>>()?)
+    }
+
+    /// Bookmarks by id, in the order given; ids that no longer exist are skipped.
+    pub fn get_many(&self, ids: &[i64]) -> Result<Vec<Bookmark>> {
+        let json = serde_json::to_string(ids).expect("ids serialize");
+        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.id IN (SELECT value FROM json_each(?1))");
+        let mut found: std::collections::HashMap<i64, Bookmark> = self
+            .conn
+            .prepare(&sql)?
+            .query_map([json], bookmark)?
+            .map(|r| r.map(|b| (b.id, b)))
+            .collect::<Result<_>>()?;
+        Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
+    }
+
+    fn search_sql(
+        &self,
+        cols: &str,
+        query: &str,
+        opts: &SearchOptions,
+        limit: usize,
+    ) -> std::result::Result<(String, Vec<Value>), SearchError> {
         let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
         let mut params: Vec<Value> = Vec::new();
         let (with, join, cond, default_order) = match &filter {
@@ -282,9 +314,8 @@ impl Store {
         let mut order: Vec<String> = opts.sort.iter().filter_map(SortKey::sql).collect();
         order.push(default_order.to_string());
         let order = order.join(", ");
-        let sql = format!("{with} SELECT {COLS} FROM bookmark b {join} WHERE {cond} ORDER BY {order} LIMIT ?");
-        let mut stmt = self.conn.prepare(&sql)?;
-        Ok(stmt.query_map(params_from_iter(params), bookmark)?.collect::<Result<_>>()?)
+        let sql = format!("{with} SELECT {cols} FROM bookmark b {join} WHERE {cond} ORDER BY {order} LIMIT ?");
+        Ok((sql, params))
     }
 
     /// The whole keyword dictionary, alphabetical, with use counts.
@@ -820,6 +851,14 @@ mod tests {
         };
         let order: Vec<_> = s.search_with("paris", &sorted, 10).unwrap().into_iter().map(|b| b.title).collect();
         assert_eq!(order, [a.clone(), "Aardvark".to_string(), b.clone()]);
+
+        // Ids come back in the same order; get_many keeps the requested order.
+        let ids = s.search_ids("paris", &sorted).unwrap();
+        let mut reversed = ids.clone();
+        reversed.reverse();
+        reversed.push(9999); // gone
+        let back: Vec<_> = s.get_many(&reversed).unwrap().into_iter().map(|b| b.title).collect();
+        assert_eq!(back, [b.clone(), "Aardvark".to_string(), a.clone()]);
         let kws = s.keywords_with("paris ! food", &all).unwrap();
         assert_eq!(kws.iter().map(|k| k.keyword.as_str()).collect::<Vec<_>>(), ["museum", "paris"]);
     }
@@ -856,6 +895,13 @@ mod tests {
             let k = s.keywords_with(q, &o).unwrap().len();
             eprintln!("search {q:?} {:?}: {n} hits + {k} keywords in {:?}", o.mode, t.elapsed());
             assert!(t.elapsed().as_secs() < 1, "search {q:?} too slow: {:?}", t.elapsed());
+        }
+        for q in ["", "a", "(a | e) ! the"] {
+            let t = std::time::Instant::now();
+            let ids = s.search_ids(q, &SearchOptions::default()).unwrap();
+            let page = s.get_many(&ids[..ids.len().min(100)]).unwrap().len();
+            eprintln!("search_ids {q:?}: {} ids + page of {page} in {:?}", ids.len(), t.elapsed());
+            assert!(t.elapsed().as_secs() < 1);
         }
         let t = std::time::Instant::now();
         let plan = s.cleanup_plan().unwrap();

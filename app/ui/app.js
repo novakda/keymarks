@@ -5,11 +5,14 @@ const list = $('list');
 const panel = $('panel');
 const status = $('status');
 const importBtn = $('import');
-const LIMIT = 500;
+// Virtual scrolling: fixed row heights; only rows near the viewport exist in the DOM.
+const ROW_H = { cards: 50, table: 26 };
+const BUFFER = 15; // rows rendered beyond each edge of the viewport
 
-let rows = [];
+let ids = [];              // every matching bookmark id, in display order
+const cache = new Map();   // id -> bookmark, for rows fetched so far
 let total = 0;
-let cursor = 0;            // index in rows of the focused item
+let cursor = 0;            // index in ids of the focused item
 let anchor = 0;            // start of a Shift range
 let selected = new Set();  // bookmark ids
 let editing = null;        // bookmark shown in the form
@@ -64,7 +67,7 @@ async function refresh({ keepSelection = true } = {}) {
   let n, found, v, kw;
   try {
     [n, found, v, kw] = await Promise.all([
-      invoke('count'), invoke('search', { query: q.value, opts }), invoke('data_version'),
+      invoke('count'), invoke('search_ids', { query: q.value, opts }), invoke('data_version'),
       invoke('keywords', { query: q.value, opts }),
     ]);
   } catch (e) {
@@ -76,18 +79,28 @@ async function refresh({ keepSelection = true } = {}) {
   }
   if (mine !== seq) return; // a newer search already rendered
   q.removeAttribute('aria-invalid');
-  const cursorId = rows[cursor]?.id;
+  const cursorId = ids[cursor];
   total = n;
-  rows = found;
+  ids = found;
   version = v;
   narrowed = kw;
+  cache.clear(); // rows may have changed; visible ones are refetched below
   importBtn.hidden = total > 0;
-  const ids = new Set(rows.map((b) => b.id));
-  selected = keepSelection ? new Set([...selected].filter((id) => ids.has(id))) : new Set();
-  cursor = Math.max(0, keepSelection ? rows.findIndex((b) => b.id === cursorId) : 0);
-  if (selected.size === 0 && rows.length) selected.add(rows[cursor].id);
+  const present = new Set(ids);
+  selected = keepSelection ? new Set([...selected].filter((id) => present.has(id))) : new Set();
+  cursor = Math.max(0, keepSelection ? ids.indexOf(cursorId) : 0);
+  if (!keepSelection) scroller().scrollTop = 0;
+  if (selected.size === 0 && ids.length) selected.add(ids[cursor]);
+  await fetchRows([...ids.slice(...windowRange()), ...selected, ids[cursor]]);
+  if (mine !== seq) return;
   render();
   renderKeywords();
+}
+
+async function fetchRows(wanted) {
+  const missing = [...new Set(wanted)].filter((id) => id !== undefined && !cache.has(id));
+  if (!missing.length) return;
+  for (const b of await invoke('get_bookmarks', { ids: missing })) cache.set(b.id, b);
 }
 
 async function refreshDictionary() {
@@ -106,13 +119,65 @@ setInterval(async () => {
 
 // ---- bookmark list ----------------------------------------------------------
 
+const scroller = () => (view === 'table' ? tablewrap : list);
+
+/** [first, end) indexes of ids worth rendering for the current scroll position. */
+function windowRange() {
+  const el = scroller();
+  const h = ROW_H[view];
+  const first = Math.max(0, Math.floor(el.scrollTop / h) - BUFFER);
+  return [first, Math.min(ids.length, first + Math.ceil(el.clientHeight / h) + 2 * BUFFER)];
+}
+
 // Titles come from imported files and web pages: textContent only, never innerHTML.
 function render() {
-  if (view === 'table') renderTable(); else renderCards();
+  renderRows();
   renderPanel();
   say(total === 0
     ? 'No bookmarks yet. Import your Powermarks database to get started.'
-    : `${rows.length}${rows.length === LIMIT ? '+' : ''} shown · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+    : `${ids.length} matching · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+}
+
+function renderRows() {
+  if (view === 'table') renderTable(); else renderCards();
+}
+
+let scrollQueued = false;
+function onScroll() {
+  if (scrollQueued) return;
+  scrollQueued = true;
+  requestAnimationFrame(async () => {
+    scrollQueued = false;
+    renderRows(); // placeholders first, so scrolling never waits on the database
+    const before = cache.size;
+    await fetchRows(ids.slice(...windowRange()));
+    if (cache.size !== before) renderRows();
+  });
+}
+
+/** Scroll just enough to show the cursor row. */
+function revealCursor() {
+  const el = scroller();
+  const h = ROW_H[view];
+  const head = view === 'table' ? $('table-head').offsetHeight : 0;
+  const top = cursor * h;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (top + h + head > el.scrollTop + el.clientHeight) el.scrollTop = top + h + head - el.clientHeight;
+}
+
+function spacer(tag, height, colspan) {
+  const el = document.createElement(tag);
+  el.className = 'spacer';
+  el.ariaHidden = 'true';
+  if (tag === 'tr') {
+    const td = document.createElement('td');
+    td.colSpan = colspan;
+    td.style.height = `${height}px`;
+    el.append(td);
+  } else {
+    el.style.height = `${height}px`;
+  }
+  return el;
 }
 
 function renderTable() {
@@ -136,23 +201,30 @@ function renderTable() {
     th.append(btn);
     return th;
   }));
-  $('table-body').replaceChildren(...rows.map((b, i) => {
+  const [a, z] = windowRange();
+  const h = ROW_H.table;
+  const body = [];
+  if (a > 0) body.push(spacer('tr', a * h, cols.length));
+  for (let i = a; i < z; i++) {
+    const b = cache.get(ids[i]);
     const tr = document.createElement('tr');
-    tr.ariaSelected = String(selected.has(b.id));
-    tr.classList.toggle('sel', selected.has(b.id));
+    tr.className = 'vrow';
+    tr.ariaSelected = String(selected.has(ids[i]));
+    tr.classList.toggle('sel', selected.has(ids[i]));
     tr.classList.toggle('cursor', i === cursor);
     tr.append(...cols.map((c) => {
       const td = document.createElement('td');
-      td.textContent = c.cell(b);
+      td.textContent = b ? c.cell(b) : (c.id === 'title' ? '…' : '');
       td.title = td.textContent;
       if (c.num) td.className = 'num';
       return td;
     }));
     tr.onclick = (e) => select(i, e);
-    tr.ondblclick = () => open(b.id);
-    return tr;
-  }));
-  $('table-body').children[cursor]?.scrollIntoView({ block: 'nearest' });
+    tr.ondblclick = () => open(ids[i]);
+    body.push(tr);
+  }
+  if (z < ids.length) body.push(spacer('tr', (ids.length - z) * h, cols.length));
+  $('table-body').replaceChildren(...body);
 }
 
 // Like Powermarks: the new column sorts first and the previous one breaks ties.
@@ -169,24 +241,31 @@ function sortBy(c) {
 }
 
 function renderCards() {
-  list.replaceChildren(...rows.map((b, i) => {
+  const [a, z] = windowRange();
+  const h = ROW_H.cards;
+  const items = [];
+  if (a > 0) items.push(spacer('li', a * h));
+  for (let i = a; i < z; i++) {
+    const b = cache.get(ids[i]);
     const li = document.createElement('li');
+    li.className = 'vrow';
     li.role = 'option';
-    li.ariaSelected = String(selected.has(b.id));
-    li.classList.toggle('sel', selected.has(b.id));
+    li.ariaSelected = String(selected.has(ids[i]));
+    li.classList.toggle('sel', selected.has(ids[i]));
     li.classList.toggle('cursor', i === cursor);
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = (b.rating > 0 ? '★'.repeat(Math.ceil(b.rating / 2)) + ' ' : '') + (b.title || b.url);
+    title.textContent = b ? stars(b.rating) + (b.title || b.url) : '…';
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = [b.keywords, b.url].filter(Boolean).join(' · ');
+    meta.textContent = b ? [b.keywords, b.url].filter(Boolean).join(' · ') : '';
     li.append(title, meta);
     li.onclick = (e) => select(i, e);
-    li.ondblclick = () => open(b.id);
-    return li;
-  }));
-  list.children[cursor]?.scrollIntoView({ block: 'nearest' });
+    li.ondblclick = () => open(ids[i]);
+    items.push(li);
+  }
+  if (z < ids.length) items.push(spacer('li', (ids.length - z) * h));
+  list.replaceChildren(...items);
 }
 
 function setView(v) {
@@ -197,7 +276,9 @@ function setView(v) {
   $('cols').hidden = v !== 'table';
   $('view-cards').ariaPressed = String(v === 'cards');
   $('view-table').ariaPressed = String(v === 'table');
+  revealCursor();
   render();
+  onScroll(); // fetch whatever the new view shows
 }
 
 $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
@@ -216,14 +297,17 @@ $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
 }));
 $('view-cards').onclick = () => setView('cards');
 $('view-table').onclick = () => setView('table');
+list.addEventListener('scroll', onScroll);
+tablewrap.addEventListener('scroll', onScroll);
+addEventListener('resize', onScroll);
 
-function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } = {}) {
-  if (!rows[i] || !confirmDiscard()) return;
-  const id = rows[i].id;
+async function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } = {}) {
+  if (ids[i] === undefined || !confirmDiscard()) return;
+  const id = ids[i];
   if (shiftKey) {
     const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
     if (!(ctrlKey || metaKey)) selected.clear();
-    rows.slice(a, b + 1).forEach((r) => selected.add(r.id));
+    ids.slice(a, b + 1).forEach((x) => selected.add(x));
   } else if (ctrlKey || metaKey) {
     selected.has(id) ? selected.delete(id) : selected.add(id);
     anchor = i;
@@ -232,19 +316,24 @@ function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } = {}) 
     anchor = i;
   }
   cursor = i;
+  revealCursor();
+  await fetchRows([id]); // the properties panel needs it
   render();
 }
 
 function onListKeys(e) {
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    const i = Math.max(0, Math.min(rows.length - 1, cursor + (e.key === 'ArrowDown' ? 1 : -1)));
+  const page = Math.max(1, Math.floor(scroller().clientHeight / ROW_H[view]) - 1);
+  const moves = { ArrowDown: 1, ArrowUp: -1, PageDown: page, PageUp: -page, End: Infinity, Home: -Infinity };
+  const inList = e.target === list || e.target === tablewrap;
+  if (e.key in moves && (inList || e.key.startsWith('Arrow') || e.key.startsWith('Page'))) {
+    const i = Math.max(0, Math.min(ids.length - 1, cursor + moves[e.key]));
     select(i, { shiftKey: e.shiftKey });
   } else if (e.key === 'Enter') {
-    if (rows[cursor]) open(rows[cursor].id);
-  } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && (e.target === list || e.target === tablewrap)) {
-    rows.forEach((r) => selected.add(r.id));
+    if (ids[cursor] !== undefined) open(ids[cursor]);
+  } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && inList) {
+    ids.forEach((x) => selected.add(x));
     render();
-  } else if (e.key === 'Delete' && (e.target === list || e.target === tablewrap)) {
+  } else if (e.key === 'Delete' && inList) {
     remove([...selected]);
   } else return;
   e.preventDefault();
@@ -257,13 +346,13 @@ async function open(id) {
   } catch (e) { say(String(e)); }
 }
 
-async function remove(ids) {
-  if (!ids.length) return;
-  const one = rows.find((r) => r.id === ids[0]);
-  const what = ids.length === 1 ? `"${one?.title || one?.url}"` : `${ids.length} bookmarks`;
+async function remove(toDelete) {
+  if (!toDelete.length) return;
+  const one = cache.get(toDelete[0]);
+  const what = toDelete.length === 1 ? `"${one?.title || one?.url || 'this bookmark'}"` : `${toDelete.length} bookmarks`;
   if (!confirm(`Delete ${what}? This can't be undone yet.`)) return;
   try {
-    const n = await invoke('delete_bookmarks', { ids });
+    const n = await invoke('delete_bookmarks', { ids: toDelete });
     dirty = false;
     selected.clear();
     await refreshDictionary();
@@ -462,7 +551,7 @@ $('cleanup-apply').addEventListener('click', async () => {
 // ---- properties panel -------------------------------------------------------
 
 function renderPanel() {
-  const one = selected.size === 1 ? rows.find((r) => selected.has(r.id)) : null;
+  const one = selected.size === 1 ? cache.get([...selected][0]) : null;
   if (dirty && editing && one?.id === editing.id) return; // keep unsaved edits on screen
   dirty = false;
   editing = one ? { ...one } : null;
@@ -479,7 +568,7 @@ function renderPanel() {
   if (!editing) {
     const p = document.createElement('p');
     p.className = 'hint';
-    p.textContent = rows.length ? 'Select a bookmark to edit it.' : '';
+    p.textContent = ids.length ? 'Select a bookmark to edit it.' : '';
     panel.replaceChildren(p);
     return;
   }

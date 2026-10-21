@@ -12,9 +12,15 @@ type Db = Mutex<Store>;
 /// Schemes we hand to the OS. Imported files are untrusted: no ms-msdt:, javascript:, etc.
 const OPENABLE: [&str; 5] = ["http://", "https://", "ftp://", "file:", "mailto:"];
 
+/// Every matching id in display order; the UI fetches rows lazily with `get_bookmarks`.
 #[tauri::command]
-fn search(db: State<Db>, query: String, opts: SearchOptions) -> Result<Vec<Bookmark>, String> {
-    db.lock().unwrap().search_with(&query, &opts, 500).map_err(|e| e.to_string())
+fn search_ids(db: State<Db>, query: String, opts: SearchOptions) -> Result<Vec<i64>, String> {
+    db.lock().unwrap().search_ids(&query, &opts).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_bookmarks(db: State<Db>, ids: Vec<i64>) -> Result<Vec<Bookmark>, String> {
+    db.lock().unwrap().get_many(&ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -121,7 +127,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            search,
+            search_ids,
+            get_bookmarks,
             count,
             import_pm35,
             open_bookmark,

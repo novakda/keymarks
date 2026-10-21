@@ -3332,6 +3332,7 @@ dependencies = [
  "pm35",
  "rusqlite",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

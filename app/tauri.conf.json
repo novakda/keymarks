@@ -6,7 +6,7 @@
   "build": { "frontendDist": "ui" },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "Powermarks", "width": 960, "height": 680 }],
+    "windows": [{ "title": "Powermarks", "width": 1320, "height": 820, "minWidth": 900, "minHeight": 500 }],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
     }
