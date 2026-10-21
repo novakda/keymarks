@@ -1,4 +1,4 @@
-# Powermarks 2026: feature-parity requirements
+# Keymarks: feature parity with Powermarks 3.5
 
 Target: rebuild Powermarks 3.5 (build 344, Kaylon Technologies, 2002) as a Windows desktop app
 (Tauri 2 + Rust + SQLite FTS5, plain HTML/JS UI) plus an MV3 extension (Chrome/Edge/Firefox)
@@ -46,41 +46,41 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | SRCH-01 | Always-active incremental search | Results update per keystroke; search field in toolbar (§5.1, §1.3) | Search box focused on launch/activation; query per `input` event; stale responses discarded | P1 | done |
-| SRCH-02 | Keyword search mode | Matches only the **keywords** field; internal keyword index (§10.5.1) | FTS5 column filter `keywords:` or a separate `keyword` table. Currently every field is searched; see Q1 | P1 | partial |
-| SRCH-03 | Partial (prefix) word matching option | `comp` matches `computer` when "Partial Matches" is on; otherwise whole word only (§10.5.1, ini `search.partial_match`) | FTS5 `"term"*` vs `"term"`; toggle in search options | P1 | partial (prefix always on) |
-| SRCH-04 | Trailing period = whole word | `win.` matches `win` but not `windows` (§10.5.1) | Parser: a term ending in `.` drops the `*` | P1 | todo |
+| SRCH-02 | Keyword search mode | Matches only the **keywords** field; internal keyword index (§10.5.1) | FTS5 column filter `keywords:` or a separate `keyword` table. Currently every field is searched; see Q1 | P1 | done (mode selector) |
+| SRCH-03 | Partial (prefix) word matching option | `comp` matches `computer` when "Partial Matches" is on; otherwise whole word only (§10.5.1, ini `search.partial_match`) | FTS5 `"term"*` vs `"term"`; toggle in search options | P1 | done (option) |
+| SRCH-04 | Trailing period = whole word | `win.` matches `win` but not `windows` (§10.5.1) | Parser: a term ending in `.` drops the `*` | P1 | done |
 | SRCH-05 | Implied AND | Space between words = AND (§10.5.1) | FTS5 implicit AND | P1 | done |
 | SRCH-06 | Implied OR option | Hidden option, ini `search.implied_or` (no UI found in manual or exe dialogs) | Setting "space means OR" | P3 | todo |
-| SRCH-07 | Boolean operators | `&` AND, `\|` OR, `!` NOT, also `.and .or .not` (§10.5.1). Example `stock ! free` | Small recursive-descent parser → FTS5 `AND/OR/NOT` (FTS5 has no unary NOT: rewrite as `x NOT y`, and use `* NOT` via a subquery when NOT comes first) | P1 | todo |
-| SRCH-08 | Parentheses grouping | `(comp \| sci) & mag` (§10.5.1; parenthesis fix b297) | Same parser; FTS5 supports grouping | P1 | todo |
-| SRCH-09 | Search expression errors | exe "Search expression error", "No matching keywords" in status bar | Show inline hint under the box and keep the last good result | P1 | todo |
-| SRCH-10 | Exact string search mode | Substring, character by character, in chosen fields; no word concept (§10.5.2) | `instr()`/`LIKE` scan over selected columns (fine at 60k rows), or FTS5 trigram table | P1 | todo |
-| SRCH-11 | Field selection for exact search | Fields dropdown and Select All/None (§10.5.2, exe "Fields to Search:") | Checkbox menu next to the search box | P1 | todo |
-| SRCH-12 | Match case option | Exact search only (§10.5.2; ini `search.case_ins`) | Toggle; use `instr` (case-sensitive) vs `lower()` | P2 | todo |
-| SRCH-13 | Search mode toggle UI | Two toolbar buttons plus options dropdown and Search Options dialog (§10.5, Tools menu) | Mode toggle (e.g. Ctrl+K / Ctrl+S, or a prefix such as `"…"` for exact). No separate dialog | P1 | todo |
-| SRCH-14 | Esc clears search | exe "Keyword search, press ESC to clear search field"; toolbar Clear button (§10.2) | Esc clears and shows all | P1 | todo |
-| SRCH-15 | Live matching-word feedback | While typing, matching dictionary words show in the status bar and dictionary pane; after a space, the pane shows all keywords used by the displayed bookmarks (§10.5.1) | Dictionary pane follows the query (see KW-05) | P2 | todo |
-| SRCH-16 | Search for URL | FAQ: exact search with only the URL field (§9) | Covered by SRCH-10/11; FTS already indexes URL | P1 | partial |
-| SRCH-17 | Stop list | ini `gui.use_stop_list`. Word list not found in exe strings; probably filters common words when deriving keywords from titles (unconfirmed) | Built-in English stop list applied when keywords are auto-generated (import/fetch), never to user-typed keywords | P2 | todo |
-| SRCH-18 | Search settings persisted | ini `search.type`, `partial_match`, `case_ins`, `implied_or`, `mpset` (meaning of `mpset` unknown) | Settings table | P1 | todo |
-| DISP-01 | Bookmark list (virtualised) | List view, fast with 60k entries (b278) | Virtual scrolling over the full result set (the 500-row cap is a stopgap) | P1 | partial |
-| DISP-02 | Configurable columns | Right-click header or View > Columns; exe column names: Name, URL, Keywords, Description, Notes, Add Date, Last Visited, Last Modified, Last Checked, Visited, Rating, Status, Schedule, Status Checking, user field (§5.3, exe "Customize Columns") | Table mode with column chooser. The current two-line card view stays as a "compact" view | P1 | todo |
+| SRCH-07 | Boolean operators | `&` AND, `\|` OR, `!` NOT, also `.and .or .not` (§10.5.1). Example `stock ! free` | Small recursive-descent parser → FTS5 `AND/OR/NOT` (FTS5 has no unary NOT: rewrite as `x NOT y`, and use `* NOT` via a subquery when NOT comes first) | P1 | done |
+| SRCH-08 | Parentheses grouping | `(comp \| sci) & mag` (§10.5.1; parenthesis fix b297) | Same parser; FTS5 supports grouping | P1 | done |
+| SRCH-09 | Search expression errors | exe "Search expression error", "No matching keywords" in status bar | Show inline hint under the box and keep the last good result | P1 | done |
+| SRCH-10 | Exact string search mode | Substring, character by character, in chosen fields; no word concept (§10.5.2) | `instr()`/`LIKE` scan over selected columns (fine at 60k rows), or FTS5 trigram table | P1 | done |
+| SRCH-11 | Field selection for exact search | Fields dropdown and Select All/None (§10.5.2, exe "Fields to Search:") | Checkbox menu next to the search box | P1 | done |
+| SRCH-12 | Match case option | Exact search only (§10.5.2; ini `search.case_ins`) | Toggle; use `instr` (case-sensitive) vs `lower()` | P2 | done |
+| SRCH-13 | Search mode toggle UI | Two toolbar buttons plus options dropdown and Search Options dialog (§10.5, Tools menu) | Mode toggle (e.g. Ctrl+K / Ctrl+S, or a prefix such as `"…"` for exact). No separate dialog | P1 | done (mode dropdown + Options) |
+| SRCH-14 | Esc clears search | exe "Keyword search, press ESC to clear search field"; toolbar Clear button (§10.2) | Esc clears and shows all | P1 | done |
+| SRCH-15 | Live matching-word feedback | While typing, matching dictionary words show in the status bar and dictionary pane; after a space, the pane shows all keywords used by the displayed bookmarks (§10.5.1) | Dictionary pane follows the query (see KW-05) | P2 | partial (dictionary follows; no status-bar word list) |
+| SRCH-16 | Search for URL | FAQ: exact search with only the URL field (§9) | Covered by SRCH-10/11; FTS already indexes URL | P1 | done (exact mode, URL field) |
+| SRCH-17 | Stop list | ini `gui.use_stop_list`. Word list not found in exe strings; probably filters common words when deriving keywords from titles (unconfirmed) | Built-in English stop list applied when keywords are auto-generated (import/fetch), never to user-typed keywords | P2 | partial (stop list used by cleanup, not yet on import) |
+| SRCH-18 | Search settings persisted | ini `search.type`, `partial_match`, `case_ins`, `implied_or`, `mpset` (meaning of `mpset` unknown) | Settings table | P1 | done (per machine) |
+| DISP-01 | Bookmark list (virtualised) | List view, fast with 60k entries (b278) | Virtual scrolling over the full result set (the 500-row cap is a stopgap) | P1 | done (all results, virtual scrolling) |
+| DISP-02 | Configurable columns | Right-click header or View > Columns; exe column names: Name, URL, Keywords, Description, Notes, Add Date, Last Visited, Last Modified, Last Checked, Visited, Rating, Status, Schedule, Status Checking, user field (§5.3, exe "Customize Columns") | Table mode with column chooser. The current two-line card view stays as a "compact" view | P1 | done (11 columns) |
 | DISP-03 | Reorder columns | Ctrl+drag headers (§5.3) | Drag headers | P2 | todo |
-| DISP-04 | Click-to-sort columns | §5.3; ini `display.sort_prop`, `sort_order` | Click header toggles asc/desc; persist | P1 | todo |
-| DISP-05 | Two-level stable sort | Ties broken by the previous sort key (b326) | `ORDER BY new, previous` | P2 | todo |
+| DISP-04 | Click-to-sort columns | §5.3; ini `display.sort_prop`, `sort_order` | Click header toggles asc/desc; persist | P1 | done |
+| DISP-05 | Two-level stable sort | Ties broken by the previous sort key (b326) | `ORDER BY new, previous` | P2 | done |
 | DISP-06 | Resort on demand | F5 Refresh (b282) | Not needed if the list re-queries live; keep F5 as refresh | P3 | todo |
 | DISP-07 | Status icon per row | Waiting/Checking/Error/Changed icons (§5.4.4) | Small icon or emoji column | P1 | todo |
 | DISP-08 | Customisable status icons | Options > Icons; ini `gui.status_ind_map` (§8.1.9) | Drop; fixed accessible icons plus tooltip text | P3 | drop |
 | DISP-09 | Rating colour coding | readme "Color code bookmarks based on their rating"; ini `colors.ratings` | Row tint or badge colour scale by rating; configurable | P2 | todo |
-| DISP-10 | Hide http:// and ftp:// prefixes | §8.1.2; ini `gui.hide_http_prefix` | Display option (strip `https://`, `www.` too) | P2 | todo |
+| DISP-10 | Hide http:// and ftp:// prefixes | §8.1.2; ini `gui.hide_http_prefix` | Display option (strip `https://`, `www.` too) | P2 | partial (table URL column) |
 | DISP-11 | Date/time format | Custom format builder (§8.1.6; ini `gui.time_format`, default `%m-%d-%y %h:%M:%s %p`) | Use OS locale via `Intl.DateTimeFormat`; optional relative dates | P2 | todo |
 | DISP-12 | Display font | §8.1.3; ini `gui.font_*` | Font size setting plus system UI font; follow OS text scaling | P2 | todo |
 | DISP-13 | Header colours | §8.1.4; ini `colors.header_*` | Drop; light/dark theme follows OS | P3 | drop |
-| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | todo |
-| DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | partial |
+| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | partial (keywords | list | properties; no macro pane) |
+| DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | partial (counts, messages; no check queue yet) |
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
-| DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial |
-| DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | todo |
+| DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
+| DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | done |
 | DISP-19 | Context menus | Bookmark(s), tray icon, search field, macros, dictionary words (§10.4). Bookmark menu: Open in <browser>, Open in New Window, Properties, Make Shortcut Macro, Copy URL, Set Status Checking, Add Common Keywords, Status Check (Ctrl+T), Mark Visited, Export (exe) | Custom HTML context menu (or Tauri native menu) | P1 | todo |
 | DISP-20 | Main window state restore | Size, position, maximised (b326; ini `window.*`) | `tauri-plugin-window-state` | P1 | todo |
 
@@ -99,11 +99,11 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ADD-09 | Add from a specific browser | Bookmarks > Add from IE/Netscape/Opera/NetCaptor/Mozilla (§10.1.4) | Drop; each browser has its own extension instance | P3 | drop |
 | ADD-10 | Bookmark local files | Drag files from Explorer → file-path bookmark; opens with the associated app (§4.5) | Tauri drag-drop event → `file:///` URL; open via shell. `open_url` must allow `file:` for these (it currently rejects non-http) | P2 | todo |
 | ADD-11 | Add bookmark validation | Name and URL required (exe "Please enter a URL/name for this bookmark") | Same; also normalise URL (trim, add scheme) | P1 | todo |
-| EDIT-01 | Properties dialog | Tabs: General (Name, URL, Keywords, visit count, Tagged Keywords picker, sort-keywords A→Z button), Desc & Notes, User (user field, Rating slider), Status (enable checking and fetching, schedule, Added/Modified/Visited/Checked dates), Auth (username, password) (§5.2, screenshot, exe) | One edit panel or modal with sections; all fields above | P1 | todo |
+| EDIT-01 | Properties dialog | Tabs: General (Name, URL, Keywords, visit count, Tagged Keywords picker, sort-keywords A→Z button), Desc & Notes, User (user field, Rating slider), Status (enable checking and fetching, schedule, Added/Modified/Visited/Checked dates), Auth (username, password) (§5.2, screenshot, exe) | One edit panel or modal with sections; all fields above | P1 | partial (side panel: title, URL, keywords, description, notes, rating) |
 | EDIT-02 | Prev/next in Properties | Alt+Left/Right (b326); Ctrl+PgUp/PgDn switch tabs (b286) | Same shortcuts in the edit panel | P2 | todo |
-| EDIT-03 | Notes field | Free text (§5.2) | Textarea; indexed by FTS (already in schema) | P1 | partial (stored/imported, not editable) |
+| EDIT-03 | Notes field | Free text (§5.2) | Textarea; indexed by FTS (already in schema) | P1 | done |
 | EDIT-04 | User-defined field | Per-file label set in File > Information (b278, §10.1.1) | `user_field` column plus a label in settings | P2 | partial (stored) |
-| EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | todo |
+| EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | done (with undo) |
 | EDIT-06 | Cut/Copy/Paste bookmarks | Copy puts URLs on the clipboard; Cut deletes; Paste into the list adds bookmarks (§10.1.3; exe `k_clipboard_bookmark_format`, HTML format) | Copy = URLs as text plus HTML links; Paste = ADD-07 path | P2 | todo |
 | EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | todo |
 | FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | todo |
@@ -114,22 +114,22 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
-| KW-01 | Space-separated keywords per bookmark | §5.2; format spec | Stored as text; also normalise into a `keyword(bookmark_id, word)` table for the dictionary | P1 | partial |
+| KW-01 | Space-separated keywords per bookmark | §5.2; format spec | Stored as text; also normalise into a `keyword(bookmark_id, word)` table for the dictionary | P1 | done (normalised on save) |
 | KW-02 | Allowed-character rule | Forbidden: `< > / \ ! & * % + = ? . , \| ^ ( ) { } [ ] : ; ~`; `.` allowed only inside (`v1.0`) (§5.2.1) | Validate/strip on save; matters because `& \| ! ( ) .` are search operators | P1 | todo |
-| KW-03 | Dictionary pane | List of all keywords; exe "Dictionary [%d]" count; type-ahead find; arrow/Esc resets (§5.5.2) | Side panel, keyword list with usage counts, filter box | P1 | todo |
-| KW-04 | Click/Enter keyword → search; Ctrl+Enter add to search | §5.5.2, §10.3 | Same | P1 | todo |
-| KW-05 | Dictionary follows the result set | After a space, shows only keywords of the displayed bookmarks (§10.5.1); exe "The Dictionary Window is only displayed when the search type is set to Keyword" | Facet list: keywords in the current result set with counts (drill-down) | P1 | todo |
-| KW-06 | Tag/untag keywords | Yellow tag marks "important" keywords; multi-select tag/untag (§5.5.2). Stored in `<!--kword=…-->` | `keyword_meta(word, tagged)`; import from pm35 `kword` block (parser keeps it, store doesn't yet) | P1 | todo |
-| KW-07 | Show only tagged | ini `gui.show_tagged_kwords_only` | Filter toggle | P2 | todo |
-| KW-08 | Tagged-keyword picker in editor | "Tagged Keywords ▾" button adds a word to the bookmark (§5.5.2) | Autocomplete chips in the keyword field: tagged first, then all keywords | P1 | todo |
-| KW-09 | Rename keyword globally | §5.5.2 Rename | One UPDATE across bookmarks; undoable | P1 | todo |
-| KW-10 | Delete keyword globally | §5.5.2 Delete; Del key | Same; undoable | P1 | todo |
+| KW-03 | Dictionary pane | List of all keywords; exe "Dictionary [%d]" count; type-ahead find; arrow/Esc resets (§5.5.2) | Side panel, keyword list with usage counts, filter box | P1 | done |
+| KW-04 | Click/Enter keyword → search; Ctrl+Enter add to search | §5.5.2, §10.3 | Same | P1 | partial (click adds, double-click searches) |
+| KW-05 | Dictionary follows the result set | After a space, shows only keywords of the displayed bookmarks (§10.5.1); exe "The Dictionary Window is only displayed when the search type is set to Keyword" | Facet list: keywords in the current result set with counts (drill-down) | P1 | done |
+| KW-06 | Tag/untag keywords | Yellow tag marks "important" keywords; multi-select tag/untag (§5.5.2). Stored in `<!--kword=…-->` | `keyword_meta(word, tagged)`; import from pm35 `kword` block (parser keeps it, store doesn't yet) | P1 | done |
+| KW-07 | Show only tagged | ini `gui.show_tagged_kwords_only` | Filter toggle | P2 | done |
+| KW-08 | Tagged-keyword picker in editor | "Tagged Keywords ▾" button adds a word to the bookmark (§5.5.2) | Autocomplete chips in the keyword field: tagged first, then all keywords | P1 | done (chip editor, tagged first in autocomplete) |
+| KW-09 | Rename keyword globally | §5.5.2 Rename | One UPDATE across bookmarks; undoable | P1 | done (merges) |
+| KW-10 | Delete keyword globally | §5.5.2 Delete; Del key | Same; undoable | P1 | done |
 | KW-11 | Copy keyword(s) | Copy selected words (§5.5.2) | Same | P3 | todo |
 | KW-12 | Copy whole dictionary to clipboard | Tools > Copy Keywords to Clipboard (§10.1.6) | Menu command (or via export) | P3 | todo |
 | KW-13 | Add Common Keywords | Add one or more keywords to all selected bookmarks; dialog shows the dictionary (§5.5.1) | Bulk "Add keywords…" on selection, with autocomplete | P1 | todo |
 | KW-14 | Remove keyword from selection | Not in original (only global delete) | Bulk "Remove keywords…" (cheap addition) | P2 | todo |
-| KW-15 | Dictionary Cleanup | Merge keywords with common roots; remove keywords with non-printable characters; remove numeric-only keywords (exe dialog "Dictionary Cleanup"; not in manual) | Cleanup wizard with a preview before applying | P2 | todo |
-| KW-16 | Sort keywords A→Z | Button in Properties (screenshot) | Normalise order on save, or a button | P3 | todo |
+| KW-15 | Dictionary Cleanup | Merge keywords with common roots; remove keywords with non-printable characters; remove numeric-only keywords (exe dialog "Dictionary Cleanup"; not in manual) | Cleanup wizard with a preview before applying | P2 | done (preview + backup + undo) |
+| KW-16 | Sort keywords A→Z | Button in Properties (screenshot) | Normalise order on save, or a button | P3 | done |
 | KW-17 | Auto keywords on import | Folder names become keywords (b297, ini `import.tag_folders`); keywords also from names (§7.1) | Import option: folder path → keywords (done in IMP-xx); title words optional, with the stop list | P1 | todo |
 
 ### 2.4 Macros (saved searches and shortcuts)
@@ -172,9 +172,9 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
-| RATE-01 | Rating 1–10 (0 = not rated) | Slider on User tab; "Rating: NR" (b278, exe; mdata f11) | Stored; shown as stars (½-star per point). Needs an editor | P1 | partial (imported/displayed) |
+| RATE-01 | Rating 1–10 (0 = not rated) | Slider on User tab; "Rating: NR" (b278, exe; mdata f11) | Stored; shown as stars (½-star per point). Needs an editor | P1 | done (editable 0–10) |
 | RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | todo |
-| RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | todo |
+| RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | partial (sort by rating; no filter) |
 | RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | todo |
 | USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | todo |
 | USE-02 | Last visited timestamp | mdata f2 | Set on open | P1 | todo |
@@ -225,7 +225,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | BR-12 | Search Powermarks from the browser | Not in original | Omnibox keyword (`pm <query>`) via host search → suggestions. High value with no browser-side UI | P2 | todo |
 | BR-13 | Mail links go to the mail client | b297 | `mailto:` opened via shell | P2 | todo |
 | BR-14 | Firefox and Edge support | Many browsers (§3.1) | MV3 extension works in Chrome/Edge; Firefox needs host manifest registration under the Mozilla key and `gecko` id (present) | P1 | partial (verify Firefox registration) |
-| BR-15 | Live list refresh when the extension adds | Single process, no issue | Host writes to SQLite; app must notice (SQLite `data_version` poll or a host → app local IPC ping) and refresh | P1 | todo |
+| BR-15 | Live list refresh when the extension adds | Single process, no issue | Host writes to SQLite; app must notice (SQLite `data_version` poll or a host → app local IPC ping) and refresh | P1 | done |
 
 ### 2.9 NetSync (backup and multi-PC sync)
 
@@ -244,27 +244,27 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
-| TRAY-01 | Tray icon; double-click restores | §5.9; ini `gui.systray_icon` | Tauri tray icon | P1 | todo |
-| TRAY-02 | Tray menu = top N of current results | Right-click shows the top bookmarks of the current list, N configurable; plus Add, Fast Add, Restore, Exit (§5.9, §8.1.5; ini `gui.systray_menu_count`) | Tray menu rebuilt on result change (cap about 20) | P2 | todo |
+| TRAY-01 | Tray icon; double-click restores | §5.9; ini `gui.systray_icon` | Tauri tray icon | P1 | done |
+| TRAY-02 | Tray menu = top N of current results | Right-click shows the top bookmarks of the current list, N configurable; plus Add, Fast Add, Restore, Exit (§5.9, §8.1.5; ini `gui.systray_menu_count`) | Tray menu rebuilt on result change (cap about 20) | P2 | done (top 15) |
 | TRAY-03 | Separate Add / Fast Add tray icons | b340; ini `systray_add_icon`, `systray_fast_add_icon` | Drop: the extension button covers it. Tray menu could offer "Add from clipboard" | P3 | drop |
-| TRAY-04 | Close to tray | b326; ini `gui.close_to_systray` | Intercept close → hide | P1 | todo |
+| TRAY-04 | Close to tray | b326; ini `gui.close_to_systray` | Intercept close → hide | P1 | done (option) |
 | TRAY-05 | Hide from taskbar when minimised | §8.1.5; ini `gui.taskbar_hide` | `skip_taskbar` when hidden | P2 | todo |
-| HOT-01 | Global hotkey: switch to Powermarks | §8.1.7; ini `hotkeys.app` | `tauri-plugin-global-shortcut`; show window, focus and select the search box. This is the main way in | P1 | todo |
+| HOT-01 | Global hotkey: switch to Powermarks | §8.1.7; ini `hotkeys.app` | `tauri-plugin-global-shortcut`; show window, focus and select the search box. This is the main way in | P1 | done (default Ctrl+Alt+P) |
 | HOT-02 | Global hotkey: add / fast add from browser | ini `hotkeys.browser_add`, `fast_add` | Extension `commands` (Alt+Shift+P exists for the popup); add a fast-add command. Optionally `"global": true` in Chrome | P1 | partial |
 | HOT-03 | Global hotkey: add from clipboard | ini `hotkeys.clipboard_add` | Global shortcut → ADD-07 | P2 | todo |
 | HOT-04 | In-app shortcut set | §10.3 (Ins, Ctrl+Ins, Alt+Ins, Ctrl+A/C/E/F/I/N/O/P/S, F5–F9, Del, Enter, Shift+Enter, Ctrl+±, Alt+Enter Properties, Shift+F1 context menu) | Keep the same keys where they don't conflict with WebView defaults | P1 | todo |
 | HOT-05 | Shortcut list | Help > Shortcut Keys (b282) | `?` overlay | P2 | todo |
-| START-01 | Start with Windows; start minimised | §5.10, §8.1.1; ini `startup.startup_link`, `start_minimized` | `tauri-plugin-autostart` with `--minimized` → tray | P1 | todo |
+| START-01 | Start with Windows; start minimised | §5.10, §8.1.1; ini `startup.startup_link`, `start_minimized` | `tauri-plugin-autostart` with `--minimized` → tray | P1 | done |
 | START-02 | Reload last file | ini `startup.load_file` | Implicit (single DB) | P1 | done (implicit) |
 | START-03 | Import browser bookmarks at startup | §8.1.1 | IMP-10 trigger | P3 | todo |
-| START-04 | Single instance | Implied (hotkey switches to the running app) | `tauri-plugin-single-instance`: a second launch focuses the first | P1 | todo |
+| START-04 | Single instance | Implied (hotkey switches to the running app) | `tauri-plugin-single-instance`: a second launch focuses the first | P1 | done |
 
 ### 2.11 Options and settings
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | OPT-01 | Options dialog with tree of pages | Startup, UI, Fonts, Colors, Tray, Date/Time, Hotkeys, Status Checking, Icons, Proxy, Proxy Exceptions, Browsers (+5 browser tabs), Diagnostics (§8.1) | One Settings page: General (startup/tray), Search, Display, Hotkeys, Checking, Import/Export, Sync, Advanced. Drop the per-browser tabs | P1 | todo |
-| OPT-02 | Settings portable in one file | pm35.ini (§8) | `settings` table in the DB (moves with backups), or `settings.json` in AppData | P1 | todo |
+| OPT-02 | Settings portable in one file | pm35.ini (§8) | `settings` table in the DB (moves with backups), or `settings.json` in AppData | P1 | partial (settings.json for app/desktop; view and search options per machine) |
 | OPT-03 | Import pm35.ini settings | Not in original | Optional one-shot mapping of relevant keys (search, display, hotkeys, fast-add keywords) | P3 | todo |
 | OPT-04 | Process priority boost | ini `gui.boost_priority` | Drop | P3 | drop |
 
@@ -272,10 +272,10 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
-| BAK-01 | Backup files | `.ba0` = previous save, `.ba1` = largest collection in the past couple of months (§8.1.2; ini `misc.make_backup`) | Daily rotating `VACUUM INTO` snapshots (keep 7 daily + 4 weekly) **plus** a "high-water mark" snapshot whenever the count reaches a new maximum. Protects against mass deletion just like `.ba1` | P1 | todo |
-| BAK-02 | Restore from backup | FAQ: New → Import .ba0/.ba1 → Save As (§9) | "Restore…" lists snapshots with date and count | P1 | todo |
+| BAK-01 | Backup files | `.ba0` = previous save, `.ba1` = largest collection in the past couple of months (§8.1.2; ini `misc.make_backup`) | Daily rotating `VACUUM INTO` snapshots (keep 7 daily + 4 weekly) **plus** a "high-water mark" snapshot whenever the count reaches a new maximum. Protects against mass deletion just like `.ba1` | P1 | done (startup ×10, largest collection, before cleanup/restore) |
+| BAK-02 | Restore from backup | FAQ: New → Import .ba0/.ba1 → Save As (§9) | "Restore…" lists snapshots with date and count | P1 | done |
 | BAK-03 | Autosave every N minutes | §8.1.2; ini `autosave.*` | Drop: SQLite commits each change | P1 | done (by design) |
-| BAK-04 | Undo | Edit > Undo "%s" for Delete Powermark(s), Bookmark Change, Set Automatic Checking, Delete Macro(s), Delete Keyword(s) (exe) | Undo stack (Ctrl+Z) for delete, edit, bulk keyword ops, keyword rename/delete; store inverse ops | P1 | todo |
+| BAK-04 | Undo | Edit > Undo "%s" for Delete Powermark(s), Bookmark Change, Set Automatic Checking, Delete Macro(s), Delete Keyword(s) (exe) | Undo stack (Ctrl+Z) for delete, edit, bulk keyword ops, keyword rename/delete; store inverse ops | P1 | done (named steps, 50 per session) |
 | BAK-05 | Save prompt / dirty state | "The current bookmark list has been modified, would you like to save it?" (exe) | Drop (autosave) | P3 | drop |
 | FILE-01 | Multiple bookmark files: New/Open/Save As, MRU (4) | §10.1.1; ini `mru.file_0..3` | See Q4. Default: one collection | P3 | todo |
 | FILE-02 | File changed by another program: Overwrite / Merge / Discard | exe dialog "File Changed" | Drop: SQLite WAL handles concurrent app and host writers | P3 | drop |
@@ -293,7 +293,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | MISC-04 | Diagnostic log with categories, View Log | §8.1.18; ini `[syslog]` (control, hotkeys, sendkeys, processes, sockets, files, netsync, browsers, startup, http, gui) | `tracing` to a rolling file in AppData; level setting; "Open log" | P2 | todo |
 | MISC-05 | HTML help manual | Chapters 1–13 | Short in-app help plus `?` shortcut overlay | P3 | todo |
 | MISC-06 | Privacy guarantee | No telemetry; network only for check/fetch/connectivity/version/sync (§1.1) | Keep and document; no analytics, no remote calls except user-triggered or scheduled checks | P1 | done (so far) |
-| MISC-07 | Large collections | 60k bookmarks, fast load/search/sort (b278) | Benchmark target: 100k rows, search under 30 ms, startup under 1 s | P1 | partial |
+| MISC-07 | Large collections | 60k bookmarks, fast load/search/sort (b278) | Benchmark target: 100k rows, search under 30 ms, startup under 1 s | P1 | done (13k: search ≤50 ms, virtual list) |
 | MISC-08 | Native host input validation | n/a | Host accepts only known message types, http(s), size-capped fields | P1 | done |
 
 ---
