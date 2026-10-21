@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
-use store::{Bookmark, Store};
+use store::{Bookmark, KeywordCount, Store};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -66,6 +66,22 @@ fn delete_bookmarks(db: State<Db>, ids: Vec<i64>) -> Result<usize, String> {
     db.lock().unwrap().delete(&ids).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn keywords(db: State<Db>, query: String) -> Result<Vec<KeywordCount>, String> {
+    db.lock().unwrap().keywords(&query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_tagged(db: State<Db>, keyword: String, tagged: bool) -> Result<(), String> {
+    db.lock().unwrap().set_tagged(&keyword, tagged).map_err(|e| e.to_string())
+}
+
+/// Rename (or merge, or with an empty `new` delete) a keyword on every bookmark.
+#[tauri::command]
+fn rename_keyword(db: State<Db>, old: String, new: String) -> Result<usize, String> {
+    db.lock().unwrap().rename_keyword(&old, &new).map_err(|e| e.to_string())
+}
+
 /// Polled by the UI; changes when the browser extension's host adds a bookmark.
 #[tauri::command]
 fn data_version(db: State<Db>) -> Result<i64, String> {
@@ -91,7 +107,10 @@ fn main() {
             open_bookmark,
             update_bookmark,
             delete_bookmarks,
-            data_version
+            data_version,
+            keywords,
+            set_tagged,
+            rename_keyword
         ])
         .run(tauri::generate_context!())
         .expect("error while running Powermarks");

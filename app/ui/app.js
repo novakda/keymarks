@@ -13,41 +13,56 @@ let cursor = 0;            // index in rows of the focused item
 let anchor = 0;            // start of a Shift range
 let selected = new Set();  // bookmark ids
 let editing = null;        // bookmark shown in the form
+let chips = [];            // its keywords while editing
 let dirty = false;
 let seq = 0;
 let version = null;
+let narrowed = [];         // keyword dictionary for the current search
+let dictionary = [];       // every keyword (autocomplete, tag state)
 
 const say = (text) => { status.textContent = text; };
 const fail = (what) => (e) => say(`${what} failed: ${e}`);
+const words = (s) => s.split(/[\s,]+/).filter(Boolean);
+const lower = (s) => s.toLocaleLowerCase();
 
 // ---- data -------------------------------------------------------------------
 
 async function refresh({ keepSelection = true } = {}) {
   const mine = ++seq;
-  const [n, found, v] = await Promise.all([
+  const [n, found, v, kw] = await Promise.all([
     invoke('count'), invoke('search', { query: q.value }), invoke('data_version'),
+    invoke('keywords', { query: q.value }),
   ]);
   if (mine !== seq) return; // a newer search already rendered
   const cursorId = rows[cursor]?.id;
   total = n;
   rows = found;
   version = v;
+  narrowed = kw;
   importBtn.hidden = total > 0;
   const ids = new Set(rows.map((b) => b.id));
   selected = keepSelection ? new Set([...selected].filter((id) => ids.has(id))) : new Set();
   cursor = Math.max(0, keepSelection ? rows.findIndex((b) => b.id === cursorId) : 0);
   if (selected.size === 0 && rows.length) selected.add(rows[cursor].id);
   render();
+  renderKeywords();
+}
+
+async function refreshDictionary() {
+  dictionary = await invoke('keywords', { query: '' });
+  // Tagged keywords first, then most used: the order autocomplete shows them in.
+  const sorted = [...dictionary].sort((a, b) => (b.tagged - a.tagged) || (b.count - a.count));
+  $('kw-options').replaceChildren(...sorted.map((k) => new Option(k.keyword)));
 }
 
 // Live refresh: the browser extension writes through another process.
 setInterval(async () => {
   if (dirty || document.hidden) return;
   const v = await invoke('data_version').catch(() => version);
-  if (v !== version) refresh();
+  if (v !== version) { await refreshDictionary(); refresh(); }
 }, 1500);
 
-// ---- list -------------------------------------------------------------------
+// ---- bookmark list ----------------------------------------------------------
 
 // Titles come from imported files and web pages: textContent only, never innerHTML.
 function render() {
@@ -124,10 +139,104 @@ async function remove(ids) {
     const n = await invoke('delete_bookmarks', { ids });
     dirty = false;
     selected.clear();
+    await refreshDictionary();
     await refresh();
     say(`Deleted ${n} bookmark${n === 1 ? '' : 's'}.`);
   } catch (e) { fail('Delete')(e); }
 }
+
+// ---- keyword panel (Powermarks' Dictionary) ---------------------------------
+
+function renderKeywords() {
+  const find = lower($('kw-filter').value.trim());
+  const taggedOnly = $('kw-tagged').checked;
+  const inQuery = new Set(words(lower(q.value)));
+  const shown = narrowed.filter((k) =>
+    (!taggedOnly || k.tagged) && (!find || lower(k.keyword).startsWith(find)) && !inQuery.has(lower(k.keyword)));
+  $('kw-head').textContent = `Keywords [${shown.length}]`;
+  $('kwlist').replaceChildren(...shown.map((k) => {
+    const li = document.createElement('li');
+    li.title = 'Click: add to search · Double-click: search only this · Right-click: more';
+    const mark = document.createElement('span');
+    mark.className = 'tagmark';
+    mark.textContent = k.tagged ? '🏷' : '';
+    const name = document.createElement('span');
+    name.textContent = k.keyword;
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = k.count;
+    li.append(mark, name, n);
+    li.onclick = () => addToSearch(k.keyword);
+    li.ondblclick = () => setSearch(k.keyword);
+    li.oncontextmenu = (e) => { e.preventDefault(); showMenu(e, k, li); };
+    return li;
+  }));
+}
+
+function setSearch(text) {
+  if (!confirmDiscard()) return;
+  q.value = text;
+  refresh({ keepSelection: false });
+}
+
+function addToSearch(keyword) {
+  const current = words(q.value);
+  if (!current.some((w) => lower(w) === lower(keyword))) setSearch([...current, keyword].join(' '));
+}
+
+let menuKeyword = null;
+function showMenu(e, k, li) {
+  menuKeyword = k;
+  document.querySelectorAll('#kwlist li.active').forEach((x) => x.classList.remove('active'));
+  li.classList.add('active');
+  const ctx = $('ctx');
+  $('ctx-title').textContent = k.keyword;
+  ctx.querySelector('[data-act=tag]').textContent = k.tagged ? 'Untag keyword' : 'Tag keyword';
+  ctx.hidden = false;
+  ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
+  ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
+  ctx.querySelector('button').focus();
+}
+
+function hideMenu() {
+  $('ctx').hidden = true;
+  document.querySelectorAll('#kwlist li.active').forEach((x) => x.classList.remove('active'));
+}
+
+$('ctx').addEventListener('click', async (e) => {
+  const act = e.target.dataset?.act;
+  const k = menuKeyword;
+  if (!act || !k) return;
+  hideMenu();
+  try {
+    if (act === 'search') setSearch(k.keyword);
+    else if (act === 'add') addToSearch(k.keyword);
+    else if (act === 'tag') await keywordChanged(invoke('set_tagged', { keyword: k.keyword, tagged: !k.tagged }), '');
+    else if (act === 'rename') {
+      const to = prompt(`Rename "${k.keyword}" on ${k.count} bookmark(s) to:\n(an existing keyword merges them)`, k.keyword);
+      if (to && to.trim() && to.trim() !== k.keyword && confirmDiscard()) {
+        await keywordChanged(invoke('rename_keyword', { old: k.keyword, new: to.trim() }), `Renamed on # bookmark(s).`);
+      }
+    } else if (act === 'delete') {
+      if (confirm(`Remove "${k.keyword}" from all bookmarks that use it?`) && confirmDiscard()) {
+        await keywordChanged(invoke('rename_keyword', { old: k.keyword, new: '' }), `Removed from # bookmark(s).`);
+      }
+    }
+  } catch (err) { fail('Keyword change')(err); }
+});
+
+async function keywordChanged(call, message) {
+  const n = await call;
+  dirty = false;
+  await refreshDictionary();
+  await refresh();
+  if (message) say(message.replace('#', n));
+}
+
+document.addEventListener('click', (e) => { if (!$('ctx').contains(e.target)) hideMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideMenu(); });
+$('kw-filter').addEventListener('input', renderKeywords);
+$('kw-tagged').addEventListener('change', renderKeywords);
 
 // ---- properties panel -------------------------------------------------------
 
@@ -157,16 +266,65 @@ function renderPanel() {
   const form = $('form');
   const rating = $('f-rating');
   rating.append(...Array.from({ length: 11 }, (_, n) => new Option(n ? `${n} / 10` : 'Not rated', n)));
-  for (const name of ['title', 'url', 'keywords', 'description', 'notes', 'rating']) {
+  for (const name of ['title', 'url', 'description', 'notes', 'rating']) {
     form.elements[name].value = editing[name] ?? '';
   }
+  chips = words(editing.keywords);
+  renderChips();
   const date = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
   $('info').textContent =
     `Added ${date(editing.added)} · Visited ${editing.visits} time${editing.visits === 1 ? '' : 's'} · Last visited ${date(editing.last_visited)}`;
-  form.oninput = () => setDirty(true);
+  form.oninput = (e) => { if (e.target.id !== 'f-kw') setDirty(true); };
   form.onsubmit = (e) => { e.preventDefault(); save(); };
   $('revert').onclick = () => { dirty = false; renderPanel(); };
   $('del-one').onclick = () => remove([editing.id]);
+  $('kw-sort').onclick = () => { chips.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })); renderChips(); setDirty(true); };
+  $('f-tags').onclick = (e) => { if (e.target.id === 'f-tags') $('f-kw').focus(); };
+  const input = $('f-kw');
+  input.onkeydown = (e) => {
+    if ((e.key === 'Enter' || e.key === ' ' || e.key === ',' || e.key === 'Tab') && input.value.trim()) {
+      if (e.key !== 'Tab') e.preventDefault();
+      commitChip();
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); // empty input: don't submit the form by accident
+    } else if (e.key === 'Backspace' && !input.value && chips.length) {
+      chips.pop();
+      renderChips();
+      setDirty(true);
+    }
+  };
+  // Picking from the autocomplete list fires 'input' with the full keyword.
+  input.oninput = (e) => {
+    if (e.inputType === 'insertReplacementText' || e.inputType === undefined) commitChip();
+  };
+  input.onblur = () => { if (input.value.trim()) commitChip(); };
+}
+
+function commitChip() {
+  const input = $('f-kw');
+  for (const w of words(input.value)) {
+    if (!chips.some((c) => lower(c) === lower(w))) chips.push(w);
+  }
+  input.value = '';
+  renderChips();
+  setDirty(true);
+}
+
+function renderChips() {
+  const box = $('f-tags');
+  const tagged = new Set(dictionary.filter((k) => k.tagged).map((k) => lower(k.keyword)));
+  box.replaceChildren(...chips.map((c, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = (tagged.has(lower(c)) ? '🏷 ' : '') + c;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '×';
+    x.ariaLabel = `Remove keyword ${c}`;
+    x.onclick = () => { chips.splice(i, 1); renderChips(); setDirty(true); $('f-kw').focus(); };
+    chip.append(x);
+    return chip;
+  }), $('f-kw'));
 }
 
 function setDirty(d) {
@@ -177,15 +335,18 @@ function setDirty(d) {
 
 async function save() {
   const form = $('form');
+  if (!form) return;
+  if ($('f-kw').value.trim()) commitChip();
   if (!dirty || !form.reportValidity()) return;
-  const bookmark = { ...editing };
-  for (const name of ['title', 'url', 'keywords', 'description', 'notes']) {
+  const bookmark = { ...editing, keywords: chips.join(' ') };
+  for (const name of ['title', 'url', 'description', 'notes']) {
     bookmark[name] = form.elements[name].value.trim();
   }
   bookmark.rating = Number(form.elements.rating.value);
   try {
     if (!(await invoke('update_bookmark', { bookmark }))) throw 'bookmark no longer exists';
     dirty = false;
+    await refreshDictionary();
     await refresh();
     say('Saved.');
   } catch (e) { fail('Save')(e); }
@@ -211,9 +372,9 @@ importBtn.addEventListener('click', async () => {
   say('Importing…');
   try {
     const n = await invoke('import_pm35');
-    if (n !== null) await refresh({ keepSelection: false });
+    if (n !== null) { await refreshDictionary(); await refresh({ keepSelection: false }); }
     else render();
   } catch (e) { fail('Import')(e); }
 });
 
-refresh({ keepSelection: false });
+refreshDictionary().then(() => refresh({ keepSelection: false }));

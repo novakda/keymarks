@@ -25,6 +25,18 @@ CREATE TABLE IF NOT EXISTS bookmark (
     pm_mdata TEXT -- raw Powermarks mdata fields joined by '][', kept for lossless export
 );
 CREATE INDEX IF NOT EXISTS bookmark_url ON bookmark(url);
+-- Derived from bookmark.keywords (the source of truth) by Store::index_keywords.
+CREATE TABLE IF NOT EXISTS bookmark_keyword (
+    bookmark_id INTEGER NOT NULL,
+    keyword TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (bookmark_id, keyword)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS bookmark_keyword_kw ON bookmark_keyword(keyword);
+CREATE TRIGGER IF NOT EXISTS bookmark_kw_ad AFTER DELETE ON bookmark BEGIN
+    DELETE FROM bookmark_keyword WHERE bookmark_id = old.id;
+END;
+-- Powermarks 'tagged keywords': a curated favourite vocabulary.
+CREATE TABLE IF NOT EXISTS tagged_keyword (keyword TEXT PRIMARY KEY COLLATE NOCASE);
 CREATE VIRTUAL TABLE IF NOT EXISTS bookmark_fts USING fts5(
     title, keywords, description, notes, url,
     content='bookmark', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
@@ -91,7 +103,22 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Store { conn })
+        let mut store = Store { conn };
+        // v1: keyword index. Backfill databases created before it existed.
+        let version: i64 = store.conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version < 1 {
+            let tx = store.conn.transaction()?;
+            let rows: Vec<(i64, String)> = tx
+                .prepare("SELECT id, keywords FROM bookmark")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_>>()?;
+            for (id, keywords) in rows {
+                index_keywords(&tx, id, &keywords)?;
+            }
+            tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
+        }
+        Ok(store)
     }
 
     pub fn count(&self) -> Result<i64> {
@@ -107,12 +134,17 @@ impl Store {
         if let Some(id) = existing {
             return Ok((id, true));
         }
-        self.conn.execute(
+        let keywords = normalize_keywords(keywords);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO bookmark (url, title, keywords, description, added)
              VALUES (?1, ?2, ?3, ?4, unixepoch())",
             params![url, title, keywords, description],
         )?;
-        Ok((self.conn.last_insert_rowid(), false))
+        let id = tx.last_insert_rowid();
+        index_keywords(&tx, id, &keywords)?;
+        tx.commit()?;
+        Ok((id, false))
     }
 
     /// Import every Powermarks entry in one transaction. Returns the number imported.
@@ -128,10 +160,11 @@ impl Store {
                 let text = |name| e.extra(name).map(decode_text).unwrap_or_default();
                 let time = |i| e.num(i).filter(|&t| t != 0);
                 let num = |i| e.num(i).unwrap_or(0);
+                let keywords = text("keywords");
                 insert.execute(params![
                     decode_text(&e.url),
                     decode_text(&e.title),
-                    text("keywords"),
+                    keywords,
                     text("desc"),
                     text("notes"),
                     text("user_field"),
@@ -144,6 +177,7 @@ impl Store {
                     num(field::STATUS),
                     e.mdata.join("]["),
                 ])?;
+                index_keywords(&tx, tx.last_insert_rowid(), &keywords)?;
             }
         }
         tx.commit()?;
@@ -153,20 +187,75 @@ impl Store {
     /// Powermarks-style search: every word must prefix-match somewhere (title, keywords,
     /// description, notes or URL), keyword matches ranked first. Empty query lists newest first.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Bookmark>> {
-        let words: Vec<String> = query
-            .split_whitespace()
-            .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
-            .collect();
-        if words.is_empty() {
+        let Some(m) = fts_query(query) else {
             let sql = format!("SELECT {COLS} FROM bookmark b ORDER BY b.added DESC LIMIT ?1");
             return self.conn.prepare(&sql)?.query_map(params![limit as i64], bookmark)?.collect();
-        }
+        };
         let sql = format!(
             "SELECT {COLS} FROM bookmark_fts f JOIN bookmark b ON b.id = f.rowid
              WHERE bookmark_fts MATCH ?2 ORDER BY {RANK} LIMIT ?1"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        stmt.query_map(params![limit as i64, words.join(" ")], bookmark)?.collect()
+        stmt.query_map(params![limit as i64, m], bookmark)?.collect()
+    }
+
+    /// The keyword dictionary, narrowed to bookmarks matching `query` (all when empty),
+    /// alphabetical, with how many of those bookmarks use each keyword.
+    pub fn keywords(&self, query: &str) -> Result<Vec<KeywordCount>> {
+        let filter = if fts_query(query).is_some() {
+            "WHERE k.bookmark_id IN (SELECT rowid FROM bookmark_fts WHERE bookmark_fts MATCH ?1)"
+        } else {
+            "WHERE ?1 IS NULL"
+        };
+        let sql = format!(
+            "SELECT k.keyword, count(*), k.keyword IN (SELECT keyword FROM tagged_keyword)
+             FROM bookmark_keyword k {filter} GROUP BY k.keyword ORDER BY k.keyword"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([fts_query(query)], |r| {
+            Ok(KeywordCount { keyword: r.get(0)?, count: r.get(1)?, tagged: r.get(2)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn set_tagged(&self, keyword: &str, tagged: bool) -> Result<()> {
+        let sql = if tagged {
+            "INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)"
+        } else {
+            "DELETE FROM tagged_keyword WHERE keyword = ?1"
+        };
+        self.conn.execute(sql, [keyword])?;
+        Ok(())
+    }
+
+    /// Rename a keyword on every bookmark (case-insensitive). Renaming onto an existing
+    /// keyword merges them; an empty `new` deletes the keyword. Returns bookmarks changed.
+    pub fn rename_keyword(&mut self, old: &str, new: &str) -> Result<usize> {
+        let new = normalize_keywords(new);
+        let old_lower = old.to_lowercase();
+        let tx = self.conn.transaction()?;
+        let rows: Vec<(i64, String)> = tx
+            .prepare(
+                "SELECT b.id, b.keywords FROM bookmark b
+                 JOIN bookmark_keyword k ON k.bookmark_id = b.id WHERE k.keyword = ?1",
+            )?
+            .query_map([old], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_>>()?;
+        for (id, keywords) in &rows {
+            let replaced: Vec<&str> = keywords
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .map(|k| if k.to_lowercase() == old_lower { new.as_str() } else { k })
+                .collect();
+            let keywords = normalize_keywords(&replaced.join(" "));
+            tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![id, keywords])?;
+            index_keywords(&tx, *id, &keywords)?;
+        }
+        let was_tagged = tx.execute("DELETE FROM tagged_keyword WHERE keyword = ?1", [old])? > 0;
+        if was_tagged && !new.is_empty() && !new.contains(' ') {
+            tx.execute("INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)", [&new])?;
+        }
+        tx.commit()?;
+        Ok(rows.len())
     }
 
     pub fn get(&self, id: i64) -> Result<Option<Bookmark>> {
@@ -176,11 +265,17 @@ impl Store {
 
     /// Save the user-editable fields. Returns false if the bookmark no longer exists.
     pub fn update(&self, b: &Bookmark) -> Result<bool> {
-        let n = self.conn.execute(
+        let keywords = normalize_keywords(&b.keywords);
+        let tx = self.conn.unchecked_transaction()?;
+        let n = tx.execute(
             "UPDATE bookmark SET url = ?2, title = ?3, keywords = ?4, description = ?5,
                 notes = ?6, rating = ?7 WHERE id = ?1",
-            params![b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating.clamp(0, 10)],
+            params![b.id, b.url, b.title, keywords, b.description, b.notes, b.rating.clamp(0, 10)],
         )?;
+        if n == 1 {
+            index_keywords(&tx, b.id, &keywords)?;
+        }
+        tx.commit()?;
         Ok(n == 1)
     }
 
@@ -207,6 +302,41 @@ impl Store {
     pub fn data_version(&self) -> Result<i64> {
         self.conn.pragma_query_value(None, "data_version", |r| r.get(0))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct KeywordCount {
+    pub keyword: String,
+    pub count: i64,
+    pub tagged: bool,
+}
+
+/// FTS5 query for Powermarks-style search: every word prefix-matches. None for an empty query.
+fn fts_query(query: &str) -> Option<String> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
+/// first spelling wins), order kept, single-space separated.
+pub fn normalize_keywords(s: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    s.split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|k| !k.is_empty() && seen.insert(k.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn index_keywords(conn: &Connection, id: i64, keywords: &str) -> Result<()> {
+    conn.execute("DELETE FROM bookmark_keyword WHERE bookmark_id = ?1", [id])?;
+    let mut insert = conn.prepare_cached("INSERT OR IGNORE INTO bookmark_keyword VALUES (?1, ?2)")?;
+    for k in keywords.split(|c: char| c.is_whitespace() || c == ',').filter(|k| !k.is_empty()) {
+        insert.execute(params![id, k])?;
+    }
+    Ok(())
 }
 
 /// Raw pm35 text (one char per file byte, HTML entities) to display text.
@@ -320,6 +450,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn keyword_dictionary_narrows_renames_and_tags() {
+        let mut s = store(); // "food paris" and "paris museum"
+        let kw = |s: &Store, q| s.keywords(q).unwrap().into_iter().map(|k| (k.keyword, k.count)).collect::<Vec<_>>();
+        assert_eq!(kw(&s, ""), [("food".into(), 1), ("museum".into(), 1), ("paris".into(), 2)]);
+        assert_eq!(kw(&s, "museum"), [("museum".into(), 1), ("paris".into(), 1)]);
+
+        s.set_tagged("Paris", true).unwrap();
+        assert!(s.keywords("").unwrap().iter().any(|k| k.keyword == "paris" && k.tagged));
+
+        // Rename is case-insensitive and the tag follows.
+        assert_eq!(s.rename_keyword("PARIS", "France").unwrap(), 2);
+        assert_eq!(kw(&s, ""), [("food".into(), 1), ("France".into(), 2), ("museum".into(), 1)]);
+        assert!(s.keywords("").unwrap().iter().any(|k| k.keyword == "France" && k.tagged));
+
+        // Renaming onto an existing keyword merges and dedupes.
+        assert_eq!(s.rename_keyword("france", "museum").unwrap(), 2);
+        assert_eq!(kw(&s, ""), [("food".into(), 1), ("museum".into(), 2)]);
+        let mut kws: Vec<_> = s.search("museum", 5).unwrap().into_iter().map(|b| b.keywords).collect();
+        kws.sort();
+        assert_eq!(kws, ["food museum", "museum"]);
+
+        assert_eq!(s.rename_keyword("food", "").unwrap(), 1); // delete
+        assert!(kw(&s, "").iter().all(|(k, _)| k != "food"));
+        assert!(s.search("food", 5).unwrap().is_empty());
+
+        let (id, _) = s.add("https://k.example/", "K", "a, b a  B c", "").unwrap();
+        assert_eq!(s.get(id).unwrap().unwrap().keywords, "a b c");
+        s.delete(&[id]).unwrap();
+        assert!(kw(&s, "").iter().all(|(k, _)| k != "c"));
+    }
+
+    #[test]
+    fn keyword_index_backfills_old_databases() {
+        let path = std::env::temp_dir().join(format!("store-mig-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        Store::open(p).unwrap().add("https://m.example/", "M", "x y", "").unwrap();
+        {
+            // Simulate a database from before the keyword index.
+            let c = Connection::open(p).unwrap();
+            c.execute_batch("DELETE FROM bookmark_keyword; PRAGMA user_version = 0;").unwrap();
+        }
+        assert_eq!(Store::open(p).unwrap().keywords("").unwrap().len(), 2);
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{p}{ext}"));
+        }
+    }
+
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -336,5 +515,10 @@ mod tests {
         eprintln!("search 'a': {hits} hits in {:?}", t.elapsed());
         let mojibake = s.search("", usize::MAX).unwrap().iter().filter(|b| b.title.contains('\u{fffd}') || b.title.contains("\u{e2}\u{80}")).count();
         eprintln!("titles with leftover mojibake: {mojibake}");
+        for q in ["", "a"] {
+            let t = std::time::Instant::now();
+            let n = s.keywords(q).unwrap().len();
+            eprintln!("keywords({q:?}): {n} in {:?}", t.elapsed());
+        }
     }
 }
