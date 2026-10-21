@@ -260,6 +260,17 @@ try {
   const backupRows = await page.locator('#backup-list tbody tr').count();
   check('Backups lists the startup backup', backupRows >= 1, `${backupRows} backups`);
   await page.click('#backups button[value=close]');
+
+  // 9. Desktop: settings dialog, single instance (a second launch hands over and exits)
+  await page.click('#settings-open');
+  await page.waitForSelector('#settings[open]');
+  check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
+  await page.click('#settings button[value=cancel]');
+  const running = () => execSync('tasklist /FI "IMAGENAME eq powermarks.exe" /NH').toString().split('powermarks.exe').length - 1;
+  spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+  await sleep(3000);
+  check('second launch reuses the running app', running() === 1, `${running()} running`);
+  check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));
 } catch (e) {
   check('run completed', false, e.message);
 } finally {

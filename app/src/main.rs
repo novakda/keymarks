@@ -2,15 +2,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backups;
+mod desktop;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use store::{Bookmark, CleanupItem, KeywordCount, SearchOptions, Store};
-use tauri::{AppHandle, Manager, State};
+use desktop::{Settings, SettingsState};
+use tauri::{AppHandle, Manager, Runtime, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_global_shortcut::ShortcutState;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-type Db = Mutex<Store>;
+pub(crate) type Db = Mutex<Store>;
 
 /// Where the database and its backups live.
 struct DataDir(PathBuf);
@@ -65,14 +69,17 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>) -> Result<Option<usize>,
 /// Open a bookmark in the default browser and count the visit.
 #[tauri::command]
 fn open_bookmark(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
-    let store = db.lock().unwrap();
-    let url = store.get(id).map_err(|e| e.to_string())?.ok_or("bookmark not found")?.url;
+    open_id(&app, &db.lock().unwrap(), id)
+}
+
+pub(crate) fn open_id<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64) -> Result<(), String> {
+    let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
     let lower = url.to_ascii_lowercase();
     if !OPENABLE.iter().any(|p| lower.starts_with(p)) {
         return Err(format!("not opening {url}: unsupported scheme"));
     }
-    app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
-    store.mark_visited(id).map_err(|e| e.to_string())
+    app.opener().open_url(&url, None::<&str>).map_err(err)?;
+    store.mark_visited(id).map_err(err)
 }
 
 #[tauri::command]
@@ -162,6 +169,49 @@ fn restore_backup(dir: State<DataDir>, db: State<Db>, name: String) -> Result<St
     Ok(safety)
 }
 
+#[derive(serde::Serialize)]
+struct SettingsView {
+    #[serde(flatten)]
+    settings: Settings,
+    autostart: bool,
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle, settings: State<SettingsState>) -> SettingsView {
+    SettingsView {
+        settings: settings.current.lock().unwrap().clone(),
+        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+    }
+}
+
+/// Apply and persist settings. The hotkey is applied first so a bad one changes nothing.
+#[tauri::command]
+fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings, autostart: bool) -> Result<(), String> {
+    let mut current = state.current.lock().unwrap();
+    let hotkey = settings.hotkey.trim().to_string();
+    if hotkey != current.hotkey {
+        desktop::apply_hotkey(&app, &current.hotkey, &hotkey)?;
+    }
+    let al = app.autolaunch();
+    if autostart != al.is_enabled().unwrap_or(false) {
+        if autostart { al.enable() } else { al.disable() }.map_err(err)?;
+    }
+    let new = Settings { hotkey, ..settings };
+    state.save(&new)?;
+    *current = new;
+    Ok(())
+}
+
+/// The UI reports the top results after each search; they become the tray menu.
+#[tauri::command]
+fn set_tray_results(app: AppHandle, items: Vec<(i64, String)>) -> Result<(), String> {
+    let menu = desktop::tray_menu(&app, &items).map_err(err)?;
+    if let Some(tray) = app.tray_by_id(desktop::TRAY_ID) {
+        tray.set_menu(Some(menu)).map_err(err)?;
+    }
+    Ok(())
+}
+
 /// Polled by the UI; changes when the browser extension's host adds a bookmark.
 #[tauri::command]
 fn data_version(db: State<Db>) -> Result<i64, String> {
@@ -170,8 +220,32 @@ fn data_version(db: State<Db>) -> Result<i64, String> {
 
 fn main() {
     tauri::Builder::default()
+        // First: a second launch hands over to the running app and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        desktop::show_main(app);
+                    }
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let settings = window.state::<SettingsState>();
+                if settings.current.lock().unwrap().close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             // POWERMARKS_DATA_DIR lets tests run against a copy instead of the real database.
             let dir = match std::env::var_os("POWERMARKS_DATA_DIR") {
@@ -183,6 +257,19 @@ fn main() {
             let store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
             app.manage(Mutex::new(store));
             app.manage(DataDir(dir.clone()));
+
+            let settings = SettingsState::load(dir.join("settings.json"));
+            let current = settings.current.lock().unwrap().clone();
+            app.manage(settings);
+            if let Err(e) = desktop::apply_hotkey(app.handle(), "", &current.hotkey) {
+                eprintln!("{e}");
+            }
+            desktop::build_tray(app.handle())?;
+            // Started with Windows (autostart passes --minimized): stay in the tray if asked.
+            let autostarted = std::env::args().any(|a| a == "--minimized");
+            if !(autostarted && current.start_minimized) {
+                desktop::show_main(app.handle());
+            }
             // Startup backups off the UI thread; failures are logged, never fatal.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -213,7 +300,10 @@ fn main() {
             history,
             list_backups,
             backup_now,
-            restore_backup
+            restore_backup,
+            get_settings,
+            save_settings,
+            set_tray_results
         ])
         .run(tauri::generate_context!())
         .expect("error while running Powermarks");

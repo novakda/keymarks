@@ -110,10 +110,22 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   cursor = Math.max(0, keepSelection ? ids.indexOf(cursorId) : 0);
   if (!keepSelection) scroller().scrollTop = 0;
   if (selected.size === 0 && ids.length) selected.add(ids[cursor]);
-  await fetchRows([...ids.slice(...windowRange()), ...selected, ids[cursor]]);
+  await fetchRows([...ids.slice(...windowRange()), ...ids.slice(0, TRAY_RESULTS), ...selected, ids[cursor]]);
   if (mine !== seq) return;
   render();
   renderKeywords();
+  updateTray();
+}
+
+// The tray menu lists the top results of the current search, like the original's.
+const TRAY_RESULTS = 15;
+let trayItems = '';
+function updateTray() {
+  const items = ids.slice(0, TRAY_RESULTS).filter((id) => cache.has(id)).map((id) => [id, cache.get(id).title || cache.get(id).url]);
+  const key = JSON.stringify(items);
+  if (key === trayItems) return;
+  trayItems = key;
+  invoke('set_tray_results', { items }).catch(() => {});
 }
 
 async function fetchRows(wanted) {
@@ -411,6 +423,47 @@ document.addEventListener('keydown', (e) => {
   else return;
   e.preventDefault();
 });
+
+// ---- settings -------------------------------------------------------------------
+
+$('settings-open').onclick = async () => {
+  try {
+    const s = await invoke('get_settings');
+    $('s-autostart').checked = s.autostart;
+    $('s-minimized').checked = s.start_minimized;
+    $('s-close').checked = s.close_to_tray;
+    $('s-hotkey').value = s.hotkey;
+    $('s-error').textContent = '';
+    $('settings').showModal();
+  } catch (e) { fail('Settings')(e); }
+};
+
+// Record the pressed combination instead of free text, e.g. "Ctrl+Alt+P".
+$('s-hotkey').addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') return;
+  e.preventDefault();
+  if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey) { e.target.value = ''; return; }
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+  const key = e.code.startsWith('Key') ? e.code.slice(3) : e.code.startsWith('Digit') ? e.code.slice(5) : e.key.length === 1 ? e.key.toUpperCase() : e.code;
+  const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
+  e.target.value = [...mods, key].join('+');
+});
+
+$('s-save').onclick = busyAware(async () => {
+  const settings = {
+    close_to_tray: $('s-close').checked,
+    start_minimized: $('s-minimized').checked,
+    hotkey: $('s-hotkey').value.trim(),
+  };
+  try {
+    await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
+    $('settings').close();
+    say('Settings saved.');
+  } catch (e) { $('s-error').textContent = String(e); }
+});
+
+// The global hotkey and the tray bring the window up ready to type.
+window.__TAURI__.event.listen('focus-search', () => { q.focus(); q.select(); });
 
 // ---- backups --------------------------------------------------------------------
 
