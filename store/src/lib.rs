@@ -231,31 +231,45 @@ impl Store {
     /// Rename a keyword on every bookmark (case-insensitive). Renaming onto an existing
     /// keyword merges them; an empty `new` deletes the keyword. Returns bookmarks changed.
     pub fn rename_keyword(&mut self, old: &str, new: &str) -> Result<usize> {
-        let new = normalize_keywords(new);
-        let old_lower = old.to_lowercase();
         let tx = self.conn.transaction()?;
-        let rows: Vec<(i64, String)> = tx
-            .prepare(
-                "SELECT b.id, b.keywords FROM bookmark b
-                 JOIN bookmark_keyword k ON k.bookmark_id = b.id WHERE k.keyword = ?1",
-            )?
-            .query_map([old], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_>>()?;
-        for (id, keywords) in &rows {
-            let replaced: Vec<&str> = keywords
-                .split(|c: char| c.is_whitespace() || c == ',')
-                .map(|k| if k.to_lowercase() == old_lower { new.as_str() } else { k })
-                .collect();
-            let keywords = normalize_keywords(&replaced.join(" "));
-            tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![id, keywords])?;
-            index_keywords(&tx, *id, &keywords)?;
+        let n = rename_in(&tx, old, new)?;
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Propose a dictionary cleanup (Powermarks' Dictionary Cleanup, plus stop words).
+    /// Tagged keywords are never included. Nothing changes until `apply_cleanup`.
+    pub fn cleanup_plan(&self) -> Result<Vec<CleanupItem>> {
+        let dict = self.keywords("")?;
+        let by_lower: std::collections::HashMap<String, &KeywordCount> =
+            dict.iter().map(|k| (k.keyword.to_lowercase(), k)).collect();
+        let mut plan = Vec::new();
+        for k in dict.iter().filter(|k| !k.tagged) {
+            let (reason, into) = match cleanup_rule(&k.keyword, &by_lower) {
+                Some(r) => r,
+                None if k.count == 1 => ("used once", None),
+                None => continue,
+            };
+            plan.push(CleanupItem { keyword: k.keyword.clone(), count: k.count, reason, into });
         }
-        let was_tagged = tx.execute("DELETE FROM tagged_keyword WHERE keyword = ?1", [old])? > 0;
-        if was_tagged && !new.is_empty() && !new.contains(' ') {
-            tx.execute("INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)", [&new])?;
+        Ok(plan)
+    }
+
+    /// Apply chosen cleanup changes as `(keyword, replacement)`; an empty replacement removes
+    /// the keyword. All or nothing. Returns how many keywords were changed.
+    pub fn apply_cleanup(&mut self, changes: &[(String, String)]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        for (old, new) in changes {
+            rename_in(&tx, old, new)?;
         }
         tx.commit()?;
-        Ok(rows.len())
+        Ok(changes.len())
+    }
+
+    /// Consistent full copy of the database, safe while other connections write.
+    pub fn backup_to(&self, path: &str) -> Result<()> {
+        self.conn.execute("VACUUM INTO ?1", [path])?;
+        Ok(())
     }
 
     pub fn get(&self, id: i64) -> Result<Option<Bookmark>> {
@@ -328,6 +342,97 @@ pub fn normalize_keywords(s: &str) -> String {
         .filter(|k| !k.is_empty() && seen.insert(k.to_lowercase()))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Rename `old` (case-insensitive) on every bookmark using it; see `Store::rename_keyword`.
+fn rename_in(tx: &Connection, old: &str, new: &str) -> Result<usize> {
+    let new = normalize_keywords(new);
+    let old_lower = old.to_lowercase();
+    let rows: Vec<(i64, String)> = tx
+        .prepare_cached(
+            "SELECT b.id, b.keywords FROM bookmark b
+             JOIN bookmark_keyword k ON k.bookmark_id = b.id WHERE k.keyword = ?1",
+        )?
+        .query_map([old], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_>>()?;
+    for (id, keywords) in &rows {
+        let replaced: Vec<&str> = keywords
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .map(|k| if k.to_lowercase() == old_lower { new.as_str() } else { k })
+            .collect();
+        let keywords = normalize_keywords(&replaced.join(" "));
+        tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![id, keywords])?;
+        index_keywords(tx, *id, &keywords)?;
+    }
+    let was_tagged = tx.execute("DELETE FROM tagged_keyword WHERE keyword = ?1", [old])? > 0;
+    if was_tagged && !new.is_empty() && !new.contains(' ') {
+        tx.execute("INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)", [&new])?;
+    }
+    Ok(rows.len())
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CleanupItem {
+    pub keyword: String,
+    pub count: i64,
+    pub reason: &'static str,
+    /// Merge/rename target; None means remove.
+    pub into: Option<String>,
+}
+
+/// Common words that carry no meaning as keywords (English plus web boilerplate).
+const STOP_WORDS: &[&str] = &[
+    "a", "about", "after", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
+    "been", "but", "by", "can", "com", "could", "did", "do", "does", "for", "from", "had", "has",
+    "have", "he", "her", "here", "his", "how", "htm", "html", "http", "https", "i", "if", "in",
+    "index", "into", "is", "it", "its", "just", "me", "more", "my", "net", "new", "no", "not",
+    "of", "on", "one", "or", "org", "our", "out", "php", "she", "so", "some", "than", "that",
+    "the", "their", "them", "then", "there", "these", "they", "this", "to", "up", "us", "was",
+    "we", "were", "what", "when", "where", "which", "who", "why", "will", "with", "www", "you",
+    "your",
+];
+
+/// Why a keyword should go (and where to), or None to keep it.
+fn cleanup_rule(
+    keyword: &str,
+    dict: &std::collections::HashMap<String, &KeywordCount>,
+) -> Option<(&'static str, Option<String>)> {
+    let lower = keyword.to_lowercase();
+    if !keyword.chars().any(char::is_alphanumeric) {
+        return Some(("no letters or digits", None));
+    }
+    if keyword.chars().all(|c| c.is_ascii_digit() || "._-:/#".contains(c)) {
+        return Some(("number only", None));
+    }
+    if STOP_WORDS.contains(&lower.as_str()) {
+        return Some(("common word", None));
+    }
+    let trimmed = keyword.trim_matches(|c: char| "\"'()[]{}<>.,;:!?*".contains(c));
+    if trimmed != keyword && !trimmed.is_empty() {
+        // "the." goes entirely; "rust," becomes "rust".
+        return match cleanup_rule(trimmed, dict) {
+            Some((reason, None)) => Some((reason, None)),
+            _ => Some(("stray punctuation", Some(trimmed.to_string()))),
+        };
+    }
+    // Plurals merge with their singular, into whichever spelling is used more.
+    if lower.len() > 3 && lower.ends_with('s') && !["ss", "us", "is"].iter().any(|e| lower.ends_with(e)) {
+        let me = dict.get(&lower)?;
+        let singulars = [
+            lower.strip_suffix("ies").map(|s| format!("{s}y")),
+            lower.strip_suffix("es").map(String::from),
+            lower.strip_suffix('s').map(String::from),
+        ];
+        let other = singulars
+            .into_iter()
+            .flatten()
+            .filter(|s| !STOP_WORDS.contains(&s.as_str())) // "news" is not the plural of "new"
+            .find_map(|s| dict.get(&s))?;
+        if other.count >= me.count {
+            return Some(("plural of another keyword", Some(other.keyword.clone())));
+        }
+    }
+    None
 }
 
 fn index_keywords(conn: &Connection, id: i64, keywords: &str) -> Result<()> {
@@ -499,6 +604,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cleanup_plans_and_applies_with_backup() {
+        let mut s = Store::open(":memory:").unwrap();
+        s.add("https://1.example/", "1", "rust, The 2024 news --- languages", "").unwrap();
+        s.add("https://2.example/", "2", "language Rust new", "").unwrap();
+        s.add("https://3.example/", "3", "language keepme keepme2", "").unwrap();
+        s.add("https://4.example/", "4", "keepme keepme2 the.", "").unwrap();
+        s.set_tagged("keepme2", true).unwrap();
+        let plan: Vec<_> = s
+            .cleanup_plan()
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.keyword, i.reason, i.into))
+            .collect();
+        let find = |k: &str| plan.iter().find(|(kw, ..)| kw == k).map(|(_, r, i)| (*r, i.clone()));
+        assert_eq!(find("The"), Some(("common word", None)));
+        assert_eq!(find("the."), Some(("common word", None)));
+        assert_eq!(find("2024"), Some(("number only", None)));
+        assert_eq!(find("---"), Some(("no letters or digits", None)));
+        assert_eq!(find("languages"), Some(("plural of another keyword", Some("language".into()))));
+        assert_eq!(find("news"), Some(("used once", None))); // not merged into "new"
+        assert_eq!(find("keepme"), None); // used twice
+        assert_eq!(find("keepme2"), None); // tagged
+
+        let path = std::env::temp_dir().join(format!("store-bak-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        s.backup_to(path.to_str().unwrap()).unwrap();
+        let changes: Vec<(String, String)> = plan
+            .iter()
+            .filter(|(_, reason, _)| *reason != "used once")
+            .map(|(k, _, into)| (k.clone(), into.clone().unwrap_or_default()))
+            .collect();
+        s.apply_cleanup(&changes).unwrap();
+        let mut kws: Vec<_> = s.search("", 10).unwrap().into_iter().map(|b| b.keywords).collect();
+        kws.sort();
+        assert_eq!(kws, ["keepme keepme2", "language Rust", "language keepme keepme2", "rust news language"]);
+        // The backup still has the original keywords.
+        let backup = Store::open(path.to_str().unwrap()).unwrap();
+        assert!(backup.keywords("").unwrap().iter().any(|k| k.keyword == "languages"));
+        drop(backup);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -520,5 +668,22 @@ mod tests {
             let n = s.keywords(q).unwrap().len();
             eprintln!("keywords({q:?}): {n} in {:?}", t.elapsed());
         }
+        let t = std::time::Instant::now();
+        let plan = s.cleanup_plan().unwrap();
+        let mut by: std::collections::BTreeMap<&str, (usize, i64)> = Default::default();
+        for i in &plan {
+            let e = by.entry(i.reason).or_default();
+            e.0 += 1;
+            e.1 += i.count;
+        }
+        eprintln!("cleanup plan in {:?}: {by:?} (keywords, uses)", t.elapsed());
+        let changes: Vec<_> = plan
+            .iter()
+            .filter(|i| i.reason != "used once")
+            .map(|i| (i.keyword.clone(), i.into.clone().unwrap_or_default()))
+            .collect();
+        let t = std::time::Instant::now();
+        s.apply_cleanup(&changes).unwrap();
+        eprintln!("applied {} in {:?}; dictionary now {}", changes.len(), t.elapsed(), s.keywords("").unwrap().len());
     }
 }

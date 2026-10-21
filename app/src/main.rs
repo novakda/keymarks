@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
-use store::{Bookmark, KeywordCount, Store};
+use store::{Bookmark, CleanupItem, KeywordCount, Store};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -82,6 +82,26 @@ fn rename_keyword(db: State<Db>, old: String, new: String) -> Result<usize, Stri
     db.lock().unwrap().rename_keyword(&old, &new).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn cleanup_plan(db: State<Db>) -> Result<Vec<CleanupItem>, String> {
+    db.lock().unwrap().cleanup_plan().map_err(|e| e.to_string())
+}
+
+/// Back up the database, then apply `(keyword, replacement)` changes. Returns the count
+/// and the backup's path.
+#[tauri::command]
+fn apply_cleanup(app: AppHandle, db: State<Db>, changes: Vec<(String, String)>) -> Result<(usize, String), String> {
+    let err = |e: &dyn std::fmt::Display| e.to_string();
+    let dir = app.path().app_data_dir().map_err(|e| err(&e))?.join("backups");
+    std::fs::create_dir_all(&dir).map_err(|e| err(&e))?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let backup = dir.join(format!("before-cleanup-{secs}.db"));
+    let mut store = db.lock().unwrap();
+    store.backup_to(backup.to_str().ok_or("backup path is not UTF-8")?).map_err(|e| err(&e))?;
+    let n = store.apply_cleanup(&changes).map_err(|e| err(&e))?;
+    Ok((n, backup.display().to_string()))
+}
+
 /// Polled by the UI; changes when the browser extension's host adds a bookmark.
 #[tauri::command]
 fn data_version(db: State<Db>) -> Result<i64, String> {
@@ -110,7 +130,9 @@ fn main() {
             data_version,
             keywords,
             set_tagged,
-            rename_keyword
+            rename_keyword,
+            cleanup_plan,
+            apply_cleanup
         ])
         .run(tauri::generate_context!())
         .expect("error while running Powermarks");

@@ -238,6 +238,94 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideMenu()
 $('kw-filter').addEventListener('input', renderKeywords);
 $('kw-tagged').addEventListener('change', renderKeywords);
 
+// ---- keyword cleanup (Powermarks' Dictionary Cleanup) ------------------------
+
+const CLEANUP_GROUPS = [
+  ['common word', 'Common words', true],
+  ['number only', 'Numbers only', true],
+  ['no letters or digits', 'No letters or digits', true],
+  ['stray punctuation', 'Stray punctuation (renamed to the clean word)', true],
+  ['plural of another keyword', 'Plurals (merged into the more-used form)', true],
+  ['used once', 'Used by only one bookmark (often auto-generated from titles)', false],
+];
+let cleanupItems = [];
+
+$('cleanup-open').addEventListener('click', async () => {
+  if (!confirmDiscard()) return;
+  try {
+    const plan = await invoke('cleanup_plan');
+    cleanupItems = plan.map((i) => ({ ...i, on: CLEANUP_GROUPS.find((g) => g[0] === i.reason)?.[2] ?? false }));
+    renderCleanup();
+    $('cleanup').showModal();
+  } catch (e) { fail('Cleanup')(e); }
+});
+
+function renderCleanup() {
+  const groups = CLEANUP_GROUPS.map(([reason, label]) => {
+    const items = cleanupItems.filter((i) => i.reason === reason);
+    if (!items.length) return null;
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    const all = document.createElement('input');
+    all.type = 'checkbox';
+    all.checked = items.every((i) => i.on);
+    all.indeterminate = !all.checked && items.some((i) => i.on);
+    all.ariaLabel = `Apply all: ${label}`;
+    all.onclick = (e) => e.stopPropagation(); // don't toggle the <details>
+    all.onchange = () => { items.forEach((i) => { i.on = all.checked; }); renderCleanup(); };
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = ` ${items.length} keyword${items.length === 1 ? '' : 's'}, ${items.reduce((s, i) => s + i.count, 0)} uses`;
+    summary.append(all, label, n);
+    const ul = document.createElement('ul');
+    // Big groups render their rows only when opened.
+    const fill = () => ul.replaceChildren(...items.map((i) => {
+      const li = document.createElement('li');
+      const label = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = i.on;
+      box.onchange = () => { i.on = box.checked; updateApply(); syncGroup(); };
+      const count = document.createElement('span');
+      count.className = 'n';
+      count.textContent = ` (${i.count})`;
+      label.append(box, i.into ? `${i.keyword} → ${i.into}` : i.keyword, count);
+      li.append(label);
+      return li;
+    }));
+    const syncGroup = () => {
+      all.checked = items.every((i) => i.on);
+      all.indeterminate = !all.checked && items.some((i) => i.on);
+    };
+    details.ontoggle = () => { if (details.open && !ul.childElementCount) fill(); };
+    details.append(summary, ul);
+    return details;
+  }).filter(Boolean);
+  $('cleanup-groups').replaceChildren(...(groups.length ? groups : [Object.assign(document.createElement('p'), { textContent: 'Nothing to clean up.' })]));
+  updateApply();
+}
+
+function updateApply() {
+  const n = cleanupItems.filter((i) => i.on).length;
+  $('cleanup-apply').textContent = `Apply ${n} change${n === 1 ? '' : 's'}`;
+  $('cleanup-apply').disabled = n === 0;
+}
+
+$('cleanup-apply').addEventListener('click', async () => {
+  const changes = cleanupItems.filter((i) => i.on).map((i) => [i.keyword, i.into ?? '']);
+  $('cleanup-apply').disabled = true;
+  try {
+    const [n, backup] = await invoke('apply_cleanup', { changes });
+    $('cleanup').close();
+    await refreshDictionary();
+    await refresh();
+    say(`Cleaned up ${n} keywords. Backup: ${backup}`);
+  } catch (e) {
+    $('cleanup-apply').disabled = false;
+    fail('Cleanup')(e);
+  }
+});
+
 // ---- properties panel -------------------------------------------------------
 
 function renderPanel() {
