@@ -62,8 +62,18 @@ const lower = (s) => s.toLocaleLowerCase();
 
 // ---- data -------------------------------------------------------------------
 
-async function refresh({ keepSelection = true } = {}) {
+// aria-busy marks a search in flight (assistive tech, and the e2e tests wait on it).
+async function refresh(options) {
   const mine = ++seq;
+  document.body.ariaBusy = 'true';
+  try {
+    await runRefresh(mine, options);
+  } finally {
+    if (mine === seq) document.body.ariaBusy = 'false';
+  }
+}
+
+async function runRefresh(mine, { keepSelection = true } = {}) {
   let n, found, v, kw;
   try {
     [n, found, v, kw] = await Promise.all([
