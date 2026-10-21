@@ -1,3 +1,3 @@
 [workspace]
-members = ["pm35", "store"]
+members = ["pm35", "store", "app"]
 resolver = "3"

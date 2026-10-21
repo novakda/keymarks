@@ -44,7 +44,7 @@ CREATE TRIGGER IF NOT EXISTS bookmark_au AFTER UPDATE ON bookmark BEGIN
 END;
 ";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Bookmark {
     pub id: i64,
     pub url: String,
@@ -65,6 +65,10 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn })
+    }
+
+    pub fn count(&self) -> Result<i64> {
+        self.conn.query_row("SELECT count(*) FROM bookmark", [], |r| r.get(0))
     }
 
     /// Import every Powermarks entry in one transaction. Returns the number imported.

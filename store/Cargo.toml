@@ -8,3 +8,4 @@ description = "SQLite bookmark store with Powermarks import"
 html-escape = "0.3.0"
 pm35 = { path = "../pm35" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }

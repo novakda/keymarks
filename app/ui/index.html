@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Powermarks</title>
+<style>
+  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --sel: #dbe4ff; --accent: #60679f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --fg: #f2f2f7; --muted: #98989d; --line: #2c2c2e; --sel: #2f3a66; --accent: #9aa2e0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px system-ui, sans-serif; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+  #q { flex: 1; font: inherit; font-size: 16px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  #q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { font: inherit; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  li { padding: 6px 12px; border-bottom: 1px solid var(--line); cursor: default; }
+  li.sel { background: var(--sel); }
+  .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  footer { padding: 4px 12px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks">
+  <button id="import" hidden>Import pm35.htm…</button>
+</header>
+<ul id="list" role="listbox" aria-label="Bookmarks"></ul>
+<footer id="status" aria-live="polite"></footer>
+<script src="app.js"></script>
+</body>
+</html>
