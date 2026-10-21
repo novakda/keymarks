@@ -1,0 +1,10 @@
+[package]
+name = "store"
+version = "0.1.0"
+edition = "2024"
+description = "SQLite bookmark store with Powermarks import"
+
+[dependencies]
+html-escape = "0.3.0"
+pm35 = { path = "../pm35" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
