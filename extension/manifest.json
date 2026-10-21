@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Powermarks",
+  "name": "Keymarks",
   "version": "0.1.0",
-  "description": "Add the current page to Powermarks with keywords.",
+  "description": "Add the current page to Keymarks with keywords.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4AUmxAyE8EK6aklDBdYmKYse+3O85rCC4wtQVK0m83WesMtFgcDNm9PVeluTlydy65WxbmuU+yCB1Slp4wrsApfFI309/7qsd5zimAsXcy8SJScLYE5ZNfWuTPBkAhHeI1Zkp5ImRppBPPJQ0RCwC9qW1gtfzVOemKTLHR/PQIqY3hfqokTXVYn3jDlgMLJuWn7yok3+LDbdOSniSDy8I3zfg4yr/KlyohuH7m7W9lAEdiRMAp75idTCYXzyHNH8tA7WOzyamE91N6GAkbhTLNp3i9vGGmsY1LgGL/NBQjdnA5ZxbAbrg9EA+IiHnXb+Irsq1PKl5YcxxanwP31R2QIDAQAB",
-  "action": { "default_popup": "popup.html", "default_title": "Add to Powermarks" },
+  "action": { "default_popup": "popup.html", "default_title": "Add to Keymarks" },
   "commands": { "_execute_action": { "suggested_key": { "default": "Alt+Shift+P" } } },
   "permissions": ["nativeMessaging", "activeTab", "scripting"],
   "icons": { "128": "icon.png" },
-  "browser_specific_settings": { "gecko": { "id": "powermarks@xhiris" } }
+  "browser_specific_settings": { "gecko": { "id": "keymarks@pattern158" } }
 }

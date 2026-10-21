@@ -1,6 +1,6 @@
 const api = globalThis.browser ?? chrome;
 const $ = (id) => document.getElementById(id);
-const HOST = 'com.xhiris.powermarks';
+const HOST = 'com.pattern158.keymarks';
 const show = (text) => { $('status').textContent = text; };
 let url = '';
 
@@ -47,13 +47,13 @@ $('form').addEventListener('submit', async (e) => {
     });
     if (!reply?.ok) throw new Error(reply?.error ?? 'no reply');
     if (reply.existed) {
-      show('Already in Powermarks.');
+      show('Already in Keymarks.');
     } else {
       show('Added ✓');
       setTimeout(() => window.close(), 700);
     }
   } catch (err) {
-    show(`Couldn't reach Powermarks (${err.message}). Run powermarks-host --install.`);
+    show(`Couldn't reach Keymarks (${err.message}). Run keymarks-host --install.`);
     $('add').disabled = false;
   }
 });

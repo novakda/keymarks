@@ -1,7 +1,7 @@
-//! Native messaging host: lets the browser extension add bookmarks to the Powermarks database.
+//! Native messaging host: lets the browser extension add bookmarks to the Keymarks database.
 //! Protocol (both directions): 4-byte native-endian length, then UTF-8 JSON.
 //!
-//! `powermarks-host --install` registers it with Chrome, Edge and Firefox for the current
+//! `keymarks-host --install` registers it with Chrome, Edge and Firefox for the current
 //! Windows user; `--uninstall` removes that. Any other invocation is the browser starting us.
 
 use serde::Deserialize;
@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use store::Store;
 
-const NAME: &str = "com.xhiris.powermarks";
+const NAME: &str = "com.pattern158.keymarks";
 const CHROME_ORIGIN: &str = "chrome-extension://bpjpedmfmpepadclpoaogjhmdjcaoild/";
-const FIREFOX_ID: &str = "powermarks@xhiris";
+const FIREFOX_ID: &str = "keymarks@pattern158";
 const CHROMIUM_KEYS: [&str; 2] = [
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts",
     r"HKCU\Software\Microsoft\Edge\NativeMessagingHosts",
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("powermarks-host: {e}");
+            eprintln!("keymarks-host: {e}");
             ExitCode::FAILURE
         }
     }
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
 
 fn db_path() -> Result<PathBuf, String> {
     let appdata = std::env::var_os("APPDATA").ok_or("APPDATA not set")?;
-    Ok(PathBuf::from(appdata).join("com.xhiris.powermarks").join("bookmarks.db"))
+    Ok(PathBuf::from(appdata).join("com.pattern158.keymarks").join("bookmarks.db"))
 }
 
 fn serve() -> io::Result<()> {
@@ -119,7 +119,7 @@ fn write_message(w: &mut impl Write, v: &Value) -> io::Result<()> {
 fn install() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("exe has no directory")?;
-    let base = json!({ "name": NAME, "description": "Powermarks", "path": exe, "type": "stdio" });
+    let base = json!({ "name": NAME, "description": "Keymarks", "path": exe, "type": "stdio" });
     let mut chromium = base.clone();
     chromium["allowed_origins"] = json!([CHROME_ORIGIN]);
     let mut firefox = base;

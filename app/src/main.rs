@@ -218,6 +218,26 @@ fn data_version(db: State<Db>) -> Result<i64, String> {
     db.lock().unwrap().data_version().map_err(|e| e.to_string())
 }
 
+/// The app was called Powermarks 2026 (com.xhiris.powermarks) before the rename. Move that
+/// data folder's contents (database, settings, backups) over once, if there is no new data yet.
+fn move_legacy_data(new: &std::path::Path) {
+    let Some(old) = new.parent().map(|p| p.join("com.xhiris.powermarks")) else { return };
+    if new.join("bookmarks.db").exists() || !old.join("bookmarks.db").exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(new) {
+        eprintln!("data migration: {e}");
+        return;
+    }
+    for entry in std::fs::read_dir(&old).into_iter().flatten().flatten() {
+        // Same volume, so a rename moves each file (or the backups folder) in one step.
+        if let Err(e) = std::fs::rename(entry.path(), new.join(entry.file_name())) {
+            eprintln!("data migration: {}: {e}", entry.path().display());
+        }
+    }
+    let _ = std::fs::remove_dir(&old); // only if now empty
+}
+
 fn main() {
     tauri::Builder::default()
         // First: a second launch hands over to the running app and exits.
@@ -247,10 +267,14 @@ fn main() {
             }
         })
         .setup(|app| {
-            // POWERMARKS_DATA_DIR lets tests run against a copy instead of the real database.
-            let dir = match std::env::var_os("POWERMARKS_DATA_DIR") {
+            // KEYMARKS_DATA_DIR lets tests run against a copy instead of the real database.
+            let dir = match std::env::var_os("KEYMARKS_DATA_DIR") {
                 Some(d) => PathBuf::from(d),
-                None => app.path().app_data_dir()?,
+                None => {
+                    let dir = app.path().app_data_dir()?;
+                    move_legacy_data(&dir);
+                    dir
+                }
             };
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("bookmarks.db");
@@ -306,5 +330,5 @@ fn main() {
             set_tray_results
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Powermarks");
+        .expect("error while running Keymarks");
 }

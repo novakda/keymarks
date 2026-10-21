@@ -1,8 +1,8 @@
 [package]
-name = "powermarks-host"
+name = "keymarks-host"
 version = "0.1.0"
 edition = "2024"
-description = "Native messaging host: browser extension -> Powermarks database"
+description = "Native messaging host: browser extension -> Keymarks database"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

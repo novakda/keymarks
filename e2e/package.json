@@ -1,5 +1,5 @@
 {
-  "name": "powermarks-e2e",
+  "name": "keymarks-e2e",
   "private": true,
   "type": "module",
   "scripts": {

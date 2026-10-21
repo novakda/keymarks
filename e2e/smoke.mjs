@@ -1,6 +1,6 @@
 // Drives the real app through its WebView2 debugging port and checks search, modes, errors,
 // sorting, scrolling, editing, deleting, undo/redo and backups. It runs on a temporary COPY of
-// the user's database (POWERMARKS_DATA_DIR), never the original. Assertions are relations
+// the user's database (KEYMARKS_DATA_DIR), never the original. Assertions are relations
 // between results (e.g. `a b` <= `a`), so they hold for any database. No screenshots; output
 // is counts only; UI settings it changes are restored.
 //
@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.env.POWERMARKS_EXE ?? path.join(root, 'target', 'debug', 'powermarks.exe');
+const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => process.stderr.write(`· ${msg}\n`);
 
@@ -28,7 +28,7 @@ const PORT = await new Promise((resolve) => {
 });
 
 function stopApp() {
-  try { execSync('taskkill /IM powermarks.exe /F', { stdio: 'ignore' }); } catch { /* not running */ }
+  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore' }); } catch { /* not running */ }
 }
 
 function startApp(env) {
@@ -58,7 +58,7 @@ async function connect() {
 
 // The app must be closed first: one instance only, and the copy must be consistent.
 stopApp();
-const realData = path.join(process.env.APPDATA, 'com.xhiris.powermarks');
+const realData = path.join(process.env.APPDATA, 'com.pattern158.keymarks');
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-e2e-'));
 for (const f of ['bookmarks.db', 'bookmarks.db-wal', 'bookmarks.db-shm']) {
   if (fs.existsSync(path.join(realData, f))) fs.copyFileSync(path.join(realData, f), path.join(work, f));
@@ -67,7 +67,7 @@ for (const f of ['bookmarks.db', 'bookmarks.db-wal', 'bookmarks.db-shm']) {
 const cleanupWork = () => fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); startApp(); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, POWERMARKS_DATA_DIR: work });
+startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work });
 const { browser, page } = await connect();
 log(`connected to ${page.url()}`);
 const idle = () => page.waitForFunction(() => document.body.ariaBusy === 'false', null, { timeout: 15000 });
@@ -266,7 +266,7 @@ try {
   await page.waitForSelector('#settings[open]');
   check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
   await page.click('#settings button[value=cancel]');
-  const running = () => execSync('tasklist /FI "IMAGENAME eq powermarks.exe" /NH').toString().split('powermarks.exe').length - 1;
+  const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString().split('keymarks.exe').length - 1;
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
   await sleep(3000);
   check('second launch reuses the running app', running() === 1, `${running()} running`);

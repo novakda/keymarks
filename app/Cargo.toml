@@ -1,8 +1,8 @@
 [package]
-name = "powermarks"
+name = "keymarks"
 version = "0.1.0"
 edition = "2024"
-description = "Powermarks 2026: keyword bookmark manager"
+description = "Keymarks: a keyword-first bookmark manager"
 
 [dependencies]
 pm35 = { version = "0.1.0", path = "../pm35" }

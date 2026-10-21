@@ -80,7 +80,7 @@ pub fn apply_hotkey<R: Runtime>(app: &AppHandle<R>, old: &str, new: &str) -> Res
 pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("app icon"))
-        .tooltip("Powermarks")
+        .tooltip("Keymarks")
         .menu(&tray_menu(app, &[])?)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -108,7 +108,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// Tray menu: Show, the top results of the current search (like the original), Quit.
 pub fn tray_menu<R: Runtime>(app: &AppHandle<R>, results: &[(i64, String)]) -> tauri::Result<Menu<R>> {
     let menu = Menu::new(app)?;
-    menu.append(&MenuItem::with_id(app, "show", "Show Powermarks", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "show", "Show Keymarks", true, None::<&str>)?)?;
     if !results.is_empty() {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
         for (id, title) in results.iter().take(TRAY_RESULTS) {
