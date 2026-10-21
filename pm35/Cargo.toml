@@ -1,0 +1,7 @@
+[package]
+name = "pm35"
+version = "0.1.0"
+edition = "2024"
+description = "Lossless reader/writer for Powermarks 3.5 pm35.htm databases"
+
+[dependencies]
