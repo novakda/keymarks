@@ -249,12 +249,14 @@ const CLEANUP_GROUPS = [
   ['used once', 'Used by only one bookmark (often auto-generated from titles)', false],
 ];
 let cleanupItems = [];
+let openGroups = new Set(); // which preview groups are expanded
 
 $('cleanup-open').addEventListener('click', async () => {
   if (!confirmDiscard()) return;
   try {
     const plan = await invoke('cleanup_plan');
     cleanupItems = plan.map((i) => ({ ...i, on: CLEANUP_GROUPS.find((g) => g[0] === i.reason)?.[2] ?? false }));
+    openGroups = new Set(CLEANUP_GROUPS.filter((g) => g[2]).map((g) => g[0]));
     renderCleanup();
     $('cleanup').showModal();
   } catch (e) { fail('Cleanup')(e); }
@@ -297,8 +299,12 @@ function renderCleanup() {
       all.checked = items.every((i) => i.on);
       all.indeterminate = !all.checked && items.some((i) => i.on);
     };
-    details.ontoggle = () => { if (details.open && !ul.childElementCount) fill(); };
+    details.ontoggle = () => {
+      details.open ? openGroups.add(reason) : openGroups.delete(reason);
+      if (details.open && !ul.childElementCount) fill();
+    };
     details.append(summary, ul);
+    if (openGroups.has(reason)) { details.open = true; fill(); }
     return details;
   }).filter(Boolean);
   $('cleanup-groups').replaceChildren(...(groups.length ? groups : [Object.assign(document.createElement('p'), { textContent: 'Nothing to clean up.' })]));

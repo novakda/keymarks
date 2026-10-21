@@ -118,6 +118,26 @@ impl Store {
             tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
+        // v2: repair text that was already double/triple UTF-8-encoded in the source file.
+        if version < 2 {
+            let tx = store.conn.transaction()?;
+            let rows: Vec<[String; 5]> = tx
+                .prepare("SELECT id, title, keywords, description, notes FROM bookmark")?
+                .query_map([], |r| Ok([r.get::<_, i64>(0)?.to_string(), r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))?
+                .collect::<Result<_>>()?;
+            for [id, title, keywords, description, notes] in rows {
+                let fixed = [&title, &keywords, &description, &notes].map(|t| fix_mojibake(t));
+                if fixed != [&title, &keywords, &description, &notes].map(|t| t.to_string()) {
+                    tx.execute(
+                        "UPDATE bookmark SET title = ?2, keywords = ?3, description = ?4, notes = ?5 WHERE id = ?1",
+                        params![id, fixed[0], fixed[1], fixed[2], fixed[3]],
+                    )?;
+                    index_keywords(&tx, id.parse().unwrap(), &fixed[1])?;
+                }
+            }
+            tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
+        }
         Ok(store)
     }
 
@@ -452,7 +472,31 @@ pub fn decode_text(raw: &str) -> String {
         Ok(s) => s,
         Err(e) => e.into_bytes().into_iter().map(cp1252).collect(),
     };
-    html_escape::decode_html_entities(&s).into_owned()
+    fix_mojibake(&html_escape::decode_html_entities(&s))
+}
+
+/// Undo UTF-8 text that was mis-decoded as Windows-1252 and re-encoded, possibly several
+/// times ("â€™" → "’", "Ãƒâ€" chains). Text that doesn't round-trip cleanly is left alone.
+pub fn fix_mojibake(text: &str) -> String {
+    let mut s = text.to_string();
+    for _ in 0..3 {
+        if !(s.contains('Ã') || s.contains('â') || s.contains('Â')) {
+            break;
+        }
+        let bytes: Option<Vec<u8>> = s.chars().map(cp1252_byte).collect();
+        match bytes.and_then(|b| String::from_utf8(b).ok()) {
+            Some(fixed) if fixed != s => s = fixed,
+            _ => break,
+        }
+    }
+    s
+}
+
+fn cp1252_byte(c: char) -> Option<u8> {
+    match c as u32 {
+        0..=0x7f | 0xa0..=0xff => Some(c as u8),
+        _ => CP1252_80.iter().position(|&x| x == c).map(|i| 0x80 + i as u8),
+    }
 }
 
 const CP1252_80: [char; 32] = [
@@ -480,6 +524,22 @@ mod tests {
         let mut s = Store::open(":memory:").unwrap();
         assert_eq!(s.import_pm35(&pm35::parse(SAMPLE).unwrap()).unwrap(), 2);
         s
+    }
+
+    #[test]
+    fn repairs_multiply_encoded_text() {
+        assert_eq!(fix_mojibake("It\u{e2}\u{20ac}\u{2122}s"), "It\u{2019}s"); // â€™
+        assert_eq!(fix_mojibake("Caf\u{c3}\u{a9}"), "Caf\u{e9}");
+        let twice = fix_mojibake(&fix_mojibake("x")); // idempotent on clean text
+        assert_eq!(twice, "x");
+        // Triple-encoded em dash survives two extra rounds.
+        let mut s = "\u{2014}".to_string();
+        for _ in 0..3 {
+            s = s.bytes().map(cp1252).collect::<String>();
+        }
+        assert_eq!(fix_mojibake(&s), "\u{2014}");
+        // Legitimate text containing these letters is untouched.
+        assert_eq!(fix_mojibake("\u{c2}a va? \u{c3}rvore \u{e2}me"), "\u{c2}a va? \u{c3}rvore \u{e2}me");
     }
 
     #[test]
@@ -661,7 +721,7 @@ mod tests {
         let t = std::time::Instant::now();
         let hits = s.search("a", 50).unwrap().len();
         eprintln!("search 'a': {hits} hits in {:?}", t.elapsed());
-        let mojibake = s.search("", usize::MAX).unwrap().iter().filter(|b| b.title.contains('\u{fffd}') || b.title.contains("\u{e2}\u{80}")).count();
+        let mojibake = s.search("", usize::MAX).unwrap().iter().filter(|b| b.title.contains('\u{fffd}') || ["\u{e2}\u{20ac}", "\u{c3}\u{192}", "\u{c3}\u{a2}"].iter().any(|m| b.title.contains(m))).count();
         eprintln!("titles with leftover mojibake: {mojibake}");
         for q in ["", "a"] {
             let t = std::time::Instant::now();
