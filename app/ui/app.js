@@ -452,6 +452,46 @@ $('bctx').addEventListener('click', async (e) => {
 document.addEventListener('click', (e) => { if (!$('bctx').contains(e.target)) $('bctx').hidden = true; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('bctx').hidden = true; });
 
+// ---- pane splitters (widths kept per machine) -------------------------------------
+
+function placeSplitters() {
+  const top = document.querySelector('header').offsetHeight, bottom = document.querySelector('footer').offsetHeight;
+  const left = document.querySelector('nav').getBoundingClientRect().right, right = panel.getBoundingClientRect().left;
+  for (const [id, x] of [['split-left', left], ['split-right', right]]) Object.assign($(id).style, { top: `${top}px`, bottom: `${bottom}px`, left: `${x}px` });
+}
+try {
+  for (const side of ['left', 'right']) {
+    const w = localStorage.getItem(`pane-${side}`);
+    if (w) document.body.style.setProperty(`--${side}`, `${w}px`);
+  }
+} catch {}
+for (const side of ['left', 'right']) {
+  const bar = $(`split-${side}`);
+  bar.onpointerdown = (e) => {
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add('drag');
+    bar.onpointermove = (m) => {
+      const w = Math.round(Math.max(140, Math.min(innerWidth * 0.45, side === 'left' ? m.clientX : innerWidth - m.clientX)));
+      document.body.style.setProperty(`--${side}`, `${w}px`);
+      placeSplitters();
+    };
+  };
+  bar.onpointerup = bar.onlostpointercapture = () => {
+    if (!bar.onpointermove) return;
+    bar.onpointermove = null;
+    bar.classList.remove('drag');
+    try { localStorage.setItem(`pane-${side}`, parseInt(getComputedStyle(document.body).getPropertyValue(`--${side}`))); } catch {}
+    onScroll(); // more or fewer rows may fit
+  };
+  bar.ondblclick = () => {
+    document.body.style.removeProperty(`--${side}`);
+    try { localStorage.removeItem(`pane-${side}`); } catch {}
+    placeSplitters();
+  };
+}
+addEventListener('resize', placeSplitters);
+placeSplitters();
+
 // ---- undo / redo ----------------------------------------------------------------
 
 function showHistory({ undo, redo }) {

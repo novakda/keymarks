@@ -479,6 +479,21 @@ try {
   await page.keyboard.press('Control+z');
   await idle();
 
+  // 10c. Pane splitter: drag, remembered across a reload, double-click resets
+  const navWidth = () => page.evaluate(() => Math.round(document.querySelector('nav').getBoundingClientRect().width));
+  const w0 = await navWidth();
+  const bar = await page.locator('#split-left').boundingBox();
+  await page.mouse.move(bar.x + 3, bar.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(bar.x + 63, bar.y + 100, { steps: 5 });
+  await page.mouse.up();
+  const w1 = await navWidth();
+  await page.reload();
+  await idle();
+  check('splitter resizes the side pane and remembers it', Math.abs(w1 - w0 - 60) <= 2 && (await navWidth()) === w1, `${w0} → ${w1}`);
+  await page.dblclick('#split-left');
+  check('double-click resets the pane', (await navWidth()) === w0);
+
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');
   await page.waitForSelector('#import-dlg[open]');
