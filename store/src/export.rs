@@ -21,6 +21,7 @@ pub struct ExportRow {
     pub visits: i64,
     pub rating: i64,
     pub check_enabled: bool,
+    pub schedule: Option<String>,
     /// The record imported from Powermarks, if any (kept so unknown fields survive).
     pub pm_mdata: Option<String>,
 }
@@ -29,7 +30,7 @@ impl Store {
     /// Rows to export: the given ids in that order, or every bookmark (oldest first).
     pub fn export_rows(&self, ids: Option<&[i64]>) -> Result<Vec<ExportRow>> {
         let cols = "url, title, keywords, description, notes, user_field, added, last_visited, last_modified, \
-                    last_checked, visits, rating, check_enabled, pm_mdata";
+                    last_checked, visits, rating, check_enabled, pm_mdata, schedule";
         let map = |r: &rusqlite::Row| {
             Ok(ExportRow {
                 url: r.get(0)?,
@@ -46,6 +47,7 @@ impl Store {
                 rating: r.get(11)?,
                 check_enabled: r.get(12)?,
                 pm_mdata: r.get(13)?,
+                schedule: r.get(14)?,
             })
         };
         match ids {
@@ -151,6 +153,9 @@ pub fn to_pm35(rows: &[ExportRow]) -> Vec<u8> {
             m[field::VISITS] = format!("{:X}", r.visits.max(0));
             m[field::RATING] = format!("{:X}", r.rating.clamp(0, 10));
             m[field::CHECK_ENABLED] = if r.check_enabled { "1" } else { "0" }.into();
+            if let Some(name) = &r.schedule {
+                m[field::SCHEDULE] = pm_text(name);
+            }
             let extras = [("keywords", &r.keywords), ("notes", &r.notes), ("desc", &r.description), ("user_field", &r.user_field)]
                 .into_iter()
                 .filter(|(_, v)| !v.is_empty())

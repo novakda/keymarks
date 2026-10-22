@@ -62,6 +62,7 @@ const COLUMNS = [
   { id: 'visits', label: 'Visits', width: '4.5em', cell: (b) => String(b.visits), num: true, desc: true },
   { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
   { id: 'check_status', label: 'Status', width: '9em', cell: checkLabel },
+  { id: 'schedule', label: 'Schedule', width: '7em', cell: (b) => b.schedule ?? 'Manual' },
 ];
 let view = 'cards';
 let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
@@ -475,6 +476,41 @@ async function open(id, { newWindow = false } = {}) {
   } catch (e) { say(String(e)); }
 }
 
+// ---- check schedules (names come from Settings; "" = checked only when asked) -------
+
+let scheduleNames = [];
+async function refreshScheduleNames() {
+  scheduleNames = await invoke('schedule_names').catch(() => []);
+}
+refreshScheduleNames();
+function fillScheduleSelect(select, current) {
+  const names = [...scheduleNames];
+  // A schedule no longer in Settings still shows, so it isn't silently dropped.
+  if (current && !names.some((n) => n.toLowerCase() === current.toLowerCase())) names.push(current);
+  select.replaceChildren(new Option('Only when I ask', ''), ...names.map((n) => new Option(n, n)));
+  select.value = names.find((n) => n.toLowerCase() === (current ?? '').toLowerCase()) ?? '';
+}
+const setSchedule = busyAware(async (toSet, schedule) => {
+  try {
+    const n = await invoke('set_schedule', { ids: toSet, schedule });
+    await refresh();
+    say(`${n} bookmark${n === 1 ? '' : 's'} ${schedule ? `on the ${schedule} schedule` : 'checked only when you ask'}. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Schedule')(e); }
+});
+let schedIds = [];
+function openScheduleDialog(chosen) {
+  if (!chosen.length || !confirmDiscard()) return;
+  schedIds = chosen;
+  $('sd-label').textContent = `Schedule for ${chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`}`;
+  fillScheduleSelect($('sd-schedule'), cache.get(chosen[0])?.schedule);
+  $('sched-dlg').showModal();
+}
+$('sched-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  $('sched-dlg').close();
+  setSchedule(schedIds, $('sd-schedule').value);
+});
+
 // Powermarks' Add Common Keywords: the same words onto every selected bookmark, one undo step.
 let addKwIds = [];
 function openAddKeywords(chosen) {
@@ -573,6 +609,7 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
+  else if (act === 'schedule') openScheduleDialog(chosen);
   else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
   else if (act === 'pin') $('pin-link').click();
   else if (act === 'export') {
@@ -716,7 +753,7 @@ window.__TAURI__.event.listen('check-progress', async ({ payload: p }) => {
   if (!dirty) await refresh();
   const parts = Object.entries(p.counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${(CHECK_LABELS[k] ?? k).replace(/^\S+ /, '').toLowerCase()}`);
   let msg = p.offline ? 'Stopped: you seem to be offline.'
-    : `${p.cancelled ? 'Cancelled after' : 'Checked'} ${p.done} link${p.done === 1 ? '' : 's'}${parts.length ? `: ${parts.join(', ')}` : ''}.`;
+    : `${p.scheduled ? 'Scheduled check: ' : ''}${p.cancelled ? 'Cancelled after' : 'Checked'} ${p.done} link${p.done === 1 ? '' : 's'}${parts.length ? `: ${parts.join(', ')}` : ''}.`;
   if (p.repaired) msg += ` Updated ${p.repaired} moved URL${p.repaired === 1 ? '' : 's'} (Ctrl+Z undoes).`;
   if (p.error) msg += ` Error: ${p.error}`;
   say(msg);
@@ -772,6 +809,8 @@ $('settings-open').onclick = async () => {
     $('s-hotkey').value = s.hotkey;
     $('s-repair').checked = s.repair_moved_urls;
     $('s-fast').value = s.fast_add_keywords;
+    $('s-scheduled').checked = s.scheduled_checks;
+    $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
     $('settings').showModal();
   } catch (e) { fail('Settings')(e); }
@@ -795,10 +834,13 @@ $('s-save').onclick = busyAware(async () => {
     hotkey: $('s-hotkey').value.trim(),
     repair_moved_urls: $('s-repair').checked,
     fast_add_keywords: $('s-fast').value.trim(),
+    scheduled_checks: $('s-scheduled').checked,
+    schedules: $('s-schedules').value,
   };
   try {
     await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
     $('settings').close();
+    await refreshScheduleNames();
     say('Settings saved.');
   } catch (e) { $('s-error').textContent = String(e); }
 });
@@ -1214,7 +1256,7 @@ function renderPanel() {
   const date = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
   $('info').textContent =
     `Added ${date(editing.added)} · Visited ${editing.visits} time${editing.visits === 1 ? '' : 's'} · Last visited ${date(editing.last_visited)}`;
-  form.oninput = (e) => { if (e.target.id !== 'f-kw' && e.target.id !== 'f-check') setDirty(true); };
+  form.oninput = (e) => { if (!['f-kw', 'f-check', 'f-schedule'].includes(e.target.id)) setDirty(true); }; // those save at once
   form.onsubmit = (e) => { e.preventDefault(); save(); };
   $('revert').onclick = () => { dirty = false; renderPanel(); };
   $('del-one').onclick = () => remove([editing.id]);
@@ -1223,6 +1265,8 @@ function renderPanel() {
     ? `· last result: ${checkLabel(editing)}${editing.last_checked ? `, ${new Date(editing.last_checked * 1000).toLocaleDateString()}` : ''}`
     : '· never checked';
   $('f-check').onchange = (e) => setCheckEnabled([editing.id], e.target.checked);
+  fillScheduleSelect($('f-schedule'), editing.schedule);
+  $('f-schedule').onchange = (e) => setSchedule([editing.id], e.target.value);
   $('pin-link').onclick = () => openSavedDialog({ id: 0, kind: 'link', name: editing.title || editing.url, query: '', options: '{}', url: editing.url });
   $('kw-sort').onclick = () => { chips.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })); renderChips(); setDirty(true); };
   $('f-tags').onclick = (e) => { if (e.target.id === 'f-tags') $('f-kw').focus(); };

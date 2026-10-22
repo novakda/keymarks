@@ -102,7 +102,7 @@ END;
 const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
 const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, \
                     b.last_visited, b.visits, b.last_modified, b.last_checked, b.status, \
-                    b.check_enabled, b.check_status, b.http_status, b.changed";
+                    b.check_enabled, b.check_status, b.http_status, b.changed, b.schedule";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -132,6 +132,9 @@ pub struct Bookmark {
     /// Content changed since it was last opened.
     #[serde(default)]
     pub changed: bool,
+    /// Link-check schedule name (Powermarks' mdata f0); None = checked only on request.
+    #[serde(default)]
+    pub schedule: Option<String>,
 }
 
 fn yes() -> bool {
@@ -226,6 +229,7 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
         check_status: r.get(14)?,
         http_status: r.get(15)?,
         changed: r.get(16)?,
+        schedule: r.get(17)?,
     })
 }
 
@@ -314,6 +318,23 @@ impl Store {
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
+        // v5: link-check schedules. Powermarks' per-bookmark schedule name (mdata f0) carries
+        // over; nothing is checked on a schedule until the user turns that on.
+        if version < 5 {
+            let tx = store.conn.transaction()?;
+            let have: Vec<String> =
+                tx.prepare("SELECT name FROM pragma_table_info('bookmark')")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
+            if !have.iter().any(|h| h == "schedule") {
+                tx.execute_batch("ALTER TABLE bookmark ADD COLUMN schedule TEXT")?;
+            }
+            tx.execute(
+                &format!("UPDATE bookmark SET schedule = nullif(substr(pm_mdata, 1, instr(pm_mdata || '][', '][') - 1), '')
+                 WHERE schedule IS NULL AND pm_mdata IS NOT NULL /* field {} */", field::SCHEDULE),
+                [],
+            )?;
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -378,8 +399,8 @@ impl Store {
         {
             let mut insert = tx.prepare(
                 "INSERT INTO bookmark (url, title, keywords, description, notes, user_field,
-                    added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata, schedule)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             )?;
             for e in &db.entries {
                 let text = |name| e.extra(name).map(decode_text).unwrap_or_default();
@@ -401,6 +422,7 @@ impl Store {
                     num(field::RATING),
                     num(field::STATUS),
                     e.mdata.join("]["),
+                    e.mdata.get(field::SCHEDULE).filter(|s| !s.is_empty()),
                 ])?;
                 let id = tx.last_insert_rowid();
                 if e.mdata.get(field::CHECK_ENABLED).map(String::as_str) == Some("0") {
@@ -775,6 +797,33 @@ impl Store {
         self.conn.query_row(&sql, [url], bookmark).optional()
     }
 
+    /// Put bookmarks on a link-check schedule (None: checked only on request), one undo step.
+    pub fn set_schedule(&mut self, ids: &[i64], schedule: Option<&str>) -> Result<usize> {
+        let name = format!("Set check schedule of {} bookmark{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let json = serde_json::to_string(ids).expect("ids serialize");
+            s.conn.execute("UPDATE bookmark SET schedule = ?2 WHERE id IN (SELECT value FROM json_each(?1))", params![json, schedule])
+        })
+    }
+
+    /// Bookmarks due for a scheduled check, longest overdue first: checking on, on one of
+    /// `schedules` (name, seconds), and never checked or last checked that long ago.
+    pub fn due_for_check(&self, schedules: &[(String, i64)], now: i64, limit: usize) -> Result<Vec<CheckTarget>> {
+        let json = serde_json::to_string(&schedules.iter().map(|(n, s)| serde_json::json!([n.to_lowercase(), s])).collect::<Vec<_>>())
+            .expect("schedules serialize");
+        self.conn
+            .prepare(
+                "SELECT b.id, b.url, b.etag, b.last_modified, b.content_hash FROM bookmark b
+                 JOIN (SELECT lower(value ->> 0) AS name, value ->> 1 AS secs FROM json_each(?1)) s ON lower(b.schedule) = s.name
+                 WHERE b.check_enabled = 1 AND coalesce(b.last_checked, 0) + s.secs <= ?2
+                 ORDER BY coalesce(b.last_checked, 0) + s.secs, b.id LIMIT ?3",
+            )?
+            .query_map(params![json, now, limit as i64], |r| {
+                Ok(CheckTarget { id: r.get(0)?, url: r.get(1)?, etag: r.get(2)?, last_modified: r.get(3)?, content_hash: r.get(4)? })
+            })?
+            .collect()
+    }
+
     /// What the link checker needs for each enabled bookmark among `ids`.
     /// Bookmarks to check: the given ones, or (None) every one with checking on.
     pub fn check_targets(&self, ids: Option<&[i64]>) -> Result<Vec<CheckTarget>> {
@@ -1078,6 +1127,29 @@ fn cp1252(b: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn schedules_pick_due_bookmarks_and_carry_over_from_powermarks() {
+        let mut s = store(); // two imported Powermarks entries
+        let ids: Vec<i64> = s.search("", 10).unwrap().into_iter().map(|b| b.id).collect();
+        let schedules = [("Weekly".to_string(), 7 * 86400), ("Daily".to_string(), 86400)];
+        let now = 2_000_000_000;
+        let imported: Vec<_> = ids.iter().map(|&id| s.get(id).unwrap().unwrap().schedule).collect();
+        assert!(imported.iter().all(Option::is_some), "mdata f0 carried over: {imported:?}");
+        s.set_schedule(&ids, Some("daily")).unwrap();
+        assert_eq!(s.due_for_check(&schedules, now, 10).unwrap().len(), 2, "never checked: due (names ignore case)");
+        s.record_check(ids[0], &CheckRecord { status: "ok".into(), ..Default::default() }).unwrap();
+        let checked = s.get(ids[0]).unwrap().unwrap().last_checked.unwrap();
+        assert_eq!(s.due_for_check(&schedules, checked + 100, 10).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), [ids[1]]);
+        assert_eq!(s.due_for_check(&schedules, checked + 86400, 10).unwrap().len(), 2, "a day later both are due");
+        assert_eq!(s.due_for_check(&schedules, now, 1).unwrap().len(), 1, "limit");
+        s.set_schedule(&[ids[1]], None).unwrap();
+        s.set_check_enabled(&[ids[0]], false).unwrap();
+        assert!(s.due_for_check(&schedules, now, 10).unwrap().is_empty(), "manual and disabled are never due");
+        s.undo().unwrap();
+        s.undo().unwrap();
+        assert_eq!(s.get(ids[1]).unwrap().unwrap().schedule.as_deref(), Some("daily"));
+    }
+
     #[test]
     fn title_words_become_keywords() {
         assert_eq!(super::title_keywords("The Rust Programming Language - 2nd Edition (2024) | rust-lang"), "rust programming language 2nd edition rust-lang");

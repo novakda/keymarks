@@ -43,15 +43,17 @@ pub struct Progress {
     pub offline: bool,
     pub repaired: usize,
     pub error: Option<String>,
+    /// Started by the schedule, not by the user.
+    pub scheduled: bool,
     /// Bookmarks finished since the previous event (the UI clears their "waiting" mark).
     pub recent: Vec<i64>,
 }
 
 /// Check `targets` in the background, store each result, and finally repair permanently
 /// moved URLs (one undoable step) if `repair` is set.
-pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool) {
+pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool, scheduled: bool) {
     let state = app.state::<CheckState>();
-    let mut progress = Progress { total: targets.len(), ..Default::default() };
+    let mut progress = Progress { total: targets.len(), scheduled, ..Default::default() };
     let client = match client() {
         Ok(c) => c,
         Err(e) => {

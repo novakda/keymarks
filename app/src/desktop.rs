@@ -27,12 +27,55 @@ pub struct Settings {
     /// Keywords given to bookmarks added without a dialog (fast add, clipboard), so they can
     /// be reviewed later. The browser host reads this too.
     pub fast_add_keywords: String,
+    /// Link-check schedules, one per line: "Name = interval" (see `parse_schedules`).
+    pub schedules: String,
+    /// Check links on their schedules in the background. Off until the user turns it on:
+    /// imported Powermarks schedules would otherwise start thousands of checks at once.
+    pub scheduled_checks: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { close_to_tray: false, start_minimized: true, hotkey: "Ctrl+Alt+P".into(), repair_moved_urls: true, fast_add_keywords: "new".into() }
+        Settings {
+            close_to_tray: false,
+            start_minimized: true,
+            hotkey: "Ctrl+Alt+P".into(),
+            repair_moved_urls: true,
+            fast_add_keywords: "new".into(),
+            schedules: "Daily = 1d\nWeekly = 1w\nMonthly = 1mo".into(),
+            scheduled_checks: false,
+        }
     }
+}
+
+/// "Name = interval" lines into (name, seconds). Intervals as in Powermarks: a number and a
+/// unit, min (minutes), h, d, w, mo (months of 30 days) or y; "1.5d" works too.
+pub fn parse_schedules(text: &str) -> Result<Vec<(String, i64)>, String> {
+    let mut out: Vec<(String, i64)> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (name, every) = line.split_once('=').ok_or_else(|| format!("\"{line}\": write it as Name = interval, e.g. Weekly = 1w"))?;
+        let (name, every) = (name.trim(), every.trim().to_lowercase());
+        let split = every.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(every.len());
+        let n: f64 = every[..split].parse().map_err(|_| format!("\"{line}\": the interval needs a number, e.g. 1w"))?;
+        let unit = match every[split..].trim() {
+            "min" | "mi" | "m" => 60,
+            "h" => 3600,
+            "d" => 86400,
+            "w" => 7 * 86400,
+            "mo" => 30 * 86400,
+            "y" => 365 * 86400,
+            u => return Err(format!("\"{line}\": unknown unit \"{u}\" (use min, h, d, w, mo or y)")),
+        };
+        let seconds = (n * unit as f64) as i64;
+        if name.is_empty() || seconds < 3600 {
+            return Err(format!("\"{line}\": needs a name and at least an hour"));
+        }
+        if out.iter().any(|(o, _)| o.eq_ignore_ascii_case(name)) {
+            return Err(format!("\"{name}\" is listed twice"));
+        }
+        out.push((name.to_string(), seconds));
+    }
+    Ok(out)
 }
 
 pub struct SettingsState {
@@ -144,4 +187,21 @@ pub fn tray_menu<R: Runtime>(app: &AppHandle<R>, results: &[(i64, String)]) -> t
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
     Ok(menu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_schedules;
+
+    #[test]
+    fn schedules_parse_like_powermarks() {
+        assert_eq!(
+            parse_schedules("Daily = 1d\n\n Weekly=1w \nTwice a day = 12h\nQuarterly = 3mo\nSlow = 1.5d").unwrap(),
+            [("Daily".into(), 86400), ("Weekly".into(), 604800), ("Twice a day".into(), 43200), ("Quarterly".into(), 7776000), ("Slow".into(), 129600)]
+        );
+        assert!(parse_schedules("Daily").is_err());
+        assert!(parse_schedules("Fast = 5min").is_err(), "at least an hour");
+        assert!(parse_schedules("A = 1d\na = 2d").is_err(), "duplicate names");
+        assert!(parse_schedules("A = 1 fortnight").is_err());
+    }
 }

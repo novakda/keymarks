@@ -442,6 +442,7 @@ fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings
     if autostart != al.is_enabled().unwrap_or(false) {
         if autostart { al.enable() } else { al.disable() }.map_err(err)?;
     }
+    desktop::parse_schedules(&settings.schedules)?;
     let new = Settings { hotkey, ..settings };
     state.save(&new)?;
     *current = new;
@@ -469,12 +470,24 @@ fn start_check(
     settings: State<SettingsState>,
     ids: Option<Vec<i64>>,
 ) -> Result<Vec<i64>, String> {
+    let repair = settings.current.lock().unwrap().repair_moved_urls;
+    begin_check(&app, &checks, repair, false, || db.lock().unwrap().check_targets(ids.as_deref()))
+}
+
+/// Start a batch unless one is running; `targets` is only read once that's settled.
+fn begin_check(
+    app: &AppHandle,
+    checks: &checker::CheckState,
+    repair: bool,
+    scheduled: bool,
+    targets: impl FnOnce() -> store::Result<Vec<store::CheckTarget>>,
+) -> Result<Vec<i64>, String> {
     use std::sync::atomic::Ordering;
     if checks.running.swap(true, Ordering::SeqCst) {
         return Err("a link check is already running".into());
     }
     checks.cancel.store(false, Ordering::SeqCst);
-    let targets = match db.lock().unwrap().check_targets(ids.as_deref()) {
+    let targets = match targets() {
         Ok(t) => t,
         Err(e) => {
             checks.running.store(false, Ordering::SeqCst);
@@ -482,9 +495,41 @@ fn start_check(
         }
     };
     let queued = targets.iter().map(|t| t.id).collect();
-    let repair = settings.current.lock().unwrap().repair_moved_urls;
-    tauri::async_runtime::spawn(checker::run_batch(app, targets, repair));
+    tauri::async_runtime::spawn(checker::run_batch(app.clone(), targets, repair, scheduled));
     Ok(queued)
+}
+
+/// Scheduled checks, when turned on: every 10 minutes, the 200 most overdue links (so a
+/// backlog spreads out instead of hitting the network all at once). Never in test mode.
+fn run_scheduler(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(120)); // let startup settle
+        loop {
+            let settings = app.state::<SettingsState>().current.lock().unwrap().clone();
+            if settings.scheduled_checks {
+                let schedules = desktop::parse_schedules(&settings.schedules).unwrap_or_default();
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let due = app.state::<Db>().lock().unwrap().due_for_check(&schedules, now, 200).unwrap_or_default();
+                // Nothing due, or a check is already running: try again next round.
+                if !due.is_empty() {
+                    let _ = begin_check(&app, &app.state::<checker::CheckState>(), settings.repair_moved_urls, true, || Ok(due));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(600));
+        }
+    });
+}
+
+/// Put the selected bookmarks on a link-check schedule ("" = only when asked).
+#[tauri::command]
+fn set_schedule(db: State<Db>, ids: Vec<i64>, schedule: String) -> Result<usize, String> {
+    let schedule = schedule.trim();
+    db.lock().unwrap().set_schedule(&ids, (!schedule.is_empty()).then_some(schedule)).map_err(err)
+}
+
+#[tauri::command]
+fn schedule_names(settings: State<SettingsState>) -> Vec<String> {
+    desktop::parse_schedules(&settings.current.lock().unwrap().schedules).unwrap_or_default().into_iter().map(|(n, _)| n).collect()
 }
 
 #[tauri::command]
@@ -636,6 +681,9 @@ fn main() {
                 eprintln!("{e}");
             }
             desktop::build_tray(app.handle())?;
+            if !desktop::test_mode() {
+                run_scheduler(app.handle().clone());
+            }
             #[cfg(not(debug_assertions))]
             register_bundled_host(app.handle());
             // Started with Windows (autostart passes --minimized): stay in the tray if asked.
@@ -703,7 +751,9 @@ fn main() {
             move_saved_item,
             open_link,
             open_bookmark_new_window,
-            add_keywords
+            add_keywords,
+            set_schedule,
+            schedule_names
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");

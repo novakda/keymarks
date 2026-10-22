@@ -288,6 +288,7 @@
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
   <button role="menuitem" data-act="fetch">Fetch title and description (F7)</button>
   <button role="menuitem" data-act="checking"></button>
+  <button role="menuitem" data-act="schedule">Check schedule…</button>
   <button role="menuitem" data-act="addkw">Add keywords…</button>
   <button role="menuitem" data-act="pin">Pin to Saved…</button>
   <button role="menuitem" data-act="export">Export…</button>
@@ -368,6 +369,20 @@
   </form>
 </dialog>
 
+<dialog id="sched-dlg" aria-labelledby="sched-title">
+  <form method="dialog" id="sched-form">
+    <h2 id="sched-title">Check schedule</h2>
+    <div class="settings-body">
+      <label for="sd-schedule" id="sd-label">Schedule</label>
+      <select id="sd-schedule"></select>
+    </div>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit">Set</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="addkw-dlg" aria-labelledby="addkw-title">
   <form method="dialog" id="addkw-form">
     <h2 id="addkw-title">Add keywords</h2>
@@ -411,6 +426,9 @@
       <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
       <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
       <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
+      <label><input type="checkbox" id="s-scheduled"> Check links on their schedules in the background (a few hundred every 10 minutes, oldest first)</label>
+      <label for="s-schedules">Check schedules, one per line: <code>Name = interval</code> (min, h, d, w, mo, y)</label>
+      <textarea id="s-schedules" rows="3" spellcheck="false"></textarea>
       <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
       <input id="s-fast" placeholder="e.g. new">
       <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
@@ -470,6 +488,7 @@
       <button id="del-one" type="button" class="danger">Delete</button>
     </div>
     <label class="check-line"><input type="checkbox" id="f-check"> Check this link <span id="f-check-status"></span></label>
+    <label class="check-line">Check schedule <select id="f-schedule"></select></label>
     <button id="pin-link" type="button" class="secondary" style="margin-top:8px">Pin to Saved</button>
     <div class="info" id="info"></div>
   </form>
