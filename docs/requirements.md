@@ -264,7 +264,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | OPT-01 | Options dialog with tree of pages | Startup, UI, Fonts, Colors, Tray, Date/Time, Hotkeys, Status Checking, Icons, Proxy, Proxy Exceptions, Browsers (+5 browser tabs), Diagnostics (§8.1) | One Settings page: General (startup/tray), Search, Display, Hotkeys, Checking, Import/Export, Sync, Advanced. Drop the per-browser tabs | P1 | done (one Settings dialog in sections: Startup and tray, Hotkey, Adding, Link checking) |
-| OPT-02 | Settings portable in one file | pm35.ini (§8) | `settings` table in the DB (moves with backups), or `settings.json` in AppData | P1 | partial (settings.json for app/desktop; view and search options per machine) |
+| OPT-02 | Settings portable in one file | pm35.ini (§8) | `settings` table in the DB (moves with backups), or `settings.json` in AppData | P1 | done (settings.json holds app settings and the view and search preferences: view, columns and widths, panes, search options) |
 | OPT-03 | Import pm35.ini settings | Not in original | Optional one-shot mapping of relevant keys (search, display, hotkeys, fast-add keywords) | P3 | todo |
 | OPT-04 | Process priority boost | ini `gui.boost_priority` | Drop | P3 | drop |
 

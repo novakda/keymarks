@@ -99,6 +99,8 @@ setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); r
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
 // A WebView2 profile of its own: one left over from a previous run (or the user's) would be
 // joined instead, and that one wasn't started with the debugging port.
+// A saved preference the page must start with (settings.json seeds localStorage).
+fs.writeFileSync(path.join(work, 'settings.json'), JSON.stringify({ ui: { 'import-title-words': '1' } }));
 const webviewData = fs.mkdtempSync(path.join(os.tmpdir(), 'km-e2e-webview-'));
 startApp({ WEBVIEW2_USER_DATA_FOLDER: webviewData, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
 const { browser, page } = await connect().catch(emergencyExit);
@@ -128,6 +130,7 @@ await page.waitForSelector('#status');
 await idle();
 
 const saved = await page.evaluate(() => JSON.stringify({ ...localStorage }));
+const seeded = JSON.parse(saved)['import-title-words'] === '1';
 await page.evaluate(() => localStorage.clear()); // known defaults: all fields, cards, default columns
 await page.reload();
 await idle();
@@ -137,6 +140,7 @@ const check = (name, ok, detail = '') => {
   results.push({ name, ok: !!ok, detail });
   log(`${ok ? 'ok  ' : 'FAIL'} ${name}`);
 };
+check('saved preferences seed the page', seeded);
 
 const statusText = () => page.textContent('#status');
 async function search(text) {
@@ -653,6 +657,10 @@ try {
   check('dragging a header moves the column, remembered', order1[0] === order0[1] && order1[1] === order0[0] && (await heads()).join() === order1.join(), order1.join(' '));
   check('a header drag does not sort', (await page.$$eval('#table-head th', (ths) => ths.map((th) => th.ariaSort).join())) === sortsBefore);
   await dragHeader(1, 2);
+  // View preferences are copied to settings.json beside the database (OPT-02).
+  const uiPrefs = () => { try { return JSON.parse(fs.readFileSync(path.join(work, 'settings.json'), 'utf8')).ui || {}; } catch { return {}; } };
+  for (let i = 0; i < 20 && !uiPrefs().columns?.startsWith('["title"'); i++) await sleep(100);
+  check('view and columns saved in settings.json', uiPrefs().view === 'table' && uiPrefs().columns?.startsWith('["title"'), Object.keys(uiPrefs()).join(' '));
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');

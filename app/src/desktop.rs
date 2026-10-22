@@ -32,6 +32,9 @@ pub struct Settings {
     /// Check links on their schedules in the background. Off until the user turns it on:
     /// imported Powermarks schedules would otherwise start thousands of checks at once.
     pub scheduled_checks: bool,
+    /// View and search preferences (view, columns, widths, panes, search options), kept by
+    /// the page in localStorage and copied here so they travel with this file.
+    pub ui: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -44,6 +47,7 @@ impl Default for Settings {
             fast_add_keywords: "new".into(),
             schedules: "Daily = 1d\nWeekly = 1w\nMonthly = 1mo".into(),
             scheduled_checks: false,
+            ui: Default::default(),
         }
     }
 }

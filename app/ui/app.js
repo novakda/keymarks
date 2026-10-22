@@ -23,7 +23,11 @@ let version = null;
 let narrowed = [];         // keyword dictionary for the current search
 let dictionary = [];       // every keyword (autocomplete, tag state)
 
-// Search options persist per machine; storage may be unavailable, so never depend on it.
+// View and search preferences: read from localStorage, copied to settings.json on every
+// change (the app seeds localStorage from it at startup), so they travel with that file.
+// Storage may be unavailable, so never depend on it.
+const savePrefs = () => { try { invoke('save_ui_prefs', { prefs: { ...localStorage } }).catch(() => {}); } catch {} };
+savePrefs(); // also carries over preferences kept by versions before 0.8
 const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false, sort: [] };
 let opts = { ...DEFAULT_OPTS };
 try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
@@ -257,7 +261,7 @@ function startColResize(e, cols, c) {
   const up = () => {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
-    try { localStorage.setItem('col-widths', JSON.stringify(colWidths)); } catch {}
+    try { localStorage.setItem('col-widths', JSON.stringify(colWidths)); savePrefs(); } catch {}
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
@@ -284,7 +288,7 @@ function startColMove(e, c) {
     if (to && to !== c.id) {
       shownCols = shownCols.filter((id) => id !== c.id);
       shownCols.splice(shownCols.indexOf(to) + (u.clientX - x0 > 0 ? 1 : 0), 0, c.id);
-      try { localStorage.setItem('columns', JSON.stringify(shownCols)); } catch {}
+      try { localStorage.setItem('columns', JSON.stringify(shownCols)); savePrefs(); } catch {}
     }
     render();
   };
@@ -319,7 +323,7 @@ function renderTable() {
     grip.onpointerdown = (e) => startColResize(e, cols, c);
     grip.ondblclick = () => {
       colWidths = {};
-      try { localStorage.removeItem('col-widths'); } catch {}
+      try { localStorage.removeItem('col-widths'); savePrefs(); } catch {}
       applyColWidths(cols);
     };
     th.append(btn, grip);
@@ -396,7 +400,7 @@ function renderCards() {
 
 function setView(v) {
   view = v;
-  try { localStorage.setItem('view', v); } catch {}
+  try { localStorage.setItem('view', v); savePrefs(); } catch {}
   list.hidden = v === 'table';
   tablewrap.hidden = v !== 'table';
   $('cols').hidden = v !== 'table';
@@ -415,7 +419,7 @@ $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
   box.disabled = c.id === 'title';
   box.onchange = () => {
     shownCols = box.checked ? [...shownCols, c.id] : shownCols.filter((id) => id !== c.id); // keeps the user's order
-    try { localStorage.setItem('columns', JSON.stringify(shownCols)); } catch {}
+    try { localStorage.setItem('columns', JSON.stringify(shownCols)); savePrefs(); } catch {}
     render();
   };
   label.append(box, c.label);
@@ -648,12 +652,12 @@ for (const side of ['left', 'right']) {
     if (!bar.onpointermove) return;
     bar.onpointermove = null;
     bar.classList.remove('drag');
-    try { localStorage.setItem(`pane-${side}`, parseInt(getComputedStyle(document.body).getPropertyValue(`--${side}`))); } catch {}
+    try { localStorage.setItem(`pane-${side}`, parseInt(getComputedStyle(document.body).getPropertyValue(`--${side}`))); savePrefs(); } catch {}
     onScroll(); // more or fewer rows may fit
   };
   bar.ondblclick = () => {
     document.body.style.removeProperty(`--${side}`);
-    try { localStorage.removeItem(`pane-${side}`); } catch {}
+    try { localStorage.removeItem(`pane-${side}`); savePrefs(); } catch {}
     placeSplitters();
   };
 }
@@ -1364,7 +1368,7 @@ function applyOptsToUi() {
 }
 
 function saveOpts() {
-  try { localStorage.setItem('searchOptions', JSON.stringify(opts)); } catch {}
+  try { localStorage.setItem('searchOptions', JSON.stringify(opts)); savePrefs(); } catch {}
 }
 
 function optsChanged() {
@@ -1536,7 +1540,7 @@ importBtn.onclick = busyAware(async () => {
 });
 
 try { $('import-title-words').checked = localStorage.getItem('import-title-words') === '1'; } catch {}
-$('import-title-words').onchange = (e) => { try { localStorage.setItem('import-title-words', e.target.checked ? '1' : '0'); } catch {} };
+$('import-title-words').onchange = (e) => { try { localStorage.setItem('import-title-words', e.target.checked ? '1' : '0'); savePrefs(); } catch {} };
 
 $('import-html').onclick = busyAware(async () => {
   try {

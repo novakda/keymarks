@@ -478,9 +478,21 @@ fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings
         if autostart { al.enable() } else { al.disable() }.map_err(err)?;
     }
     desktop::parse_schedules(&settings.schedules)?;
-    let new = Settings { hotkey, ..settings };
+    let new = Settings { hotkey, ui: current.ui.clone(), ..settings };
     state.save(&new)?;
     *current = new;
+    Ok(())
+}
+
+/// The page's view and search preferences, saved whenever one changes.
+#[tauri::command]
+fn save_ui_prefs(state: State<SettingsState>, prefs: std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    let mut current = state.current.lock().unwrap();
+    if current.ui != prefs {
+        let new = Settings { ui: prefs, ..current.clone() };
+        state.save(&new)?;
+        *current = new;
+    }
     Ok(())
 }
 
@@ -730,7 +742,18 @@ fn main() {
             // Created here (not from config) so test mode can make it impossible to activate.
             // Normally it starts hidden and show_main shows and focuses it.
             let test = desktop::test_mode();
+            // The saved view and search preferences replace the page's on its first load of
+            // this run (reloads keep what the page has since changed).
+            let seed = if current.ui.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "try {{ if (!sessionStorage.getItem('km-seeded')) {{ localStorage.clear(); Object.assign(localStorage, {}); sessionStorage.setItem('km-seeded', '1'); }} }} catch {{}}",
+                    serde_json::to_string(&current.ui)?
+                )
+            };
             tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+                .initialization_script(&seed)
                 .focused(!test)
                 .focusable(!test)
                 .visible(test)
@@ -751,6 +774,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             search_ids,
+            save_ui_prefs,
             get_bookmarks,
             count,
             import_pm35,
