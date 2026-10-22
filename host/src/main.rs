@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use store::Store;
 
 const NAME: &str = "com.pattern158.keymarks";
@@ -91,6 +91,22 @@ fn serve() -> io::Result<()> {
     Ok(())
 }
 
+/// Starts the app beside this host, detached from the browser's pipes. Firefox runs hosts in
+/// a job that kills everything in it when the host exits, so the app breaks away from it
+/// (Firefox allows that; a job that doesn't gets a plain start).
+fn start_app() -> io::Result<()> {
+    let app = std::env::current_exe()?.with_file_name("keymarks.exe");
+    let start = |flags: u32| {
+        let mut cmd = Command::new(&app);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, flags);
+        cmd.spawn().map(drop)
+    };
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    start(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| start(0))
+}
+
 fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
     let request = match serde_json::from_slice::<Request>(msg) {
         Ok(r) => r,
@@ -100,7 +116,7 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
         Request::Ping => json!({ "ok": true, "count": store.count().unwrap_or(-1) }),
         // The app sits next to this host. A second launch hands over to the running one,
         // which shows its window.
-        Request::Show => match std::env::current_exe().map(|e| e.with_file_name("keymarks.exe")).and_then(|app| Command::new(app).spawn()) {
+        Request::Show => match start_app() {
             Ok(_) => json!({ "ok": true }),
             Err(e) => json!({ "ok": false, "error": format!("could not start Keymarks: {e}") }),
         },
