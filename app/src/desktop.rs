@@ -24,11 +24,14 @@ pub struct Settings {
     pub hotkey: String,
     /// Link checks update URLs of pages that moved permanently (undoable).
     pub repair_moved_urls: bool,
+    /// Keywords given to bookmarks added without a dialog (fast add, clipboard), so they can
+    /// be reviewed later. The browser host reads this too.
+    pub fast_add_keywords: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { close_to_tray: false, start_minimized: true, hotkey: "Ctrl+Alt+P".into(), repair_moved_urls: true }
+        Settings { close_to_tray: false, start_minimized: true, hotkey: "Ctrl+Alt+P".into(), repair_moved_urls: true, fast_add_keywords: "new".into() }
     }
 }
 

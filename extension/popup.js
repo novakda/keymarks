@@ -1,35 +1,32 @@
-const api = globalThis.browser ?? chrome;
 const $ = (id) => document.getElementById(id);
-const HOST = 'com.pattern158.keymarks';
 const show = (text) => { $('status').textContent = text; };
 let url = '';
+let existing = false;
 
 (async () => {
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   url = tab?.url ?? '';
   $('url').textContent = url;
-  $('title').value = tab?.title ?? '';
   if (!/^https?:\/\//.test(url)) {
     $('add').disabled = true;
+    $('title').value = tab?.title ?? '';
     show('Only web pages can be added.');
     return;
   }
-  // Like Powermarks' Fetch: prefill description and keywords from the page's meta tags.
-  try {
-    const [{ result }] = await api.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const meta = (sel) => document.querySelector(sel)?.content ?? '';
-        return {
-          description: meta('meta[name="description" i]') || meta('meta[property="og:description"]'),
-          keywords: meta('meta[name="keywords" i]'),
-        };
-      },
-    });
-    $('desc').value = result.description.trim();
-    $('keywords').value = result.keywords.split(',').map((k) => k.trim()).filter(Boolean).join(' ');
-  } catch {
-    // Browser-internal or store pages can't be scripted; leave the fields empty.
+  // Already bookmarked? Then show and edit that bookmark instead of making a duplicate.
+  const found = await api.runtime.sendNativeMessage(HOST, { type: 'lookup', url }).catch(() => null);
+  if (found?.found) {
+    existing = true;
+    $('title').value = found.title;
+    $('keywords').value = found.keywords;
+    $('desc').value = found.description;
+    $('add').textContent = 'Update in Keymarks';
+    show('Already in Keymarks: edit it here.');
+  } else {
+    $('title').value = tab?.title ?? '';
+    const meta = await readPage(tab.id);
+    $('desc').value = meta.description;
+    $('keywords').value = meta.keywords;
   }
   $('keywords').focus();
 })();
@@ -44,14 +41,11 @@ $('form').addEventListener('submit', async (e) => {
       title: $('title').value,
       keywords: $('keywords').value,
       description: $('desc').value,
+      update: existing,
     });
     if (!reply?.ok) throw new Error(reply?.error ?? 'no reply');
-    if (reply.existed) {
-      show('Already in Keymarks.');
-    } else {
-      show('Added ✓');
-      setTimeout(() => window.close(), 700);
-    }
+    show(reply.updated ? 'Updated ✓' : reply.existed ? 'Already in Keymarks.' : 'Added ✓');
+    setTimeout(() => window.close(), 700);
   } catch (err) {
     show(`Couldn't reach Keymarks (${err.message}). Run keymarks-host --install.`);
     $('add').disabled = false;

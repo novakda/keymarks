@@ -144,6 +144,16 @@ pub struct ImportReport {
     pub added: usize,
     /// Already in the collection (same URL), or repeated within the import.
     pub duplicates: usize,
+    /// Ids of the bookmarks added.
+    pub ids: Vec<i64>,
+}
+
+/// What a page says about itself (title, meta description and keywords).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PageMeta {
+    pub title: String,
+    pub description: String,
+    pub keywords: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -303,10 +313,9 @@ impl Store {
     }
 
     /// Merge bookmarks into the collection, skipping URLs it already has (exact match, as
-    /// Powermarks did). One undoable step named after `source`.
-    pub fn import_bookmarks(&mut self, source: &str, items: &[NewBookmark]) -> Result<ImportReport> {
-        let name = format!("Import from {source}");
-        self.record_created(name, |s| {
+    /// Powermarks did). One undoable step called `step` (e.g. "Import from Chrome").
+    pub fn import_bookmarks(&mut self, step: &str, items: &[NewBookmark]) -> Result<ImportReport> {
+        self.record_created(step.to_string(), |s| {
             let tx = s.conn.transaction()?;
             let mut report = ImportReport::default();
             let mut ids = Vec::new();
@@ -327,6 +336,7 @@ impl Store {
                 report.added += 1;
             }
             tx.commit()?;
+            report.ids = ids.clone();
             Ok((report, ids))
         })
     }
@@ -605,6 +615,29 @@ impl Store {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Fill in what a just-added bookmark lacks from its page (Powermarks' Fetch): the title
+    /// only if it is still the URL or empty, the description only if empty; keywords merge.
+    pub fn apply_fetched(&self, id: i64, meta: &PageMeta) -> Result<()> {
+        let Some(b) = self.get(id)? else { return Ok(()) };
+        let title = if b.title.trim().is_empty() || b.title == b.url { meta.title.trim() } else { b.title.as_str() };
+        let title = if title.is_empty() { b.title.as_str() } else { title };
+        let description = if b.description.is_empty() { meta.description.trim() } else { b.description.as_str() };
+        let keywords = normalize_keywords(&format!("{} {}", b.keywords, meta.keywords.replace(',', " ")));
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE bookmark SET title = ?2, description = ?3, keywords = ?4 WHERE id = ?1",
+            params![id, title, description, keywords],
+        )?;
+        index_keywords(&tx, id, &keywords)?;
+        tx.commit()
+    }
+
+    /// The bookmark with exactly this URL, if any.
+    pub fn find_url(&self, url: &str) -> Result<Option<Bookmark>> {
+        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.url = ?1");
+        self.conn.query_row(&sql, [url], bookmark).optional()
     }
 
     /// What the link checker needs for each enabled bookmark among `ids`.
@@ -1164,8 +1197,15 @@ mod tests {
         let mut s = store(); // has http://example.com/?a=1&b=2 and http://example.com/u
         let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), added: None };
         let items = [nb("http://example.com/u", "dup"), nb("https://new.example/", "Dev Tools"), nb("https://new.example/", "again"), nb("https://two.example/", "")];
-        let r = s.import_bookmarks("Chrome (Default)", &items).unwrap();
-        assert_eq!(r, ImportReport { added: 2, duplicates: 2 });
+        let r = s.import_bookmarks("Import from Chrome (Default)", &items).unwrap();
+        assert_eq!((r.added, r.duplicates, r.ids.len()), (2, 2, 2));
+        // Fetch fills a placeholder title and empty description, merges keywords.
+        s.apply_fetched(r.ids[1], &PageMeta { title: " Two ".into(), description: "About two".into(), keywords: "x, Dev".into() }).unwrap();
+        let two = s.get(r.ids[1]).unwrap().unwrap();
+        assert_eq!((two.title.as_str(), two.description.as_str(), two.keywords.as_str()), ("Two", "About two", "x Dev"));
+        s.apply_fetched(r.ids[1], &PageMeta { title: "Other".into(), description: "Other".into(), keywords: String::new() }).unwrap();
+        assert_eq!(s.get(r.ids[1]).unwrap().unwrap().title, "Two", "a real title is kept");
+        assert_eq!(s.find_url("https://two.example/").unwrap().map(|b| b.id), Some(r.ids[1]));
         assert_eq!(s.count().unwrap(), 4);
         assert_eq!(s.search("tools", 5).unwrap().len(), 1, "folder keywords searchable");
         assert_eq!(s.undo().unwrap().as_deref(), Some("Import from Chrome (Default)"));
@@ -1201,7 +1241,7 @@ mod tests {
             let mut a = Store::open(":memory:").unwrap();
             a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses")).unwrap();
             let mut b = Store::open(":memory:").unwrap();
-            b.import_bookmarks("html", &browsers::read_netscape_html(&html)).unwrap();
+            b.import_bookmarks("Import from html", &browsers::read_netscape_html(&html)).unwrap();
             let key = |st: &Store| {
                 let mut v: Vec<(String, String, String)> =
                     st.search("", usize::MAX).unwrap().into_iter().map(|x| (x.url, x.title, normalize_keywords(&x.keywords))).collect();

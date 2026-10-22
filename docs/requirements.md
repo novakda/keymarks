@@ -90,15 +90,15 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 |---|---|---|---|---|---|
 | ADD-01 | Add from browser (edit first) | Ins / toolbar / IE toolband; fills Properties from the frontmost browser page (§4.4) | Extension toolbar popup with title, keywords, description prefilled | P1 | done |
 | ADD-02 | Prefill from page meta | Fetch-style extraction of name, description, keywords (§5.2.2) | Popup reads `meta description/og:description/keywords` from the live DOM | P1 | done |
-| ADD-03 | Duplicate on Add | Add shows the **existing** bookmark instead of a duplicate; Properties OK asks "A bookmark with the same URL already exists… replace it?" (§4.4, exe) | Host dedupes by URL; the popup says "Already in Powermarks". Todo: load the existing record into the popup for editing | P1 | partial |
-| ADD-04 | Fast Add (no dialog) | Ctrl+Ins / toolbar / tray icon; adds silently, does nothing if it exists (§4.4) | Extension command (keyboard shortcut) and context-menu item "Fast add to Powermarks"; badge ✓ as confirmation | P1 | todo |
-| ADD-05 | Fast Add default keywords | ini `bookmarks.fast_add_keywords` (§8.1.12), e.g. `new` so they can be reviewed later | Setting applied by host on fast add | P1 | todo |
+| ADD-03 | Duplicate on Add | Add shows the **existing** bookmark instead of a duplicate; Properties OK asks "A bookmark with the same URL already exists… replace it?" (§4.4, exe) | Host dedupes by URL; the popup says "Already in Powermarks". Todo: load the existing record into the popup for editing | P1 | done (popup loads and updates the existing bookmark) |
+| ADD-04 | Fast Add (no dialog) | Ctrl+Ins / toolbar / tray icon; adds silently, does nothing if it exists (§4.4) | Extension command (keyboard shortcut) and context-menu item "Fast add to Powermarks"; badge ✓ as confirmation | P1 | done (Alt+Shift+K, right-click page/link; badge confirms) |
+| ADD-05 | Fast Add default keywords | ini `bookmarks.fast_add_keywords` (§8.1.12), e.g. `new` so they can be reviewed later | Setting applied by host on fast add | P1 | done (setting, default "new") |
 | ADD-06 | Fast Add confirmation sound | Bell, can be turned off (b344; ini `bookmarks.fast_add_sound`) | Badge/notification instead; optional sound | P3 | todo |
-| ADD-07 | Add from clipboard | Alt+Ins and global hotkey: extracts **all** URLs from the clipboard (b290), adds them, then fetches title, description and keywords in the background (§8.1.7, §10.1.4) | App command and global hotkey: read clipboard text/HTML, regex URLs, insert, queue Fetch (FETCH-01) | P1 | todo |
-| ADD-08 | Blank manual add | Shift+Add opens an empty Properties dialog (§4.4) | "New bookmark" button/shortcut in app | P1 | todo |
+| ADD-07 | Add from clipboard | Alt+Ins and global hotkey: extracts **all** URLs from the clipboard (b290), adds them, then fetches title, description and keywords in the background (§8.1.7, §10.1.4) | App command and global hotkey: read clipboard text/HTML, regex URLs, insert, queue Fetch (FETCH-01) | P1 | done (Alt+Insert / menu; all URLs; titles fetched) |
+| ADD-08 | Blank manual add | Shift+Add opens an empty Properties dialog (§4.4) | "New bookmark" button/shortcut in app | P1 | done (Insert / menu: New bookmark dialog) |
 | ADD-09 | Add from a specific browser | Bookmarks > Add from IE/Netscape/Opera/NetCaptor/Mozilla (§10.1.4) | Drop; each browser has its own extension instance | P3 | drop |
 | ADD-10 | Bookmark local files | Drag files from Explorer → file-path bookmark; opens with the associated app (§4.5) | Tauri drag-drop event → `file:///` URL; open via shell. `open_url` must allow `file:` for these (it currently rejects non-http) | P2 | todo |
-| ADD-11 | Add bookmark validation | Name and URL required (exe "Please enter a URL/name for this bookmark") | Same; also normalise URL (trim, add scheme) | P1 | todo |
+| ADD-11 | Add bookmark validation | Name and URL required (exe "Please enter a URL/name for this bookmark") | Same; also normalise URL (trim, add scheme) | P1 | done (URL required, https:// added, validated) |
 | EDIT-01 | Properties dialog | Tabs: General (Name, URL, Keywords, visit count, Tagged Keywords picker, sort-keywords A→Z button), Desc & Notes, User (user field, Rating slider), Status (enable checking and fetching, schedule, Added/Modified/Visited/Checked dates), Auth (username, password) (§5.2, screenshot, exe) | One edit panel or modal with sections; all fields above | P1 | partial (side panel: title, URL, keywords, description, notes, rating) |
 | EDIT-02 | Prev/next in Properties | Alt+Left/Right (b326); Ctrl+PgUp/PgDn switch tabs (b286) | Same shortcuts in the edit panel | P2 | todo |
 | EDIT-03 | Notes field | Free text (§5.2) | Textarea; indexed by FTS (already in schema) | P1 | done |
@@ -106,7 +106,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | done (with undo) |
 | EDIT-06 | Cut/Copy/Paste bookmarks | Copy puts URLs on the clipboard; Cut deletes; Paste into the list adds bookmarks (§10.1.3; exe `k_clipboard_bookmark_format`, HTML format) | Copy = URLs as text plus HTML links; Paste = ADD-07 path | P2 | todo |
 | EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | todo |
-| FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | todo |
+| FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | partial (automatic for new bookmarks without a title; no manual Fetch command yet) |
 | FETCH-02 | Fetch with authentication | Per-bookmark username/password, Basic auth (b278, Auth tab) | Basic auth from the credential store (CHK-11) | P3 | todo |
 | FETCH-03 | Background fetch queue | Clipboard adds fetch in the background; "Fetching" status (exe) | Same worker pool as status checking | P1 | todo |
 
@@ -196,7 +196,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | IMP-08 | Opera .adr hotlist; Mozilla bookmarks.html | §7.3, b326 | Drop .adr; Mozilla HTML = IMP-04 | P3 | drop |
 | IMP-09 | Import Wizard (auto-detect installed browsers) | §7.3 | "Import from browser": Chrome/Edge `Bookmarks` JSON, Firefox `places.sqlite` (read-only copy), or via the extension `bookmarks` API | P1 | done (Chrome, Edge, Firefox profiles detected) |
 | IMP-10 | Sync with browser bookmarks | F6 / at startup: add **new** browser bookmarks not yet in Powermarks; per-browser include flags (§8.1.1, §8.1.13–17; ini `*.autosync`, `startup.browser_sync`) | Extension (with `bookmarks` permission) pushes new or changed browser bookmarks, or one-shot scan of browser files. One-way, browser → PM | P2 | todo |
-| IMP-11 | Import from clipboard | b290 | ADD-07 | P1 | todo |
+| IMP-11 | Import from clipboard | b290 | ADD-07 | P1 | done (see ADD-07) |
 | IMP-12 | Import report | "%u Powermarks imported from %s"; Wizard: "%d Favorites, %d Bookmarks…" (exe) | Toast with added/skipped counts | P1 | done (added / skipped summary) |
 | EXP-01 | Export pm35 (3.5) format | "can be imported at a later time with no loss of information" (exe) | Store → pm35 writer using raw mdata plus edited fields. Escape hatch back to the original program | P1 | done (keeps imported mdata, updates known fields; all / results / selection) |
 | EXP-02 | Export Netscape HTML | Without notes/keywords (exe) | Netscape HTML with `TAGS="…"` attribute (Firefox/Pinboard keep tags) | P1 | done (keywords as TAGS; round-trips into Keymarks) |
@@ -221,7 +221,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | BR-08 | Run browser maximised; launch browser at startup; Run IE/Netscape… (Alt+I etc.) | §8.1.13–17, §10.1.6 | Drop: browsers manage their own windows | P3 | drop |
 | BR-09 | DDE/COM/Direct methods, Bypass DDE, Use Netscape 4, profile dialog wait, Opera "clear saved windows", exec_wait/sleep_on_startup | §8.1.13–15; ini `[netscape]`, `[explorer]`, `[opera]` | Drop: replaced by the extension (gets the active tab URL/title directly) and the OS shell open | P3 | drop |
 | BR-10 | IE toolband / link-bar buttons (Show PM, Add, Fast Add) | §8.1.13; ini `explorer.show_toolband`, `integrate_linkbar`; b282 transparent toolbar | Extension toolbar button (Add), context-menu items (Add / Fast Add / Add link), and an "Open Powermarks" item that asks the host to focus the app | P1 | partial |
-| BR-11 | Add link under cursor | Not in original | Context menu on links: "Fast add link to Powermarks" (fetch fills metadata) | P2 | todo |
+| BR-11 | Add link under cursor | Not in original | Context menu on links: "Fast add link to Powermarks" (fetch fills metadata) | P2 | done (right-click a link: Fast add link) |
 | BR-12 | Search Powermarks from the browser | Not in original | Omnibox keyword (`pm <query>`) via host search → suggestions. High value with no browser-side UI | P2 | todo |
 | BR-13 | Mail links go to the mail client | b297 | `mailto:` opened via shell | P2 | todo |
 | BR-14 | Firefox and Edge support | Many browsers (§3.1) | MV3 extension works in Chrome/Edge; Firefox needs host manifest registration under the Mozilla key and `gecko` id (present) | P1 | partial (verify Firefox registration) |
@@ -250,7 +250,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | TRAY-04 | Close to tray | b326; ini `gui.close_to_systray` | Intercept close → hide | P1 | done (option) |
 | TRAY-05 | Hide from taskbar when minimised | §8.1.5; ini `gui.taskbar_hide` | `skip_taskbar` when hidden | P2 | todo |
 | HOT-01 | Global hotkey: switch to Powermarks | §8.1.7; ini `hotkeys.app` | `tauri-plugin-global-shortcut`; show window, focus and select the search box. This is the main way in | P1 | done (default Ctrl+Alt+P) |
-| HOT-02 | Global hotkey: add / fast add from browser | ini `hotkeys.browser_add`, `fast_add` | Extension `commands` (Alt+Shift+P exists for the popup); add a fast-add command. Optionally `"global": true` in Chrome | P1 | partial |
+| HOT-02 | Global hotkey: add / fast add from browser | ini `hotkeys.browser_add`, `fast_add` | Extension `commands` (Alt+Shift+P exists for the popup); add a fast-add command. Optionally `"global": true` in Chrome | P1 | done (extension commands) |
 | HOT-03 | Global hotkey: add from clipboard | ini `hotkeys.clipboard_add` | Global shortcut → ADD-07 | P2 | todo |
 | HOT-04 | In-app shortcut set | §10.3 (Ins, Ctrl+Ins, Alt+Ins, Ctrl+A/C/E/F/I/N/O/P/S, F5–F9, Del, Enter, Shift+Enter, Ctrl+±, Alt+Enter Properties, Shift+F1 context menu) | Keep the same keys where they don't conflict with WebView defaults | P1 | todo |
 | HOT-05 | Shortcut list | Help > Shortcut Keys (b282) | `?` overlay | P2 | todo |

@@ -123,6 +123,12 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   selected = keepSelection ? new Set([...selected].filter((id) => present.has(id))) : new Set();
   cursor = Math.max(0, keepSelection ? ids.indexOf(cursorId) : 0);
   if (!keepSelection) scroller().scrollTop = 0;
+  if (pendingReveal !== null && ids.includes(pendingReveal)) {
+    selected = new Set([pendingReveal]);
+    cursor = anchor = ids.indexOf(pendingReveal);
+    pendingReveal = null;
+    revealCursor();
+  }
   if (selected.size === 0 && ids.length) selected.add(ids[cursor]);
   await fetchRows([...ids.slice(...windowRange()), ...ids.slice(0, TRAY_RESULTS), ...selected, ids[cursor]]);
   if (mine !== seq) return;
@@ -517,6 +523,7 @@ $('settings-open').onclick = async () => {
     $('s-close').checked = s.close_to_tray;
     $('s-hotkey').value = s.hotkey;
     $('s-repair').checked = s.repair_moved_urls;
+    $('s-fast').value = s.fast_add_keywords;
     $('s-error').textContent = '';
     $('settings').showModal();
   } catch (e) { fail('Settings')(e); }
@@ -539,6 +546,7 @@ $('s-save').onclick = busyAware(async () => {
     start_minimized: $('s-minimized').checked,
     hotkey: $('s-hotkey').value.trim(),
     repair_moved_urls: $('s-repair').checked,
+    fast_add_keywords: $('s-fast').value.trim(),
   };
   try {
     await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
@@ -959,6 +967,77 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
 });
 
+// ---- adding ----------------------------------------------------------------------
+
+/** Show one bookmark: clear the search if needed, then select and scroll to it. Whichever
+ *  refresh first lists it does the selecting (a background fetch may refresh concurrently). */
+let pendingReveal = null;
+async function reveal(id) {
+  pendingReveal = id;
+  if (!ids.includes(id)) q.value = '';
+  await refresh({ keepSelection: false });
+}
+
+function newBookmark() {
+  if (!confirmDiscard()) return;
+  $('n-url').value = '';
+  $('n-title').value = '';
+  $('n-error').textContent = '';
+  $('new-dlg').showModal();
+  $('n-url').focus();
+}
+
+async function addNewBookmark() {
+  $('n-error').textContent = '';
+  try {
+    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value });
+    $('new-dlg').close();
+    await refreshDictionary();
+    if (report.added) {
+      await reveal(report.ids[0]);
+      say($('n-title').value.trim() ? 'Added.' : 'Added. Fetching its title…');
+    } else {
+      say('That URL is already bookmarked.');
+    }
+  } catch (e) { $('n-error').textContent = String(e); }
+}
+
+$('new-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  addNewBookmark();
+});
+$('n-cancel').onclick = () => $('new-dlg').close();
+// Cancel buttons are type=button (so Enter never means Cancel) and close their dialog.
+document.addEventListener('click', (e) => { if (e.target.matches('dialog [data-close]')) e.target.closest('dialog').close(); });
+
+async function addFromClipboard() {
+  if (!confirmDiscard()) return;
+  try {
+    const r = await invoke('add_from_clipboard');
+    await refreshDictionary();
+    await refresh();
+    const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
+    say(`Added ${r.added} link${r.added === 1 ? '' : 's'} from the clipboard${dup}. Fetching titles… (Ctrl+Z undoes)`);
+  } catch (e) { fail('Add from clipboard')(e); }
+}
+
+$('new-bookmark').onclick = () => newBookmark();
+$('add-clipboard').onclick = () => addFromClipboard();
+// Powermarks' keys: Insert adds a bookmark, Alt+Insert adds links from the clipboard.
+// (Ctrl+N works too where WebView2 doesn't keep it for itself.)
+document.addEventListener('keydown', (e) => {
+  const typing = e.target.closest('input, textarea, select');
+  if (e.key === 'Insert' && !e.ctrlKey && !e.altKey && !e.shiftKey && !typing) { e.preventDefault(); newBookmark(); }
+  else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newBookmark(); }
+  else if (e.altKey && e.key === 'Insert') { e.preventDefault(); addFromClipboard(); }
+});
+// Background fetches (titles for new bookmarks) finished.
+window.__TAURI__.event.listen('bookmarks-changed', async () => {
+  if (dirty) return;
+  await refreshDictionary();
+  await refresh();
+});
+
 // ---- export --------------------------------------------------------------------
 
 $('export-open').onclick = () => {
@@ -1050,6 +1129,8 @@ keywordChanged = busyAware(keywordChanged);
 /* eslint-enable no-func-assign */
 
 setCheckEnabled = busyAware(setCheckEnabled);
+addNewBookmark = busyAware(addNewBookmark);
+addFromClipboard = busyAware(addFromClipboard);
 
 setView(view);
 refreshDictionary().then(() => refresh({ keepSelection: false }));

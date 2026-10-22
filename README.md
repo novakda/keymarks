@@ -45,7 +45,12 @@ So this project is two things:
 - **Cards or table view.** Choose from 11 columns, sort by up to two keys (as the
   original did), and scroll through all your bookmarks without a cap.
 - **Browser extension** (Chrome, Edge, Firefox). One click adds the current page,
-  prefilled with its title, description and keywords. The app's list updates live.
+  prefilled with its title, description and keywords. On a page you already have, it
+  edits that bookmark instead. **Fast add** (Alt+Shift+K, or right-click a page or link)
+  adds without a popup and tags the bookmark `new` for later review. The app's list
+  updates live.
+- **Quick adding in the app.** Insert opens New bookmark, and Alt+Insert adds every link on
+  the clipboard. Titles and descriptions are fetched from the pages in the background.
 - **Always at hand.** A global hotkey brings the window up, the tray menu lists the top
   results of your current search, and the app can start with Windows. Only one copy ever
   runs.
@@ -141,7 +146,7 @@ A few decisions worth noting:
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
   round-trip and timing on a real collection, an exact-undo check after a full cleanup, and
   both export formats read back field by field.
-- **End-to-end** (`e2e/`, 38 checks in about 20 s): starts the real app with WebView2's
+- **End-to-end** (`e2e/`, 41 checks in about 25 s): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
   sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
   a link check against a local test server (it never contacts real sites).
@@ -190,7 +195,6 @@ Next, from the requirements doc:
 
 - **Scheduled link checking** (opt-in), plus pause and resume.
 - **Saved searches and URL macros.**
-- **Fast Add** and add-from-clipboard.
 - **Two-way sync** between PCs.
 
 ## Licence

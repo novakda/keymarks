@@ -25,6 +25,8 @@ const MAX_FIELD: usize = 8 * 1024;
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Request {
     Ping,
+    /// Is this URL already bookmarked? (The popup then shows and edits that bookmark.)
+    Lookup { url: String },
     Add {
         url: String,
         title: String,
@@ -32,6 +34,12 @@ enum Request {
         keywords: String,
         #[serde(default)]
         description: String,
+        /// Fast add: no popup; the app's fast-add keywords are added.
+        #[serde(default)]
+        fast: bool,
+        /// If the URL exists, save these fields onto it instead of reporting a duplicate.
+        #[serde(default)]
+        update: bool,
     },
 }
 
@@ -55,15 +63,25 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(appdata).join("com.pattern158.keymarks").join("bookmarks.db"))
 }
 
+/// The app's fast-add keywords (settings.json beside the database), default "new".
+fn fast_keywords() -> String {
+    db_path()
+        .ok()
+        .and_then(|p| std::fs::read(p.with_file_name("settings.json")).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["fast_add_keywords"].as_str().map(String::from))
+        .unwrap_or_else(|| "new".into())
+}
+
 fn serve() -> io::Result<()> {
-    let store = db_path().and_then(|p| {
+    let mut store = db_path().and_then(|p| {
         std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
         Store::open(p.to_str().ok_or("database path is not UTF-8")?).map_err(|e| e.to_string())
     });
     let (mut stdin, mut stdout) = (io::stdin().lock(), io::stdout().lock());
     while let Some(msg) = read_message(&mut stdin)? {
-        let reply = match &store {
-            Ok(store) => handle(store, &msg),
+        let reply = match &mut store {
+            Ok(store) => handle(store, &msg, &fast_keywords()),
             Err(e) => json!({ "ok": false, "error": e }),
         };
         write_message(&mut stdout, &reply)?;
@@ -71,21 +89,41 @@ fn serve() -> io::Result<()> {
     Ok(())
 }
 
-fn handle(store: &Store, msg: &[u8]) -> Value {
+fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
     let request = match serde_json::from_slice::<Request>(msg) {
         Ok(r) => r,
         Err(e) => return json!({ "ok": false, "error": format!("bad request: {e}") }),
     };
     match request {
         Request::Ping => json!({ "ok": true, "count": store.count().unwrap_or(-1) }),
-        Request::Add { url, title, keywords, description } => {
+        Request::Lookup { url } => match store.find_url(&url) {
+            Ok(Some(b)) => json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description }),
+            Ok(None) => json!({ "ok": true, "found": false }),
+            Err(e) => json!({ "ok": false, "error": e.to_string() }),
+        },
+        Request::Add { url, title, keywords, description, fast, update } => {
             let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
             let sizes_ok = [&url, &title, &keywords, &description].iter().all(|f| f.len() <= MAX_FIELD);
             if !scheme_ok || !sizes_ok {
                 return json!({ "ok": false, "error": "only http(s) pages up to 8 KB per field" });
             }
-            match store.add(&url, title.trim(), keywords.trim(), description.trim()) {
-                Ok((id, existed)) => json!({ "ok": true, "id": id, "existed": existed }),
+            let keywords = if fast { format!("{keywords} {fast_keywords}") } else { keywords };
+            let (id, existed) = match store.add(&url, title.trim(), keywords.trim(), description.trim()) {
+                Ok(r) => r,
+                Err(e) => return json!({ "ok": false, "error": e.to_string() }),
+            };
+            if !(existed && update) {
+                return json!({ "ok": true, "id": id, "existed": existed });
+            }
+            let saved = store.get(id).and_then(|b| {
+                let Some(mut b) = b else { return Ok(false) };
+                b.title = title.trim().to_string();
+                b.keywords = keywords.trim().to_string();
+                b.description = description.trim().to_string();
+                store.update(&b)
+            });
+            match saved {
+                Ok(_) => json!({ "ok": true, "id": id, "existed": true, "updated": true }),
                 Err(e) => json!({ "ok": false, "error": e.to_string() }),
             }
         }
@@ -165,16 +203,29 @@ mod tests {
 
     #[test]
     fn framed_round_trip_and_requests() {
-        let store = Store::open(":memory:").unwrap();
+        let mut store = Store::open(":memory:").unwrap();
+        let mut h = |m: &[u8]| handle(&mut store, m, "new");
         let mut wire = Vec::new();
         write_message(&mut wire, &json!({ "type": "add", "url": "https://a.example/", "title": " A ", "keywords": "k" })).unwrap();
         let msg = read_message(&mut wire.as_slice()).unwrap().unwrap();
-        assert_eq!(handle(&store, &msg)["existed"], false);
-        assert_eq!(handle(&store, &msg)["existed"], true);
-        assert_eq!(store.search("k", 5).unwrap()[0].title, "A");
-        assert_eq!(handle(&store, br#"{"type":"ping"}"#)["count"], 1);
-        assert_eq!(handle(&store, br#"{"type":"add","url":"javascript:alert(1)","title":"x"}"#)["ok"], false);
-        assert_eq!(handle(&store, b"nope")["ok"], false);
+        assert_eq!(h(&msg)["existed"], false);
+        assert_eq!(h(&msg)["existed"], true);
+        assert_eq!(h(br#"{"type":"ping"}"#)["count"], 1);
+        assert_eq!(h(br#"{"type":"add","url":"javascript:alert(1)","title":"x"}"#)["ok"], false);
+        assert_eq!(h(b"nope")["ok"], false);
+
+        // Lookup, then update the existing bookmark from the popup.
+        let found = h(br#"{"type":"lookup","url":"https://a.example/"}"#);
+        assert_eq!((found["found"].as_bool(), found["title"].as_str()), (Some(true), Some("A")));
+        assert_eq!(h(br#"{"type":"lookup","url":"https://none.example/"}"#)["found"], false);
+        let up = h(br#"{"type":"add","url":"https://a.example/","title":"A2","keywords":"k2","update":true}"#);
+        assert_eq!(up["updated"], true);
+
+        // Fast add appends the fast-add keywords.
+        h(br#"{"type":"add","url":"https://f.example/","title":"F","keywords":"page","fast":true}"#);
+        drop(h);
+        assert_eq!(store.search("k2", 5).unwrap()[0].title, "A2");
+        assert_eq!(store.find_url("https://f.example/").unwrap().unwrap().keywords, "page new");
         assert!(read_message(&mut [].as_slice()).unwrap().is_none());
     }
 }

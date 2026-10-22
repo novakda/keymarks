@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use store::{Bookmark, CleanupItem, ImportReport, KeywordCount, SearchOptions, Store, browsers};
 use desktop::{Settings, SettingsState};
-use tauri::{AppHandle, Manager, Runtime, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::ShortcutState;
 use tauri_plugin_dialog::DialogExt;
@@ -92,7 +92,81 @@ async fn import_browser(db: State<'_, Db>, browser: String, profile: String) -> 
         .find(|s| s.browser == browser && s.profile == profile)
         .ok_or_else(|| format!("{browser} profile {profile} not found"))?;
     let items = browsers::read(&source)?;
-    db.lock().unwrap().import_bookmarks(&format!("{browser} ({profile})"), &items).map_err(err)
+    db.lock().unwrap().import_bookmarks(&format!("Import from {browser} ({profile})"), &items).map_err(err)
+}
+
+/// Trim, add "https://" when there is no scheme, and check it parses.
+fn normalize_url(input: &str) -> Result<String, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("Enter a URL".into());
+    }
+    let s = if s.contains("://") || s.starts_with("mailto:") || s.starts_with("file:") { s.to_string() } else { format!("https://{s}") };
+    reqwest::Url::parse(&s).map(|u| u.to_string()).map_err(|e| format!("Not a valid URL: {e}"))
+}
+
+/// Add one bookmark by URL (Ctrl+N). Without a title, the page's own is fetched.
+#[tauri::command]
+fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String) -> Result<ImportReport, String> {
+    let url = normalize_url(&url)?;
+    let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
+    let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), added: None };
+    let report = db.lock().unwrap().import_bookmarks("Add bookmark", &[item]).map_err(err)?;
+    fetch_in_background(app, report.ids.clone());
+    Ok(report)
+}
+
+/// Add every link on the clipboard (Powermarks' Alt+Ins), tagged with the fast-add keywords;
+/// titles and descriptions are fetched in the background.
+#[tauri::command]
+fn add_from_clipboard(app: AppHandle, db: State<Db>, settings: State<SettingsState>) -> Result<ImportReport, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let text = app.clipboard().read_text().unwrap_or_default();
+    let urls = checker::extract_urls(&text);
+    if urls.is_empty() {
+        return Err("No web links found on the clipboard".into());
+    }
+    let keywords = settings.current.lock().unwrap().fast_add_keywords.clone();
+    let items: Vec<_> = urls
+        .into_iter()
+        .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), added: None })
+        .collect();
+    let step = format!("Add {} link{} from the clipboard", items.len(), if items.len() == 1 { "" } else { "s" });
+    let report = db.lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
+    fetch_in_background(app, report.ids.clone());
+    Ok(report)
+}
+
+/// Fill titles/descriptions of just-added bookmarks from their pages, then tell the UI.
+fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
+    use futures::StreamExt;
+    if ids.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let Ok(client) = checker::fetch_client() else { return };
+        let urls: Vec<(i64, String)> = {
+            let db = app.state::<Db>();
+            let store = db.lock().unwrap();
+            ids.iter().filter_map(|&id| store.get(id).ok().flatten().map(|b| (id, b.url))).collect()
+        };
+        let client = &client;
+        let fetched: Vec<_> = futures::stream::iter(urls)
+            .map(|(id, url)| async move { (id, checker::fetch_meta(client, &url).await) })
+            .buffer_unordered(4)
+            .collect()
+            .await;
+        {
+            let db = app.state::<Db>();
+            let store = db.lock().unwrap();
+            for (id, meta) in fetched {
+                if let Some(meta) = meta {
+                    let _ = store.apply_fetched(id, &meta);
+                }
+            }
+        }
+        let _ = app.emit("bookmarks-changed", ());
+    });
 }
 
 /// Pick an exported bookmarks HTML file (any browser) and merge it in.
@@ -104,7 +178,7 @@ async fn import_html_file(app: AppHandle, db: State<'_, Db>) -> Result<Option<Im
     let bytes = std::fs::read(&path).map_err(err)?;
     let items = browsers::read_netscape_html(&String::from_utf8_lossy(&bytes));
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    db.lock().unwrap().import_bookmarks(&label, &items).map(Some).map_err(err)
+    db.lock().unwrap().import_bookmarks(&format!("Import from {label}"), &items).map(Some).map_err(err)
 }
 
 /// Export bookmarks (`ids` in that order, or all) as "html" (any browser) or "pm35"
@@ -345,6 +419,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -436,8 +511,24 @@ fn main() {
             browser_sources,
             import_browser,
             import_html_file,
-            export_file
+            export_file,
+            add_bookmark,
+            add_from_clipboard
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url;
+
+    #[test]
+    fn urls_are_trimmed_completed_and_checked() {
+        assert_eq!(normalize_url("  example.com/a ").unwrap(), "https://example.com/a");
+        assert_eq!(normalize_url("http://x.example").unwrap(), "http://x.example/");
+        assert_eq!(normalize_url("mailto:me@example.com").unwrap(), "mailto:me@example.com");
+        assert!(normalize_url("   ").is_err());
+        assert!(normalize_url("http://exa mple.com").is_err());
+    }
 }

@@ -28,8 +28,14 @@ const PORT = await new Promise((resolve) => {
   });
 });
 
+// Waits until the app has really exited, so its files can be deleted.
 function stopApp() {
   try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore' }); } catch { /* not running */ }
+  for (let i = 0; i < 50; i++) {
+    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString();
+    if (!out.includes('keymarks.exe')) return;
+    execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 100"');
+  }
 }
 
 function startApp(env) {
@@ -65,12 +71,51 @@ for (const f of ['bookmarks.db', 'bookmarks.db-wal', 'bookmarks.db-shm']) {
   if (fs.existsSync(path.join(realData, f))) fs.copyFileSync(path.join(realData, f), path.join(work, f));
 }
 // The killed app can hold the files for a moment; retry rather than leave a copy behind.
-const cleanupWork = () => fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+// The copy holds the user's private bookmarks: it must not be left behind.
+function cleanupWork() {
+  try {
+    fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  } catch (e) {
+    log(`could not delete ${work}: ${e.message}`);
+  }
+  if (fs.existsSync(work)) log(`WARNING: temporary copy still exists: ${work}`);
+}
 setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); startApp(); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
 startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work });
 const { browser, page } = await connect();
 log(`connected to ${page.url()}`);
+
+// Whatever happens, close the test app, delete the copy and give the user their app back.
+let cleanedUp = false;
+function emergencyExit(e) {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  log(`aborted: ${String(e?.message ?? e).replace(/"[^"]*"/g, '"…"')}`);
+  stopApp();
+  cleanupWork();
+  startApp();
+  process.exit(1);
+}
+process.on('uncaughtException', emergencyExit);
+process.on('unhandledRejection', emergencyExit);
+
+// confirm()/prompt() answers, in the order the test expects them; anything else is dismissed.
+const answers = [];
+const expectDialog = (answer = true) => answers.push(answer);
+page.on('dialog', async (d) => {
+  const answer = answers.shift();
+  try {
+    if (answer === undefined) {
+      log(`unexpected ${d.type()} dialog, dismissed`);
+      await d.dismiss();
+    } else {
+      await d.accept(answer === true ? undefined : answer);
+    }
+  } catch (e) {
+    log(`${d.type()} dialog: ${e.message}`);
+  }
+});
 const idle = () => page.waitForFunction(() => document.body.ariaBusy === 'false', null, { timeout: 15000 });
 await page.waitForSelector('#status');
 await idle();
@@ -248,7 +293,7 @@ try {
   await search('');
   await page.click('#table-body tr.vrow');
   await page.focus('#tablewrap');
-  page.once('dialog', (d) => d.accept());
+  expectDialog();
   await page.keyboard.press('Delete');
   await idle();
   const afterDelete = await everything();
@@ -271,7 +316,7 @@ try {
   await menu('settings-open');
   await page.waitForSelector('#settings[open]');
   check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
-  await page.click('#settings button[value=cancel]');
+  await page.click('#settings button[data-close]');
   const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString().split('keymarks.exe').length - 1;
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
   await sleep(3000);
@@ -312,6 +357,7 @@ try {
   await page.keyboard.press('Control+z');
   await idle();
   check('undo restores the original URL', (await visibleCells('URL')).some((u) => u.endsWith('/moved')));
+  await fields(['title', 'url', 'keywords', 'description', 'notes']); // while still in exact mode
   // Ctrl+T from the search box checks the selection (here: one of the two local bookmarks).
   await page.click('#table-body tr.vrow');
   await idle();
@@ -321,6 +367,29 @@ try {
   await idle();
   check('Ctrl+T in the search box checks the selection', /^Checked 1 link/.test(await statusText()), (await statusText()).replace(/"[^"]*"/g, '"…"'));
   server.close();
+
+  // 12. New bookmark (Insert, as in Powermarks): its title is fetched from the page (local server only)
+  const pages = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<html><head><title>E2E Fetched Title</title><meta name="description" content="from the page"></head></html>');
+  });
+  await new Promise((r) => pages.listen(0, '127.0.0.1', r));
+  const pageUrl = `http://127.0.0.1:${pages.address().port}/article`;
+  await setMode('all');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Insert');
+  await page.waitForSelector('#new-dlg[open]');
+  await page.fill('#n-url', 'nope nope');
+  await page.keyboard.press('Enter');
+  await idle();
+  check('New bookmark rejects an invalid URL', (await page.textContent('#n-error')).includes('valid URL'));
+  await page.fill('#n-url', pageUrl);
+  await page.keyboard.press('Enter');
+  await idle();
+  check('Insert adds and selects the new bookmark', (await page.inputValue('#f-url')) === pageUrl);
+  await page.waitForFunction(() => document.getElementById('f-title')?.value === 'E2E Fetched Title', null, { timeout: 20000 }).catch(() => {});
+  check('its title and description are fetched', (await page.inputValue('#f-title')) === 'E2E Fetched Title' && (await page.inputValue('#f-description')) === 'from the page');
+  pages.close();
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');
@@ -332,15 +401,14 @@ try {
   await menu('export-open');
   await page.waitForSelector('#export-dlg[open]');
   check('Export offers all, matching and selected', /All [\d,]+ bookmarks/.test(await page.textContent('#ex-all')) && /matching/.test(await page.textContent('#ex-matching')));
-  await page.click('#export-dlg button[value=cancel]');
-  await fields(['title', 'url', 'keywords', 'description', 'notes']);
-  await setMode('all');
+  await page.click('#export-dlg button[data-close]');
 } catch (e) {
   check('run completed', false, e.message);
 } finally {
   // Put the user's settings back and leave a normal (non-debug) app running.
   await page.evaluate((s) => { localStorage.clear(); Object.assign(localStorage, JSON.parse(s)); }, saved).catch(() => {});
   await browser.close().catch(() => {});
+  cleanedUp = true;
   stopApp();
   cleanupWork();
   startApp();

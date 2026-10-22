@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use store::{CheckRecord, CheckTarget};
+use store::{CheckRecord, CheckTarget, PageMeta};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
 
@@ -241,6 +241,73 @@ fn failure(e: &reqwest::Error) -> Outcome {
     outcome(status, None, Some(chain.chars().take(300).collect()))
 }
 
+// ---- Fetch: what a page says about itself ---------------------------------------------
+
+static TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap());
+static META: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<meta\s[^>]*>"#).unwrap());
+static META_ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(name|property|content)\s*=\s*("([^"]*)"|'([^']*)')"#).unwrap());
+static URLS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bhttps?://[^\s<>"'`]+"#).unwrap());
+
+/// Title, description and keywords from a page's HTML (Powermarks' Fetch).
+pub fn page_meta(html: &str) -> PageMeta {
+    let clean = |s: &str| html_escape::decode_html_entities(s).split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut meta = PageMeta { title: TITLE.captures(html).map(|c| clean(&c[1])).unwrap_or_default(), ..Default::default() };
+    for tag in META.find_iter(html) {
+        let (mut key, mut content) = (String::new(), None);
+        for a in META_ATTR.captures_iter(tag.as_str()) {
+            let value = a.get(3).or(a.get(4)).map_or("", |m| m.as_str());
+            match a[1].to_ascii_lowercase().as_str() {
+                "content" => content = Some(clean(value)),
+                _ => key = value.to_ascii_lowercase(),
+            }
+        }
+        let Some(content) = content else { continue };
+        match key.as_str() {
+            "description" | "og:description" if meta.description.is_empty() => meta.description = content,
+            "og:title" if meta.title.is_empty() => meta.title = content,
+            "keywords" => meta.keywords = content.split(',').map(str::trim).collect::<Vec<_>>().join(" "),
+            _ => {}
+        }
+    }
+    meta
+}
+
+/// Client for Fetch: like the checker's, but follows redirects (the checker must see them).
+pub fn fetch_client() -> reqwest::Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(10))
+        .user_agent(concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Keymarks/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
+/// Fetch a page and read its metadata. None for non-web URLs, errors and failed replies.
+pub async fn fetch_meta(client: &Client, url: &str) -> Option<PageMeta> {
+    let parsed = Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https"))?;
+    let mut resp = client.get(parsed).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        body.extend_from_slice(&chunk);
+        if body.len() >= 512 * 1024 {
+            break;
+        }
+    }
+    Some(page_meta(&String::from_utf8_lossy(&body)))
+}
+
+/// Every distinct http(s) URL in a piece of text (e.g. the clipboard), in order. Trailing
+/// punctuation from prose ("see https://a.example/.") is not part of the URL.
+pub fn extract_urls(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    URLS.find_iter(text)
+        .map(|m| m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}']).to_string())
+        .filter(|u| seen.insert(u.clone()))
+        .collect()
+}
+
 static NOISE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)<script\b.*?</script>|<style\b.*?</style>|<iframe\b.*?</iframe>|<noscript\b.*?</noscript>|<!--.*?-->").unwrap()
 });
@@ -351,6 +418,30 @@ mod tests {
         assert_eq!(run(target("not a url".into())).record.status, "bad_url");
         let dead = run(target("http://127.0.0.1:9/".into())); // discard port: nothing listens
         assert!(NETWORK_FAILURES.contains(&dead.record.status.as_str()), "{}", dead.record.status);
+    }
+
+    #[test]
+    fn page_meta_and_clipboard_urls() {
+        let m = page_meta(r#"<html><head><title> Caf&eacute;
+             Guide </title><meta name="Description" content="All about &quot;coffee&quot;">
+             <meta property='og:title' content='ignored'><meta name="keywords" content="coffee, espresso ,brew"></head>"#);
+        assert_eq!(m, PageMeta { title: "Café Guide".into(), description: "All about \"coffee\"".into(), keywords: "coffee espresso brew".into() });
+        assert_eq!(page_meta("<meta property=\"og:title\" content=\"OG only\">").title, "OG only");
+
+        let text = "See https://a.example/x. Also (http://b.example/?q=1) and https://a.example/x again, <https://c.example/p>";
+        assert_eq!(extract_urls(text), ["https://a.example/x", "http://b.example/?q=1", "https://c.example/p"]);
+        assert!(extract_urls("no links, ftp://x.example/ isn't one").is_empty());
+    }
+
+    #[test]
+    fn fetch_meta_from_local_server() {
+        let base = serve();
+        let client = fetch_client().unwrap();
+        // /old redirects to /page; fetch follows it.
+        let meta = tauri::async_runtime::block_on(fetch_meta(&client, &format!("{base}/old"))).unwrap();
+        assert_eq!(meta.title, "", "the test page has no <title>");
+        assert!(tauri::async_runtime::block_on(fetch_meta(&client, &format!("{base}/gone"))).is_none());
+        assert!(tauri::async_runtime::block_on(fetch_meta(&client, "ftp://x.example/")).is_none());
     }
 
     #[test]

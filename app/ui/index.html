@@ -182,6 +182,8 @@
   <details id="more">
     <summary class="secondary" aria-label="More">⋯</summary>
     <div class="menu" role="menu">
+      <button id="new-bookmark" type="button" role="menuitem" title="Insert">New bookmark…</button>
+      <button id="add-clipboard" type="button" role="menuitem" title="Alt+Insert">Add links from clipboard</button>
       <button id="import" type="button" role="menuitem">Import…</button>
       <button id="export-open" type="button" role="menuitem">Export…</button>
       <button id="backups-open" type="button" role="menuitem">Backups…</button>
@@ -243,6 +245,24 @@
   </form>
 </dialog>
 
+<dialog id="new-dlg" aria-labelledby="new-title">
+  <form method="dialog" id="new-form">
+    <h2 id="new-title">New bookmark</h2>
+    <div class="settings-body">
+      <label for="n-url">URL</label>
+      <input id="n-url" required placeholder="example.com/page" autocomplete="off">
+      <label for="n-title">Title (optional: taken from the page if empty)</label>
+      <input id="n-title" autocomplete="off">
+      <p id="n-error" class="error" role="alert"></p>
+    </div>
+    <div class="row">
+      <!-- type=button: Enter must submit through "Add", the form's only submit button -->
+      <button id="n-cancel" type="button" class="secondary">Cancel</button>
+      <button id="n-add" type="submit">Add</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="export-dlg" aria-labelledby="export-title">
   <form method="dialog">
     <h2 id="export-title">Export bookmarks</h2>
@@ -258,7 +278,7 @@
       </fieldset>
     </div>
     <div class="row">
-      <button value="cancel" class="secondary">Cancel</button>
+      <button type="button" class="secondary" data-close>Cancel</button>
       <button id="ex-go" type="button">Export…</button>
     </div>
   </form>
@@ -272,13 +292,15 @@
       <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
       <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
       <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
+      <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
+      <input id="s-fast" placeholder="e.g. new">
       <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
       <input id="s-hotkey" placeholder="Press a key combination (empty = none)" aria-describedby="s-hotkey-help">
       <p id="s-hotkey-help" class="help">Click the box and press the keys, e.g. Ctrl+Alt+P. Backspace clears it. The tray icon's menu lists the top results of your current search.</p>
       <p id="s-error" class="error" role="alert"></p>
     </div>
     <div class="row">
-      <button value="cancel" class="secondary">Cancel</button>
+      <button type="button" class="secondary" data-close>Cancel</button>
       <button id="s-save" type="button">Save</button>
     </div>
   </form>
@@ -302,7 +324,7 @@
     <p class="intro">Review what will be removed or merged; click a group to show or hide its keywords. Tagged keywords are never touched. A backup of the whole database is saved first.</p>
     <div id="cleanup-groups"></div>
     <div class="row">
-      <button value="cancel" class="secondary">Cancel</button>
+      <button type="button" class="secondary" data-close>Cancel</button>
       <button id="cleanup-apply" value="apply" type="button">Apply</button>
     </div>
   </form>
