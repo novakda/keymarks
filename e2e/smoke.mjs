@@ -98,22 +98,24 @@ function emergencyExit(e) {
 process.on('uncaughtException', emergencyExit);
 process.on('unhandledRejection', emergencyExit);
 
-// confirm()/prompt() answers, in the order the test expects them; anything else is dismissed.
-const answers = [];
-const expectDialog = (answer = true) => answers.push(answer);
-page.on('dialog', async (d) => {
-  const answer = answers.shift();
-  try {
-    if (answer === undefined) {
-      log(`unexpected ${d.type()} dialog, dismissed`);
-      await d.dismiss();
-    } else {
-      await d.accept(answer === true ? undefined : answer);
-    }
-  } catch (e) {
-    log(`${d.type()} dialog: ${e.message}`);
-  }
-});
+// WebView2 shows confirm()/prompt() as real Windows dialogs, which take focus from whatever
+// the user is doing. So the page's dialogs are replaced by answers the test queues up front;
+// no dialog window ever opens. Unexpected dialogs are refused and logged.
+const fakeDialogs = () => {
+  window.__e2eAnswers = [];
+  const next = (kind, fallback) => {
+    if (window.__e2eAnswers.length) return window.__e2eAnswers.shift();
+    console.warn(`E2E unexpected ${kind} dialog`);
+    return fallback;
+  };
+  window.confirm = () => next('confirm', false) === true;
+  window.prompt = () => { const a = next('prompt', null); return a === true ? '' : a; };
+  window.alert = () => { next('alert', undefined); };
+};
+await page.context().addInitScript(fakeDialogs); // survives reloads
+await page.evaluate(fakeDialogs);
+page.on('console', (m) => { if (m.text().startsWith('E2E unexpected')) log(m.text()); });
+const expectDialog = (answer = true) => page.evaluate((a) => window.__e2eAnswers.push(a), answer);
 const idle = () => page.waitForFunction(() => document.body.ariaBusy === 'false', null, { timeout: 15000 });
 await page.waitForSelector('#status');
 await idle();
@@ -291,7 +293,7 @@ try {
   await search('');
   await page.click('#table-body tr.vrow');
   await page.focus('#tablewrap');
-  expectDialog();
+  await expectDialog();
   await page.keyboard.press('Delete');
   await idle();
   const afterDelete = await everything();
@@ -388,6 +390,61 @@ try {
   await page.waitForFunction(() => document.getElementById('f-title')?.value === 'E2E Fetched Title', null, { timeout: 20000 }).catch(() => {});
   check('its title and description are fetched', (await page.inputValue('#f-title')) === 'E2E Fetched Title' && (await page.inputValue('#f-description')) === 'from the page');
   pages.close();
+
+  // 13. Saved searches and links (Powermarks' macros). Links are never clicked: that would open a browser.
+  const savedNames = () => page.$$eval('#savedlist li:not(.hint) span:nth-child(2)', (els) => els.map((e) => e.textContent));
+  await setMode('keywords');
+  await search('sql');
+  const sqlKeywordsOnly = Number((await statusText()).match(/^(\d+)/)[1]);
+  await page.click('#save-search');
+  await page.waitForSelector('#saved-dlg[open]');
+  check('☆ proposes the search as name and shows its mode', (await page.inputValue('#sv-name')) === 'sql' && (await page.textContent('#sv-mode')).includes('Keywords only'));
+  await page.fill('#sv-name', 'E2E keyword sql');
+  await page.keyboard.press('Enter');
+  await idle();
+  check('saved search appears in the panel', (await savedNames()).includes('E2E keyword sql'));
+  await setMode('all');
+  await search('');
+  await page.click('#savedlist li:has-text("E2E keyword sql")');
+  await idle();
+  check('running it restores query and mode', (await page.inputValue('#q')) === 'sql' && (await page.inputValue('#mode')) === 'keywords'
+    && Number((await statusText()).match(/(\d+) matching/)?.[1]) === sqlKeywordsOnly, `${sqlKeywordsOnly} expected`);
+  await search('');
+  const position = (await savedNames()).indexOf('E2E keyword sql') + 1;
+  if (position >= 1 && position <= 9) {
+    await page.focus('#tablewrap');
+    await page.keyboard.press(`Alt+${position}`);
+    await idle();
+    check(`Alt+${position} runs it`, (await page.inputValue('#q')) === 'sql');
+  }
+  await setMode('all');
+  await page.click('#table-body tr.vrow');
+  await idle();
+  await page.click('#pin-link');
+  await page.waitForSelector('#saved-dlg[open]');
+  await page.fill('#sv-name', 'E2E pinned link');
+  await page.keyboard.press('Enter');
+  await idle();
+  const afterPin = await savedNames();
+  check('Pin to Saved adds a link after the search', afterPin.indexOf('E2E pinned link') === afterPin.indexOf('E2E keyword sql') + 1);
+  await page.click('#savedlist li:has-text("E2E pinned link")', { button: 'right' });
+  await page.click('#sctx [data-act=up]');
+  await idle();
+  const moved = await savedNames();
+  check('Move up reorders', moved.indexOf('E2E pinned link') === moved.indexOf('E2E keyword sql') - 1);
+  await page.click('#savedlist li:has-text("E2E keyword sql")', { button: 'right' });
+  await page.click('#sctx [data-act=edit]');
+  await page.fill('#sv-name', 'E2E renamed');
+  await page.keyboard.press('Enter');
+  await idle();
+  check('Edit renames', (await savedNames()).includes('E2E renamed'));
+  for (const name of ['E2E renamed', 'E2E pinned link']) {
+    await page.click(`#savedlist li:has-text("${name}")`, { button: 'right' });
+    await expectDialog();
+    await page.click('#sctx [data-act=delete]');
+    await idle();
+  }
+  check('Delete removes both', (await savedNames()).every((n) => !n.startsWith('E2E')));
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');

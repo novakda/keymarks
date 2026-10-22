@@ -592,6 +592,7 @@ async function restoreBackup(name, when) {
     $('backups').close();
     selected.clear();
     await refreshDictionary();
+    await refreshSaved();
     await refresh({ keepSelection: false });
     say(`Restored the backup from ${when}. Previous state saved as ${safety}.`);
   } catch (e) { fail('Restore')(e); }
@@ -603,6 +604,131 @@ $('backups-open').onclick = async () => {
 $('backup-now').onclick = async () => {
   try { const name = await invoke('backup_now'); await showBackups(); say(`Backed up as ${name}.`); } catch (e) { fail('Backup')(e); }
 };
+
+// ---- saved searches and links (Powermarks' macros) ---------------------------------
+
+let savedItems = [];
+const MODE_NAMES = { all: 'All fields', keywords: 'Keywords only', exact: 'Exact text' };
+
+async function refreshSaved() {
+  savedItems = await invoke('saved_items');
+  renderSaved();
+}
+
+function renderSaved() {
+  if (!savedItems.length) {
+    $('savedlist').replaceChildren(Object.assign(document.createElement('li'), {
+      className: 'hint', textContent: 'Save searches with ☆ and pin links from a bookmark.',
+    }));
+    return;
+  }
+  $('savedlist').replaceChildren(...savedItems.map((item, i) => {
+    const li = document.createElement('li');
+    li.title = (item.kind === 'link' ? item.url : item.query) + ' · click to run, right-click for more';
+    const icon = document.createElement('span');
+    icon.textContent = item.kind === 'link' ? '🔗' : '🔍';
+    icon.ariaHidden = 'true';
+    const name = document.createElement('span');
+    name.textContent = item.name;
+    li.append(icon, name);
+    if (i < 9) li.append(Object.assign(document.createElement('span'), { className: 'n', textContent: `Alt+${i + 1}` }));
+    li.onclick = () => runSaved(item);
+    li.oncontextmenu = (e) => { e.preventDefault(); showSavedMenu(e, item, li); };
+    return li;
+  }));
+}
+
+async function runSaved(item) {
+  if (item.kind === 'link') {
+    try { await invoke('open_link', { url: item.url }); say(`Opened ${item.name}.`); } catch (e) { fail('Open')(e); }
+    return;
+  }
+  if (!confirmDiscard()) return;
+  let o = {};
+  try { o = JSON.parse(item.options || '{}'); } catch {}
+  opts = { ...opts, mode: o.mode ?? 'all', fields: o.fields ?? DEFAULT_OPTS.fields, match_case: !!o.match_case, partial: o.partial ?? true };
+  saveOpts();
+  applyOptsToUi();
+  q.value = item.query;
+  await refresh({ keepSelection: false });
+  say(`Saved search "${item.name}": ${ids.length} matching.`);
+}
+
+// One dialog for saving/editing both kinds. `item.id` 0 means new.
+let savedDraft = null;
+function openSavedDialog(item) {
+  savedDraft = item;
+  const link = item.kind === 'link';
+  $('saved-title').textContent = `${item.id ? 'Edit' : 'Save'} ${link ? 'link' : 'search'}`;
+  $('sv-value-label').textContent = link ? 'URL' : 'Search';
+  $('sv-name').value = item.name;
+  $('sv-value').value = link ? item.url : item.query;
+  let o = {};
+  try { o = JSON.parse(item.options || '{}'); } catch {}
+  $('sv-mode').textContent = link ? '' : `Mode: ${MODE_NAMES[o.mode ?? 'all']}${o.mode === 'exact' ? ` in ${(o.fields ?? []).join(', ')}${o.match_case ? ', match case' : ''}` : ''}`;
+  $('sv-error').textContent = '';
+  $('saved-dlg').showModal();
+  $('sv-name').select();
+}
+
+async function submitSaved() {
+  const item = { ...savedDraft, name: $('sv-name').value };
+  if (item.kind === 'link') item.url = $('sv-value').value; else item.query = $('sv-value').value;
+  try {
+    await invoke('save_item', { item });
+    $('saved-dlg').close();
+    await refreshSaved();
+    say(`Saved "${item.name.trim()}".`);
+  } catch (e) { $('sv-error').textContent = String(e); }
+}
+
+$('saved-form').addEventListener('submit', (e) => { e.preventDefault(); submitSaved(); });
+
+$('save-search').onclick = () => {
+  if (!q.value.trim()) return say('Type a search first, then save it with ☆.');
+  const { mode, fields, match_case, partial } = opts;
+  openSavedDialog({ id: 0, kind: 'search', name: q.value.trim(), query: q.value, options: JSON.stringify({ mode, fields, match_case, partial }), url: '' });
+};
+
+let menuSaved = null;
+function showSavedMenu(e, item, li) {
+  menuSaved = item;
+  hideMenu();
+  li.classList.add('active');
+  const m = $('sctx');
+  $('sctx-title').textContent = item.name;
+  m.hidden = false;
+  m.style.left = `${Math.min(e.clientX, innerWidth - m.offsetWidth - 4)}px`;
+  m.style.top = `${Math.min(e.clientY, innerHeight - m.offsetHeight - 4)}px`;
+  m.querySelector('button').focus();
+}
+
+function hideSavedMenu() {
+  $('sctx').hidden = true;
+  document.querySelectorAll('#savedlist li.active').forEach((x) => x.classList.remove('active'));
+}
+
+$('sctx').addEventListener('click', busyAware(async (e) => {
+  const act = e.target.dataset?.act;
+  const item = menuSaved;
+  if (!act || !item) return;
+  hideSavedMenu();
+  try {
+    if (act === 'run') await runSaved(item);
+    else if (act === 'edit') openSavedDialog(item);
+    else if (act === 'up' || act === 'down') { await invoke('move_saved_item', { id: item.id, by: act === 'up' ? -1 : 1 }); await refreshSaved(); }
+    else if (act === 'delete' && confirm(`Delete the saved ${item.kind} "${item.name}"?`)) { await invoke('delete_saved_item', { id: item.id }); await refreshSaved(); say(`Deleted "${item.name}".`); }
+  } catch (err) { fail('Saved item')(err); }
+}));
+document.addEventListener('click', (e) => { if (!$('sctx').contains(e.target)) hideSavedMenu(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideSavedMenu();
+  // Alt+1…9 run the first nine saved items (Powermarks gave each macro a hotkey).
+  if (e.altKey && !e.ctrlKey && /^[1-9]$/.test(e.key) && savedItems[Number(e.key) - 1]) {
+    e.preventDefault();
+    runSaved(savedItems[Number(e.key) - 1]);
+  }
+});
 
 // ---- keyword panel (Powermarks' Dictionary) ---------------------------------
 
@@ -836,6 +962,7 @@ function renderPanel() {
     ? `· last result: ${checkLabel(editing)}${editing.last_checked ? `, ${new Date(editing.last_checked * 1000).toLocaleDateString()}` : ''}`
     : '· never checked';
   $('f-check').onchange = (e) => setCheckEnabled([editing.id], e.target.checked);
+  $('pin-link').onclick = () => openSavedDialog({ id: 0, kind: 'link', name: editing.title || editing.url, query: '', options: '{}', url: editing.url });
   $('kw-sort').onclick = () => { chips.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })); renderChips(); setDirty(true); };
   $('f-tags').onclick = (e) => { if (e.target.id === 'f-tags') $('f-kw').focus(); };
   const input = $('f-kw');
@@ -1130,7 +1257,10 @@ keywordChanged = busyAware(keywordChanged);
 
 setCheckEnabled = busyAware(setCheckEnabled);
 addNewBookmark = busyAware(addNewBookmark);
+runSaved = busyAware(runSaved);
+submitSaved = busyAware(submitSaved);
 addFromClipboard = busyAware(addFromClipboard);
 
 setView(view);
+refreshSaved().catch(fail('Saved items'));
 refreshDictionary().then(() => refresh({ keepSelection: false }));

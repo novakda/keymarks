@@ -42,6 +42,9 @@ So this project is two things:
   current results. Click a keyword to refine the search. You can tag favourite keywords,
   rename or merge one across all bookmarks, and run a **cleanup** that previews changes
   first (common words, numbers, plurals).
+- **Saved searches and links**, like Powermarks' macros. Save a search with ☆ (its mode
+  and fields too), pin a bookmark as a link, run any of them with a click or Alt+1…9, and
+  reorder them.
 - **Editing.** A properties panel with a tag-style keyword editor and autocomplete,
   multi-select, delete, and **undo/redo** with named steps (Ctrl+Z / Ctrl+Y).
 - **Cards or table view.** Choose from 11 columns, sort by up to two keys (as the
@@ -163,7 +166,7 @@ A few decisions worth noting:
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
   round-trip and timing on a real collection, an exact-undo check after a full cleanup, and
   both export formats read back field by field.
-- **End-to-end** (`e2e/`, 41 checks in about 25 s): starts the real app with WebView2's
+- **End-to-end** (`e2e/`, 49 checks in about 30 s): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
   sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
   a link check against a local test server (it never contacts real sites).
@@ -211,7 +214,6 @@ Data lives in `%APPDATA%\com.pattern158.keymarks\` (`bookmarks.db`, `settings.js
 Next, from the requirements doc:
 
 - **Scheduled link checking** (opt-in), plus pause and resume.
-- **Saved searches and URL macros.**
 - **Two-way sync** between PCs.
 
 ## Licence

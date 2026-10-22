@@ -7,7 +7,7 @@ mod desktop;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use store::{Bookmark, CleanupItem, ImportReport, KeywordCount, SearchOptions, Store, browsers};
+use store::{Bookmark, CleanupItem, ImportReport, KeywordCount, SavedItem, SearchOptions, Store, browsers};
 use desktop::{Settings, SettingsState};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -211,12 +211,58 @@ fn open_bookmark(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
 
 pub(crate) fn open_id<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64) -> Result<(), String> {
     let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
+    open_checked(app, &url)?;
+    store.mark_visited(id).map_err(err)
+}
+
+/// Hand a URL to the OS, but only for schemes on the allowlist.
+fn open_checked<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<(), String> {
     let lower = url.to_ascii_lowercase();
     if !OPENABLE.iter().any(|p| lower.starts_with(p)) {
         return Err(format!("not opening {url}: unsupported scheme"));
     }
-    app.opener().open_url(&url, None::<&str>).map_err(err)?;
-    store.mark_visited(id).map_err(err)
+    app.opener().open_url(url, None::<&str>).map_err(err)
+}
+
+#[tauri::command]
+fn saved_items(db: State<Db>) -> Result<Vec<SavedItem>, String> {
+    db.lock().unwrap().saved_items().map_err(err)
+}
+
+/// Add (id 0) or update a saved search or link. Links get the same URL clean-up as bookmarks.
+#[tauri::command]
+fn save_item(db: State<Db>, mut item: SavedItem) -> Result<i64, String> {
+    if item.name.trim().is_empty() {
+        return Err("Give it a name".into());
+    }
+    match item.kind.as_str() {
+        "link" => item.url = normalize_url(&item.url)?,
+        "search" => {}
+        other => return Err(format!("unknown kind {other}")),
+    }
+    let store = db.lock().unwrap();
+    if item.id == 0 {
+        store.save_item(&item).map_err(err)
+    } else {
+        store.update_saved_item(&item).map_err(err)?;
+        Ok(item.id)
+    }
+}
+
+#[tauri::command]
+fn delete_saved_item(db: State<Db>, id: i64) -> Result<(), String> {
+    db.lock().unwrap().delete_saved_item(id).map_err(err)
+}
+
+#[tauri::command]
+fn move_saved_item(db: State<Db>, id: i64, by: i64) -> Result<(), String> {
+    db.lock().unwrap().move_saved_item(id, by).map_err(err)
+}
+
+/// Open a saved link.
+#[tauri::command]
+fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    open_checked(&app, &url)
 }
 
 #[tauri::command]
@@ -541,7 +587,12 @@ fn main() {
             import_html_file,
             export_file,
             add_bookmark,
-            add_from_clipboard
+            add_from_clipboard,
+            saved_items,
+            save_item,
+            delete_saved_item,
+            move_saved_item,
+            open_link
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");

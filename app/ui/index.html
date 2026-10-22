@@ -66,6 +66,11 @@
   nav .tools { padding: 0 8px 6px; display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   nav .tools input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -2px; }
   #kwlist { flex: 1; }
+  #savedlist { max-height: 35%; flex: none; }
+  #savedlist li { display: flex; gap: 6px; padding: 3px 10px; cursor: default; user-select: none; }
+  #savedlist li:hover, #savedlist li.active { background: var(--sel); }
+  #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #savedlist .hint { color: var(--muted); font-size: 12px; padding: 0 10px 6px; cursor: default; }
   #kwlist li { display: flex; gap: 6px; padding: 2px 10px; cursor: default; user-select: none; content-visibility: auto; contain-intrinsic-size: auto 22px; }
   #kwlist li:hover, #kwlist li.active { background: var(--sel); }
   #kwlist .n { margin-left: auto; color: var(--muted); font-size: 12px; }
@@ -102,11 +107,11 @@
   .check-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .check-line input { width: auto; margin: 0; }
 
-  #ctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
-  #ctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-  #ctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
-  #ctx button:hover, #ctx button:focus-visible { background: var(--sel); outline: none; }
-  #ctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #sctx, #ctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+  #sctx strong, #ctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  #sctx button, #ctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
+  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible { background: var(--sel); outline: none; }
+  #sctx hr, #ctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
   dialog { width: min(640px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
   dialog::backdrop { background: rgb(0 0 0 / .35); }
@@ -146,6 +151,7 @@
 <body>
 <header>
   <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks" aria-describedby="q-help">
+  <button id="save-search" type="button" class="secondary icon" title="Save this search" aria-label="Save this search">☆</button>
   <select id="mode" aria-label="Search mode">
     <option value="all">All fields</option>
     <option value="keywords">Keywords only</option>
@@ -192,7 +198,9 @@
   </details>
 </header>
 
-<nav aria-label="Keyword dictionary">
+<nav aria-label="Saved searches and keywords">
+  <h2 id="saved-head">Saved</h2>
+  <ul id="savedlist" aria-label="Saved searches and links"></ul>
   <h2 id="kw-head">Keywords</h2>
   <div class="tools">
     <input id="kw-filter" type="search" placeholder="Find keyword…" aria-label="Find keyword">
@@ -219,6 +227,35 @@
     <button id="check-cancel" type="button" class="secondary" hidden>Cancel</button>
   </span>
 </footer>
+
+<div id="sctx" class="ctxmenu" role="menu" hidden>
+  <strong id="sctx-title"></strong>
+  <button role="menuitem" data-act="run">Run</button>
+  <button role="menuitem" data-act="edit">Edit…</button>
+  <hr>
+  <button role="menuitem" data-act="up">Move up</button>
+  <button role="menuitem" data-act="down">Move down</button>
+  <hr>
+  <button role="menuitem" data-act="delete">Delete…</button>
+</div>
+
+<dialog id="saved-dlg" aria-labelledby="saved-title">
+  <form method="dialog" id="saved-form">
+    <h2 id="saved-title">Save search</h2>
+    <div class="settings-body">
+      <label for="sv-name">Name</label>
+      <input id="sv-name" required autocomplete="off">
+      <label for="sv-value" id="sv-value-label">Search</label>
+      <input id="sv-value" required autocomplete="off">
+      <p id="sv-mode" class="help"></p>
+      <p id="sv-error" class="error" role="alert"></p>
+    </div>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="ctx" role="menu" hidden>
   <strong id="ctx-title"></strong>
@@ -351,6 +388,7 @@
       <button id="del-one" type="button" class="danger">Delete</button>
     </div>
     <label class="check-line"><input type="checkbox" id="f-check"> Check this link <span id="f-check-status"></span></label>
+    <button id="pin-link" type="button" class="secondary" style="margin-top:8px">Pin to Saved</button>
     <div class="info" id="info"></div>
   </form>
 </template>

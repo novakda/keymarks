@@ -76,7 +76,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-11 | Date/time format | Custom format builder (§8.1.6; ini `gui.time_format`, default `%m-%d-%y %h:%M:%s %p`) | Use OS locale via `Intl.DateTimeFormat`; optional relative dates | P2 | todo |
 | DISP-12 | Display font | §8.1.3; ini `gui.font_*` | Font size setting plus system UI font; follow OS text scaling | P2 | todo |
 | DISP-13 | Header colours | §8.1.4; ini `colors.header_*` | Drop; light/dark theme follows OS | P3 | drop |
-| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | partial (keyword, list and properties panes; no macro pane yet) |
+| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | partial (Saved, keyword, list and properties panes; no splitter persistence) |
 | DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | partial (counts, messages; no check queue yet) |
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
 | DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
@@ -136,14 +136,14 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
-| MAC-01 | URL macro | Name plus URL, jump to site (§5.8, §10.1.5) | "Pinned links" in a Saved panel | P1 | todo |
-| MAC-02 | Keyword-search macro | Stored keyword expression (§5.8) | Saved search (mode=keyword) | P1 | todo |
-| MAC-03 | String-search macro | Stored string plus fields plus match case (§5.8; b294 fix) | Saved search (mode=exact, fields, case) | P1 | todo |
-| MAC-04 | Create from current search / selected bookmark | Macros > Current Search, Selected URL; context "Make Shortcut Macro" (§10.1.5) | Star button on the search box; context action on bookmark | P1 | todo |
-| MAC-05 | Per-macro hotkey | Hotkey field in all macro dialogs (exe `msctls_hotkey32`). Global or in-app is unknown | In-app shortcuts (Alt+1…9 or user-defined); global optional | P2 | todo |
-| MAC-06 | Macro pane ops | Cut/Copy/Paste/Delete/Move Up/Down (Alt+Up/Down), Properties, Sort by Type/Name (§5.8, exe) | Drag-reorder list; edit/delete; sort | P2 | todo |
-| MAC-07 | Run macro | Enter / double-click; Shift+Enter or Alt+double-click = new window (§10.3) | Same | P1 | todo |
-| MAC-08 | Import/export macros from pm35 | `<!--macro=[...]-->` in head (format spec) | Map into saved-searches table; write back on pm35 export | P1 | todo (parser keeps raw) |
+| MAC-01 | URL macro | Name plus URL, jump to site (§5.8, §10.1.5) | "Pinned links" in a Saved panel | P1 | done (pinned links: "Pin to Saved" from a bookmark) |
+| MAC-02 | Keyword-search macro | Stored keyword expression (§5.8) | Saved search (mode=keyword) | P1 | done (saved search with its mode) |
+| MAC-03 | String-search macro | Stored string plus fields plus match case (§5.8; b294 fix) | Saved search (mode=exact, fields, case) | P1 | done (exact mode, fields and match case saved) |
+| MAC-04 | Create from current search / selected bookmark | Macros > Current Search, Selected URL; context "Make Shortcut Macro" (§10.1.5) | Star button on the search box; context action on bookmark | P1 | done (☆ beside the search box; Pin in the properties panel) |
+| MAC-05 | Per-macro hotkey | Hotkey field in all macro dialogs (exe `msctls_hotkey32`). Global or in-app is unknown | In-app shortcuts (Alt+1…9 or user-defined); global optional | P2 | partial (Alt+1…9 for the first nine; no per-item or global hotkeys) |
+| MAC-06 | Macro pane ops | Cut/Copy/Paste/Delete/Move Up/Down (Alt+Up/Down), Properties, Sort by Type/Name (§5.8, exe) | Drag-reorder list; edit/delete; sort | P2 | partial (edit, delete, move up/down; no cut/copy/paste or sort) |
+| MAC-07 | Run macro | Enter / double-click; Shift+Enter or Alt+double-click = new window (§10.3) | Same | P1 | done (click, Alt+N; links open in the default browser) |
+| MAC-08 | Import/export macros from pm35 | `<!--macro=[...]-->` in head (format spec) | Map into saved-searches table; write back on pm35 export | P1 | todo (parser keeps raw macro lines; none in the user's file to map) |
 
 ### 2.5 Status checking, schedules and change detection
 

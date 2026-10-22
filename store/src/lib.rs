@@ -65,6 +65,16 @@ CREATE INDEX IF NOT EXISTS bookmark_keyword_kw ON bookmark_keyword(keyword);
 CREATE TRIGGER IF NOT EXISTS bookmark_kw_ad AFTER DELETE ON bookmark BEGIN
     DELETE FROM bookmark_keyword WHERE bookmark_id = old.id;
 END;
+-- Saved searches and links (Powermarks' macros), in the user's order.
+CREATE TABLE IF NOT EXISTS saved_item (
+    id INTEGER PRIMARY KEY,
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('search', 'link')),
+    query TEXT NOT NULL DEFAULT '',   -- search: the query
+    options TEXT NOT NULL DEFAULT '{}', -- search: SearchOptions as JSON (mode, fields, case)
+    url TEXT NOT NULL DEFAULT ''      -- link: where it goes
+);
 -- Powermarks 'tagged keywords': a curated favourite vocabulary.
 CREATE TABLE IF NOT EXISTS tagged_keyword (keyword TEXT PRIMARY KEY COLLATE NOCASE);
 CREATE VIRTUAL TABLE IF NOT EXISTS bookmark_fts USING fts5(
@@ -126,6 +136,27 @@ pub struct Bookmark {
 
 fn yes() -> bool {
     true
+}
+
+/// A saved search or link (what Powermarks called a macro).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedItem {
+    #[serde(default)]
+    pub id: i64,
+    pub name: String,
+    /// "search" or "link".
+    pub kind: String,
+    #[serde(default)]
+    pub query: String,
+    /// For searches: SearchOptions as JSON (mode, fields, match case). Opaque to the store.
+    #[serde(default = "empty_json")]
+    pub options: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+fn empty_json() -> String {
+    "{}".into()
 }
 
 /// A bookmark coming from another browser or a file.
@@ -631,6 +662,53 @@ impl Store {
             params![id, title, description, keywords],
         )?;
         index_keywords(&tx, id, &keywords)?;
+        tx.commit()
+    }
+
+    /// Saved searches and links in the user's order.
+    pub fn saved_items(&self) -> Result<Vec<SavedItem>> {
+        self.conn
+            .prepare("SELECT id, name, kind, query, options, url FROM saved_item ORDER BY position, id")?
+            .query_map([], |r| {
+                Ok(SavedItem { id: r.get(0)?, name: r.get(1)?, kind: r.get(2)?, query: r.get(3)?, options: r.get(4)?, url: r.get(5)? })
+            })?
+            .collect()
+    }
+
+    /// Add at the end of the list (id ignored); returns the new id.
+    pub fn save_item(&self, item: &SavedItem) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO saved_item (position, name, kind, query, options, url)
+             VALUES ((SELECT coalesce(max(position), 0) + 1 FROM saved_item), ?1, ?2, ?3, ?4, ?5)",
+            params![item.name.trim(), item.kind, item.query, item.options, item.url.trim()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_saved_item(&self, item: &SavedItem) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE saved_item SET name = ?2, query = ?3, options = ?4, url = ?5 WHERE id = ?1",
+            params![item.id, item.name.trim(), item.query, item.options, item.url.trim()],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn delete_saved_item(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM saved_item WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Move an item one place up (-1) or down (+1).
+    pub fn move_saved_item(&mut self, id: i64, by: i64) -> Result<()> {
+        let mut order: Vec<i64> = self.saved_items()?.into_iter().map(|i| i.id).collect();
+        let Some(at) = order.iter().position(|&x| x == id) else { return Ok(()) };
+        let to = (at as i64 + by).clamp(0, order.len() as i64 - 1) as usize;
+        let moved = order.remove(at);
+        order.insert(to, moved);
+        let tx = self.conn.transaction()?;
+        for (pos, id) in order.iter().enumerate() {
+            tx.execute("UPDATE saved_item SET position = ?2 WHERE id = ?1", params![id, pos as i64 + 1])?;
+        }
         tx.commit()
     }
 
@@ -1213,6 +1291,30 @@ mod tests {
         assert!(s.search("tools", 5).unwrap().is_empty());
         s.redo().unwrap();
         assert_eq!(s.count().unwrap(), 4);
+    }
+
+    #[test]
+    fn saved_searches_and_links() {
+        let mut s = Store::open(":memory:").unwrap();
+        let search = |name: &str, q: &str| SavedItem { id: 0, name: name.into(), kind: "search".into(), query: q.into(), options: r#"{"mode":"keywords"}"#.into(), url: String::new() };
+        let a = s.save_item(&search(" Rust ", "rust ! book")).unwrap();
+        let b = s.save_item(&SavedItem { id: 0, name: "Docs".into(), kind: "link".into(), query: String::new(), options: "{}".into(), url: " https://docs.rs/ ".into() }).unwrap();
+        let c = s.save_item(&search("Recipes", "recipes")).unwrap();
+        let names = |s: &Store| s.saved_items().unwrap().into_iter().map(|i| i.name).collect::<Vec<_>>();
+        assert_eq!(names(&s), ["Rust", "Docs", "Recipes"]);
+        assert_eq!(s.saved_items().unwrap()[1].url, "https://docs.rs/");
+        s.move_saved_item(c, -1).unwrap();
+        assert_eq!(names(&s), ["Rust", "Recipes", "Docs"]);
+        s.move_saved_item(a, -1).unwrap(); // already first
+        s.move_saved_item(b, 5).unwrap(); // already last
+        assert_eq!(names(&s), ["Rust", "Recipes", "Docs"]);
+        let mut item = s.saved_items().unwrap().remove(0);
+        item.name = "Rust, not the book".into();
+        assert!(s.update_saved_item(&item).unwrap());
+        s.delete_saved_item(c).unwrap();
+        assert_eq!(names(&s), ["Rust, not the book", "Docs"]);
+        assert_eq!(s.saved_items().unwrap()[0].options, r#"{"mode":"keywords"}"#);
+        assert!(s.save_item(&SavedItem { kind: "bogus".into(), ..search("x", "") }).is_err(), "kind is checked");
     }
 
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture
