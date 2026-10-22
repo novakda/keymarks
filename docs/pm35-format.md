@@ -42,7 +42,7 @@ marked *inferred* were not seen in a real file.
 | `scs` | `sbhh` | schedule name, flag (*inferred*: 1 = default for new bookmarks), period in seconds, start time. E.g. `[Weekly][1][93A80][37D0B99E]` = 604800 s |
 | `kword` | `sbh` | keyword, tagged, time (*inferred* from "SYNC add_kword: invalid time") |
 | `macro` | `hshhs` | type (0 = URL), name, last-modified time, hotkey (low word virtual key, high word modifiers), URL or search text |
-| | `hshhsbb` | type 1 = keyword search, … plus two flags: the first is passed to the search (*inferred*: partial word matches); the second is never read |
+| | `hshhsbb` | type 1 = keyword search, … plus two flags: partial word matches, and one that is never read |
 | | `hshhsbh` | type 2 = exact string search, … plus match case and a field mask |
 
 Field-mask bits follow pm.exe's column order: 0 Name, 1 URL, 2 Keywords, 3 Description, 4 Notes,

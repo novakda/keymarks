@@ -926,8 +926,8 @@ pub struct KeywordCount {
 /// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
 /// first spelling wins), order kept, single-space separated.
 /// A Powermarks macro record (`type, name, mtime, hotkey, text` + options, decoded from
-/// pm.exe) as a saved item. Type 0 = URL, 1 = keyword search (option taken as "partial
-/// matches"), 2 = exact string search (match case, field mask).
+/// pm.exe) as a saved item. Type 0 = URL, 1 = keyword search (partial word
+/// matches), 2 = exact string search (match case, field mask).
 fn macro_item(m: &[String]) -> Option<SavedItem> {
     let name = decode_text(m.get(1)?).trim().to_string();
     let value = decode_text(m.get(4)?).trim().to_string();
