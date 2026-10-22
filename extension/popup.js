@@ -51,3 +51,8 @@ $('form').addEventListener('submit', async (e) => {
     $('add').disabled = false;
   }
 });
+
+$('open').addEventListener('click', async () => {
+  const problem = await openApp();
+  if (problem) show(problem); else window.close();
+});

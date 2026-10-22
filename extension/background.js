@@ -5,10 +5,13 @@ if (typeof importScripts === 'function') importScripts('common.js');
 api.runtime.onInstalled.addListener(() => {
   api.contextMenus.create({ id: 'fast-add-page', title: 'Fast add page to Keymarks', contexts: ['page'] });
   api.contextMenus.create({ id: 'fast-add-link', title: 'Fast add link to Keymarks', contexts: ['link'] });
+  api.contextMenus.create({ id: 'open-app', title: 'Open Keymarks', contexts: ['action'] });
 });
 
 api.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'fast-add-link') {
+  if (info.menuItemId === 'open-app') {
+    openApp();
+  } else if (info.menuItemId === 'fast-add-link') {
     fastAdd(tab, { url: info.linkUrl, title: info.linkText || info.linkUrl });
   } else if (info.menuItemId === 'fast-add-page') {
     fastAdd(tab);

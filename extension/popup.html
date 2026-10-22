@@ -14,6 +14,8 @@
   button { margin-top: 10px; width: 100%; padding: 7px; font: inherit; font-weight: 600; border: 0; border-radius: 5px; background: var(--accent); color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   #status { min-height: 1em; margin: 8px 0 0; }
+  #open { all: unset; display: block; margin-top: 6px; color: var(--accent); cursor: pointer; font-size: 12px; }
+  #open:hover, #open:focus-visible { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -27,6 +29,7 @@
   <textarea id="desc"></textarea>
   <button id="add" type="submit">Add to Keymarks</button>
   <p id="status" role="status"></p>
+  <button id="open" type="button">Open Keymarks</button>
 </form>
 <script src="common.js"></script>
 <script src="popup.js"></script>

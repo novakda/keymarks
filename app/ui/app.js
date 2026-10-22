@@ -1248,7 +1248,7 @@ function renderPanel() {
   const form = $('form');
   const rating = $('f-rating');
   rating.append(...Array.from({ length: 11 }, (_, n) => new Option(n ? `${n} / 10` : 'Not rated', n)));
-  for (const name of ['title', 'url', 'description', 'notes', 'rating']) {
+  for (const name of ['title', 'url', 'description', 'notes', 'user_field', 'rating']) {
     form.elements[name].value = editing[name] ?? '';
   }
   chips = words(editing.keywords);
@@ -1329,7 +1329,7 @@ async function save() {
   if ($('f-kw').value.trim()) commitChip();
   if (!dirty || !form.reportValidity()) return;
   const bookmark = { ...editing, keywords: chips.join(' ') };
-  for (const name of ['title', 'url', 'description', 'notes']) {
+  for (const name of ['title', 'url', 'description', 'notes', 'user_field']) {
     bookmark[name] = form.elements[name].value.trim();
   }
   bookmark.rating = Number(form.elements.rating.value);

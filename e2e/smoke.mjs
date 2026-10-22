@@ -335,6 +335,22 @@ try {
   await idle();
   const afterUndo = await everything();
   check('Ctrl+Z brings it back', afterUndo === all, `→ ${afterUndo}`);
+  await search('');
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await idle();
+  const user0 = await page.inputValue('#f-user');
+  await page.fill('#f-user', 'E2E user field');
+  await page.keyboard.press('Control+s');
+  await idle();
+  await page.click('#table-body tr.vrow:nth-child(2)');
+  await idle();
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await idle();
+  const user1 = await page.inputValue('#f-user');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('the user field saves and undoes', user1 === 'E2E user field' && (await page.inputValue('#f-user')) === user0);
 
   // 7b. Rating keys and F8 (Check all asks first; the test answers No, so nothing is contacted)
   await search('');

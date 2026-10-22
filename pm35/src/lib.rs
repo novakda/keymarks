@@ -49,6 +49,23 @@ impl Entry {
     }
 }
 
+/// The `<!--tag=[a][b]…-->` records in a head or tail block. Layouts, from pm.exe's
+/// writer format strings (h hex, s string, b 0/1):
+/// - `scs` schedule `sbhh`: name, flag, period (seconds), start time
+/// - `kword` tagged keyword `sbh`: word, tagged, time
+/// - `macro` `hshhs` (type, name, hotkey, number, URL or query), plus `bb` for a keyword
+///   search (two options) or `bh` for a string search (match case, field mask)
+pub fn records(block: &str, tag: &str) -> Vec<Vec<String>> {
+    let open = format!("<!--{tag}=[");
+    block
+        .match_indices(&open)
+        .filter_map(|(i, _)| {
+            let rest = &block[i + open.len()..];
+            Some(rest[..rest.find("]-->")?].split("][").map(String::from).collect())
+        })
+        .collect()
+}
+
 const ENTRY: &str = "<DT><A HREF=\"";
 const END: &str = "</DL><p>";
 
@@ -126,6 +143,14 @@ mod tests {
         assert_eq!(a.num(field::ADDED), Some(0x634DF1F5));
         assert_eq!(db.entries[1].extras, vec![]);
         assert_eq!(db.entries[1].mdata[field::PAGE_HASH], "");
+    }
+
+    #[test]
+    fn head_and_tail_records() {
+        let head = "<HEAD>\r\n<!--scs=[Daily][0][15180][37D0B99E]-->\r\n<!--scs=[Weekly][1][93A80][37D0B99E]-->\r\n<!--macro=[0][Docs][0][0][http://x.example/]-->\r\n";
+        assert_eq!(records(head, "scs")[1], ["Weekly", "1", "93A80", "37D0B99E"]);
+        assert_eq!(records(head, "macro"), [vec!["0", "Docs", "0", "0", "http://x.example/"]]);
+        assert!(records(head, "kword").is_empty());
     }
 
     #[test]

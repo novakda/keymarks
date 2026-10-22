@@ -32,6 +32,22 @@ Latin-1, CRLF. Netscape bookmark HTML with Powermarks data in comments:
 
 One flat list: no `<H3>` folders. Keywords are the organizing mechanism.
 
+## Head and tail records
+
+Layouts from pm.exe's writer format strings (`h` hex, `s` string, `b` 0/1). Field meanings
+marked *inferred* were not seen in a real file.
+
+| Block | Layout | Fields |
+|-------|--------|--------|
+| `scs` | `sbhh` | schedule name, flag (*inferred*: 1 = default for new bookmarks), period in seconds, start time. E.g. `[Weekly][1][93A80][37D0B99E]` = 604800 s |
+| `kword` | `sbh` | keyword, tagged, time (*inferred* from "SYNC add_kword: invalid time") |
+| `macro` | `hshhs` | type, name, hotkey (*inferred*), a number, URL or search text |
+| | `hshhsbb` | … plus two options: a keyword search (*inferred*: first = partial matches) |
+| | `hshhsbh` | … plus match case and a field mask: a string search (mask bits not decoded) |
+
+Format 3.0 used `hssh`, `hsshbb` and `hsshbh` for macros. Keymarks tells the macro kinds apart
+by shape, not by the type number, and gives imported string searches all fields.
+
 ## `mdata` fields
 
 Type string `shhhhhhhbshhseh`: `s` string, `h` hex uint32, `b` 0/1. Times are Unix seconds in hex.

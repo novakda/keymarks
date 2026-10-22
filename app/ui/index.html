@@ -117,6 +117,9 @@
   #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
   #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
   #bctx button[hidden] { display: none; }
+  #settings fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 10px; display: grid; gap: 6px; }
+  #settings legend { font-weight: 600; padding: 0 4px; }
+  #settings .settings-body { max-height: 70vh; overflow-y: auto; }
   label.check { display: flex; gap: 6px; align-items: center; margin: 10px 0 0; }
   .keys { border-collapse: collapse; margin: 4px 0 12px; font-size: 13px; }
   .keys th { text-align: left; padding: 10px 0 4px; color: var(--muted); font-weight: 600; }
@@ -422,18 +425,26 @@
   <form method="dialog">
     <h2 id="settings-title">Settings</h2>
     <div class="settings-body">
-      <label><input type="checkbox" id="s-autostart"> Start Keymarks with Windows</label>
-      <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
-      <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
-      <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
-      <label><input type="checkbox" id="s-scheduled"> Check links on their schedules in the background (a few hundred every 10 minutes, oldest first)</label>
-      <label for="s-schedules">Check schedules, one per line: <code>Name = interval</code> (min, h, d, w, mo, y)</label>
-      <textarea id="s-schedules" rows="3" spellcheck="false"></textarea>
-      <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
-      <input id="s-fast" placeholder="e.g. new">
-      <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
-      <input id="s-hotkey" placeholder="Press a key combination (empty = none)" aria-describedby="s-hotkey-help">
-      <p id="s-hotkey-help" class="help">Click the box and press the keys, e.g. Ctrl+Alt+P. Backspace clears it. The tray icon's menu lists the top results of your current search.</p>
+      <fieldset><legend>Startup and tray</legend>
+        <label><input type="checkbox" id="s-autostart"> Start Keymarks with Windows</label>
+        <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
+        <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
+      </fieldset>
+      <fieldset><legend>Hotkey</legend>
+        <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
+        <input id="s-hotkey" placeholder="Press a key combination (empty = none)" aria-describedby="s-hotkey-help">
+        <p id="s-hotkey-help" class="help">Click the box and press the keys, e.g. Ctrl+Alt+P. Backspace clears it. The tray icon's menu lists the top results of your current search.</p>
+      </fieldset>
+      <fieldset><legend>Adding</legend>
+        <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
+        <input id="s-fast" placeholder="e.g. new">
+      </fieldset>
+      <fieldset><legend>Link checking</legend>
+        <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
+        <label><input type="checkbox" id="s-scheduled"> Check links on their schedules in the background (up to 200 every 10 minutes, most overdue first)</label>
+        <label for="s-schedules">Check schedules, one per line: <code>Name = interval</code> (min, h, d, w, mo, y)</label>
+        <textarea id="s-schedules" rows="3" spellcheck="false"></textarea>
+      </fieldset>
       <p id="s-error" class="error" role="alert"></p>
     </div>
     <div class="row">
@@ -480,6 +491,7 @@
     </div>
     <label for="f-description">Description</label><textarea id="f-description" name="description"></textarea>
     <label for="f-notes">Notes</label><textarea id="f-notes" name="notes"></textarea>
+    <label for="f-user">User field</label><input id="f-user" name="user_field" autocomplete="off">
     <label for="f-rating">Rating</label>
     <select id="f-rating" name="rating"></select>
     <div class="row">

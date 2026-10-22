@@ -24,3 +24,9 @@ async function readPage(tabId) {
     return { description: '', keywords: '' };
   }
 }
+
+// Powermarks' "Show PM": ask the host to bring up the app (it starts it if needed).
+async function openApp() {
+  const reply = await api.runtime.sendNativeMessage(HOST, { type: 'show' }).catch((e) => ({ ok: false, error: String(e) }));
+  return reply?.ok ? '' : `Couldn't open Keymarks: ${reply?.error ?? 'no reply'}`;
+}

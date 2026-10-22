@@ -51,7 +51,7 @@ fn count(db: State<Db>) -> Result<i64, String> {
 
 /// Pick a pm35.htm and import it. Only into an empty store, so re-importing can't duplicate.
 #[tauri::command]
-async fn import_pm35(app: AppHandle, db: State<'_, Db>) -> Result<Option<usize>, String> {
+async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<usize>, String> {
     let picked = app
         .dialog()
         .file()
@@ -64,7 +64,27 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>) -> Result<Option<usize>,
     if store.count().map_err(|e| e.to_string())? > 0 {
         return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
-    store.import_pm35(&parsed).map(Some).map_err(|e| e.to_string())
+    let n = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
+    // The file's check schedules join Settings, so its bookmarks' schedule names mean something.
+    let mut current = settings.current.lock().unwrap();
+    let known = desktop::parse_schedules(&current.schedules).unwrap_or_default();
+    let mut added = String::new();
+    for r in pm35::records(&parsed.head, "scs") {
+        let (Some(name), Some(secs)) = (r.first(), r.get(2).and_then(|h| u64::from_str_radix(h, 16).ok())) else { continue };
+        if secs >= 3600 && !known.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) {
+            let every = if secs % 86400 == 0 { format!("{}d", secs / 86400) } else { format!("{}h", secs / 3600) };
+            added += &format!("\n{} = {every}", store::decode_text(name).trim());
+        }
+    }
+    if !added.is_empty() {
+        let mut new = current.clone();
+        new.schedules = format!("{}{added}", new.schedules.trim_end());
+        if desktop::parse_schedules(&new.schedules).is_ok() {
+            settings.save(&new)?;
+            *current = new;
+        }
+    }
+    Ok(Some(n))
 }
 
 #[derive(serde::Serialize)]
@@ -212,7 +232,7 @@ async fn export_file(app: AppHandle, db: State<'_, Db>, format: String, ids: Opt
     let path = path.into_path().map_err(err)?;
     let bytes = match format.as_str() {
         "html" => store::export::to_netscape(&rows).into_bytes(),
-        _ => store::export::to_pm35(&rows),
+        _ => db.lock().unwrap().export_pm35(ids.as_deref()).map_err(err)?,
     };
     std::fs::write(&path, bytes).map_err(err)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -229,6 +249,21 @@ pub(crate) fn open_id<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64) ->
     let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
     open_checked(app, &url)?;
     store.mark_visited(id).map_err(err)
+}
+
+/// Started by the browser extension's "Open Keymarks", this process may bring a window to
+/// the front, but it hands over to the instance already running: let that one do it.
+fn allow_foreground_handover() {
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn AllowSetForegroundWindow(process_id: u32) -> i32;
+        }
+        const ASFW_ANY: u32 = u32::MAX;
+        // SAFETY: no pointers; fails harmlessly when this process has no foreground rights.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    }
 }
 
 /// Powermarks' Shift+Enter: open in a new window of the default browser, counting the visit.
@@ -483,6 +518,9 @@ fn begin_check(
     targets: impl FnOnce() -> store::Result<Vec<store::CheckTarget>>,
 ) -> Result<Vec<i64>, String> {
     use std::sync::atomic::Ordering;
+    if !checker::online() {
+        return Err("you seem to be offline, so no links were checked".into());
+    }
     if checks.running.swap(true, Ordering::SeqCst) {
         return Err("a link check is already running".into());
     }
@@ -621,6 +659,7 @@ fn register_bundled_host(app: &AppHandle) {
 }
 
 fn main() {
+    allow_foreground_handover();
     tauri::Builder::default()
         // First: a second launch hands over to the running app and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_main(app)))

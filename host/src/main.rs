@@ -25,6 +25,8 @@ const MAX_FIELD: usize = 8 * 1024;
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Request {
     Ping,
+    /// Bring up the app (starting it if needed): Powermarks' "Show PM" toolbar button.
+    Show,
     /// Is this URL already bookmarked? (The popup then shows and edits that bookmark.)
     Lookup { url: String },
     Add {
@@ -96,6 +98,12 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
     };
     match request {
         Request::Ping => json!({ "ok": true, "count": store.count().unwrap_or(-1) }),
+        // The app sits next to this host. A second launch hands over to the running one,
+        // which shows its window.
+        Request::Show => match std::env::current_exe().map(|e| e.with_file_name("keymarks.exe")).and_then(|app| Command::new(app).spawn()) {
+            Ok(_) => json!({ "ok": true }),
+            Err(e) => json!({ "ok": false, "error": format!("could not start Keymarks: {e}") }),
+        },
         Request::Lookup { url } => match store.find_url(&url) {
             Ok(Some(b)) => json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description }),
             Ok(None) => json!({ "ok": true, "found": false }),

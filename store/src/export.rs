@@ -1,7 +1,7 @@
 //! Writing bookmarks out: Netscape bookmark HTML (any browser imports it) and Powermarks 3.5
 //! `pm35.htm` (the original program can open it again).
 
-use crate::{Result, Store};
+use crate::{Result, SavedItem, Store};
 use pm35::{Database, Entry, field};
 use rusqlite::params;
 
@@ -66,6 +66,15 @@ impl Store {
     }
 }
 
+impl Store {
+    /// A Powermarks file of `ids` (or everything), with Saved items as macros and tagged
+    /// keywords, so Powermarks 3.5 gets those back too.
+    pub fn export_pm35(&self, ids: Option<&[i64]>) -> Result<Vec<u8>> {
+        let tagged: Vec<String> = self.conn.prepare("SELECT keyword FROM tagged_keyword ORDER BY keyword")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
+        Ok(to_pm35_with(&self.export_rows(ids)?, &self.saved_items()?, &tagged))
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn export_rows_all(s: &Store) -> Vec<ExportRow> {
     s.export_rows(None).unwrap()
@@ -127,6 +136,23 @@ const PM35_TAIL: &str = "</DL><p>\r\n</BODY>\r\n</HTML>";
 /// Powermarks 3.5 file bytes. The imported 15-field record is reused (so fields Keymarks
 /// doesn't understand survive) with the fields Keymarks tracks brought up to date.
 pub fn to_pm35(rows: &[ExportRow]) -> Vec<u8> {
+    to_pm35_with(rows, &[], &[])
+}
+
+/// A Saved item as a macro record (layouts in `pm35::records`). Powermarks has no
+/// "all fields" word search, so those become keyword searches.
+fn macro_record(item: &SavedItem) -> String {
+    let o: serde_json::Value = serde_json::from_str(&item.options).unwrap_or_default();
+    let flag = |k: &str| if o[k].as_bool().unwrap_or(false) { "1" } else { "0" };
+    let name = pm_text(&item.name);
+    match (item.kind.as_str(), o["mode"].as_str()) {
+        ("link", _) => format!("[0][{name}][0][0][{}]", pm_text(&item.url)),
+        (_, Some("exact")) => format!("[2][{name}][0][0][{}][{}][1F]", pm_text(&item.query), flag("match_case")),
+        _ => format!("[1][{name}][0][0][{}][{}][0]", pm_text(&item.query), flag("partial")),
+    }
+}
+
+pub fn to_pm35_with(rows: &[ExportRow], saved: &[SavedItem], tagged: &[String]) -> Vec<u8> {
     let hex = |t: Option<i64>| format!("{:X}", t.unwrap_or(0).clamp(0, u32::MAX as i64));
     let entries = rows
         .iter()
@@ -164,7 +190,11 @@ pub fn to_pm35(rows: &[ExportRow]) -> Vec<u8> {
             Entry { url: pm_text(&r.url), title: pm_text(&r.title), extras, mdata: m }
         })
         .collect();
-    pm35::write(&Database { head: PM35_HEAD.into(), entries, tail: PM35_TAIL.into() })
+    let macros: String = saved.iter().map(|i| format!("<!--macro={}-->\r\n", macro_record(i))).collect();
+    let kwords: String = tagged.iter().map(|k| format!("<!--kword=[{}][1][0]-->\r\n", pm_text(k))).collect();
+    let head = PM35_HEAD.replacen("</HEAD>", &format!("{macros}</HEAD>"), 1);
+    let tail = PM35_TAIL.replacen("</DL><p>\r\n", &format!("</DL><p>\r\n{kwords}"), 1);
+    pm35::write(&Database { head, entries, tail })
 }
 
 #[cfg(test)]
@@ -229,6 +259,27 @@ mod tests {
         again.import_pm35(&db).unwrap();
         let titles: Vec<_> = again.search("", 10).unwrap().into_iter().map(|b| b.title).collect();
         assert!(titles.contains(&"Emoji \u{1f600} title".to_string()), "{titles:?}");
+    }
+
+    #[test]
+    fn pm35_export_carries_saved_items_and_tags_back() {
+        let mut s = store();
+        s.set_tagged("food", true).unwrap();
+        for (kind, name, query, options, url) in [
+            ("link", "Docs", "", "{}", "https://docs.example/"),
+            ("search", "Rusty", "rust ! old", r#"{"mode":"keywords","partial":true}"#, ""),
+            ("search", "Exact", "Caf\u{e9}", r#"{"mode":"exact","match_case":true}"#, ""),
+        ] {
+            s.save_item(&SavedItem { id: 0, name: name.into(), kind: kind.into(), query: query.into(), options: options.into(), url: url.into() }).unwrap();
+        }
+        let db = pm35::parse(&s.export_pm35(None).unwrap()).unwrap();
+        let mut again = Store::open(":memory:").unwrap();
+        again.import_pm35(&db).unwrap();
+        let back = again.saved_items().unwrap();
+        assert_eq!(back.iter().map(|i| (i.name.as_str(), i.kind.as_str(), i.query.as_str(), i.url.as_str())).collect::<Vec<_>>(),
+            [("Docs", "link", "", "https://docs.example/"), ("Rusty", "search", "rust ! old", ""), ("Exact", "search", "Caf\u{e9}", "")]);
+        assert!(back[2].options.contains("\"match_case\":true"));
+        assert!(again.keywords("").unwrap().iter().any(|k| k.keyword == "food" && k.tagged));
     }
 
     #[test]

@@ -118,6 +118,24 @@ fn end(app: &AppHandle, state: &CheckState, mut progress: Progress) {
     let _ = app.emit("check-progress", &progress);
 }
 
+/// Whether Windows has a network connection (Powermarks asked the system too). Checks are
+/// also stopped when the first results all fail, for connections that exist but don't work.
+#[cfg(windows)]
+pub fn online() -> bool {
+    #[link(name = "wininet")]
+    unsafe extern "system" {
+        fn InternetGetConnectedState(flags: *mut u32, reserved: u32) -> i32;
+    }
+    let mut flags = 0;
+    // SAFETY: a plain query; `flags` outlives the call.
+    unsafe { InternetGetConnectedState(&mut flags, 0) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn online() -> bool {
+    true
+}
+
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 pub const NETWORK_FAILURES: [&str; 3] = ["server_not_found", "no_response", "network_error"];

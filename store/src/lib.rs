@@ -102,7 +102,7 @@ END;
 const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
 const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, \
                     b.last_visited, b.visits, b.last_modified, b.last_checked, b.status, \
-                    b.check_enabled, b.check_status, b.http_status, b.changed, b.schedule";
+                    b.check_enabled, b.check_status, b.http_status, b.changed, b.schedule, b.user_field";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -135,6 +135,9 @@ pub struct Bookmark {
     /// Link-check schedule name (Powermarks' mdata f0); None = checked only on request.
     #[serde(default)]
     pub schedule: Option<String>,
+    /// Powermarks' free "user field".
+    #[serde(default)]
+    pub user_field: String,
 }
 
 fn yes() -> bool {
@@ -230,6 +233,7 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
         http_status: r.get(15)?,
         changed: r.get(16)?,
         schedule: r.get(17)?,
+        user_field: r.get(18)?,
     })
 }
 
@@ -430,6 +434,20 @@ impl Store {
                 }
                 index_keywords(&tx, id, &keywords)?;
             }
+        }
+        // Tagged keywords (tail) and macros (head), as Saved searches and links.
+        for k in pm35::records(&db.tail, "kword") {
+            if k.get(1).map(String::as_str) == Some("1") {
+                tx.execute("INSERT OR IGNORE INTO tagged_keyword (keyword) VALUES (?1)", [decode_text(&k[0])])?;
+            }
+        }
+        for m in pm35::records(&db.head, "macro") {
+            let Some(item) = macro_item(&m) else { continue };
+            tx.execute(
+                "INSERT INTO saved_item (position, name, kind, query, options, url)
+                 VALUES ((SELECT coalesce(max(position), 0) + 1 FROM saved_item), ?1, ?2, ?3, ?4, ?5)",
+                params![item.name, item.kind, item.query, item.options, item.url],
+            )?;
         }
         tx.commit()?;
         Ok(db.entries.len())
@@ -636,8 +654,8 @@ impl Store {
             let tx = s.conn.transaction()?;
             let n = tx.execute(
                 "UPDATE bookmark SET url = ?2, title = ?3, keywords = ?4, description = ?5,
-                    notes = ?6, rating = ?7 WHERE id = ?1",
-                params![b.id, b.url, b.title, keywords, b.description, b.notes, b.rating.clamp(0, 10)],
+                    notes = ?6, rating = ?7, user_field = ?8 WHERE id = ?1",
+                params![b.id, b.url, b.title, keywords, b.description, b.notes, b.rating.clamp(0, 10), b.user_field],
             )?;
             if n == 1 {
                 index_keywords(&tx, b.id, &keywords)?;
@@ -907,6 +925,26 @@ pub struct KeywordCount {
 
 /// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
 /// first spelling wins), order kept, single-space separated.
+/// A Powermarks macro record as a saved item. The writer's layouts tell the kinds apart:
+/// 5 fields = URL macro; 7 ending in 0/1 = keyword search (first option taken as "partial
+/// matches"); 7 ending in a larger number = string search (match case, field mask).
+/// ponytail: the type number and field-mask bits were never seen in a real file, so the
+/// shape decides and string searches get all fields; refine with a macro-bearing file.
+fn macro_item(m: &[String]) -> Option<SavedItem> {
+    let name = decode_text(m.get(1)?).trim().to_string();
+    let value = decode_text(m.get(4)?).trim().to_string();
+    if name.is_empty() || value.is_empty() {
+        return None;
+    }
+    let item = |kind: &str, query: String, options: serde_json::Value, url: String| SavedItem { id: 0, name: name.clone(), kind: kind.into(), query, options: options.to_string(), url };
+    Some(match m.len() {
+        5 => item("link", String::new(), serde_json::json!({}), value),
+        7 if m[6] == "0" || m[6] == "1" => item("search", value, serde_json::json!({ "mode": "keywords", "partial": m[5] == "1" }), String::new()),
+        7 => item("search", value, serde_json::json!({ "mode": "exact", "match_case": m[5] == "1", "fields": crate::FIELDS }), String::new()),
+        _ => return None,
+    })
+}
+
 /// Characters Powermarks doesn't allow in keywords (several are search operators); they
 /// separate keywords instead. A '.' is kept only inside a word (`v1.0`).
 pub const KEYWORD_SEPARATORS: &str = "<>/\\!&*%+=?,|^(){}[]:;~";
@@ -1148,6 +1186,21 @@ mod tests {
         s.undo().unwrap();
         s.undo().unwrap();
         assert_eq!(s.get(ids[1]).unwrap().unwrap().schedule.as_deref(), Some("daily"));
+    }
+
+    #[test]
+    fn pm35_macros_and_tagged_keywords_import() {
+        let file: &[u8] = b"<HTML><HEAD>\r\n<!--macro=[0][Docs][0][0][http://x.example/]-->\r\n<!--macro=[1][Rust stuff][0][0][rust ! old][1][0]-->\r\n<!--macro=[2][Exact][0][0][Caf\xe9][1][1F]-->\r\n</HEAD><BODY><DL>\r\n\
+<DT><A HREF=\"http://a.example/\">A</A>\r\n<DD><!--keywords-->food\r\n<!--mdata=[Weekly][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
+</DL><p>\r\n<!--kword=[food][1][0]-->\r\n</BODY></HTML>";
+        let mut s = Store::open(":memory:").unwrap();
+        s.import_pm35(&pm35::parse(file).unwrap()).unwrap();
+        let saved = s.saved_items().unwrap();
+        assert_eq!(saved.iter().map(|i| (i.name.as_str(), i.kind.as_str())).collect::<Vec<_>>(), [("Docs", "link"), ("Rust stuff", "search"), ("Exact", "search")]);
+        assert_eq!(saved[0].url, "http://x.example/");
+        assert!(saved[1].options.contains("\"keywords\"") && saved[1].query == "rust ! old");
+        assert!(saved[2].options.contains("\"exact\"") && saved[2].options.contains("\"match_case\":true") && saved[2].query == "Caf\u{e9}");
+        assert!(s.keywords("").unwrap().iter().any(|k| k.keyword == "food" && k.tagged), "kword block tags it");
     }
 
     #[test]
