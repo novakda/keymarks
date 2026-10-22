@@ -143,7 +143,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | MAC-05 | Per-macro hotkey | Hotkey field in all macro dialogs (exe `msctls_hotkey32`). Global or in-app is unknown | In-app shortcuts (Alt+1…9 or user-defined); global optional | P2 | partial (Alt+1…9 for the first nine; no per-item or global hotkeys) |
 | MAC-06 | Macro pane ops | Cut/Copy/Paste/Delete/Move Up/Down (Alt+Up/Down), Properties, Sort by Type/Name (§5.8, exe) | Drag-reorder list; edit/delete; sort | P2 | partial (edit, delete, move up/down; no cut/copy/paste or sort) |
 | MAC-07 | Run macro | Enter / double-click; Shift+Enter or Alt+double-click = new window (§10.3) | Same | P1 | done (click, Alt+N; links open in the default browser) |
-| MAC-08 | Import/export macros from pm35 | `<!--macro=[...]-->` in head (format spec) | Map into saved-searches table; write back on pm35 export | P1 | done (macros become Saved items and are written back on pm35 export; layout from pm.exe's format strings, macro kinds told apart by shape, string-search field mask not decoded) |
+| MAC-08 | Import/export macros from pm35 | `<!--macro=[...]-->` in head (format spec) | Map into saved-searches table; write back on pm35 export | P1 | done (macros become Saved items and are written back on pm35 export; type, hotkey, match case and field mask decoded from pm.exe) |
 
 ### 2.5 Status checking, schedules and change detection
 

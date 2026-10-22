@@ -15,7 +15,7 @@ Latin-1, CRLF. Netscape bookmark HTML with Powermarks data in comments:
 <HEAD>
 <!--document=[User][<32 hex>]-->          document owner + id
 <!--scs=[name][type][period hex][start time hex]-->   status-check schedules
-<!--macro=[...]-->                         URL macros (formats hshhs / hshhsbb / hshhsbh)
+<!--macro=[...]-->                         macros (formats hshhs / hshhsbb / hshhsbh)
 </HEAD><BODY><DL>
 <DT><A HREF="url">title</A>
 <DD><!--keywords-->space separated keywords      optional
@@ -41,12 +41,16 @@ marked *inferred* were not seen in a real file.
 |-------|--------|--------|
 | `scs` | `sbhh` | schedule name, flag (*inferred*: 1 = default for new bookmarks), period in seconds, start time. E.g. `[Weekly][1][93A80][37D0B99E]` = 604800 s |
 | `kword` | `sbh` | keyword, tagged, time (*inferred* from "SYNC add_kword: invalid time") |
-| `macro` | `hshhs` | type, name, hotkey (*inferred*), a number, URL or search text |
-| | `hshhsbb` | … plus two options: a keyword search (*inferred*: first = partial matches) |
-| | `hshhsbh` | … plus match case and a field mask: a string search (mask bits not decoded) |
+| `macro` | `hshhs` | type (0 = URL), name, last-modified time, hotkey (low word virtual key, high word modifiers), URL or search text |
+| | `hshhsbb` | type 1 = keyword search, … plus two flags: the first is passed to the search (*inferred*: partial word matches); the second is never read |
+| | `hshhsbh` | type 2 = exact string search, … plus match case and a field mask |
 
-Format 3.0 used `hssh`, `hsshbb` and `hsshbh` for macros. Keymarks tells the macro kinds apart
-by shape, not by the type number, and gives imported string searches all fields.
+Field-mask bits follow pm.exe's column order: 0 Name, 1 URL, 2 Keywords, 3 Description, 4 Notes,
+5 Status Checking, 6 Schedule, 7 Status (only these eight are offered; the mask is stored `& 0xFF`).
+Keymarks maps bits 0–4 to its fields and drops 5–7.
+
+Decoded from pm.exe's macro writer, reader and the *Keyword Search Macro* / *Exact String Search
+Macro* dialogs. Format 3.0 used `hssh`, `hsshbb` and `hsshbh` for macros.
 
 ## `mdata` fields
 

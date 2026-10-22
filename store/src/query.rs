@@ -7,6 +7,9 @@
 use serde::Deserialize;
 
 pub const FIELDS: [&str; 5] = ["title", "keywords", "description", "notes", "url"];
+/// Powermarks' field-mask bits (column order in pm.exe); bits 5–7 (status checking,
+/// schedule, status) have no text to search here.
+pub const PM_FIELD_BITS: [&str; 5] = ["title", "url", "keywords", "description", "notes"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]

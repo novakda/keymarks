@@ -147,7 +147,11 @@ fn macro_record(item: &SavedItem) -> String {
     let name = pm_text(&item.name);
     match (item.kind.as_str(), o["mode"].as_str()) {
         ("link", _) => format!("[0][{name}][0][0][{}]", pm_text(&item.url)),
-        (_, Some("exact")) => format!("[2][{name}][0][0][{}][{}][1F]", pm_text(&item.query), flag("match_case")),
+        (_, Some("exact")) => {
+            let on = |f: &str| o["fields"].as_array().is_none_or(|a| a.iter().any(|v| v == f));
+            let mask: u32 = crate::PM_FIELD_BITS.iter().enumerate().filter(|(_, f)| on(f)).map(|(i, _)| 1 << i).sum();
+            format!("[2][{name}][0][0][{}][{}][{mask:X}]", pm_text(&item.query), flag("match_case"))
+        }
         _ => format!("[1][{name}][0][0][{}][{}][0]", pm_text(&item.query), flag("partial")),
     }
 }
@@ -268,7 +272,7 @@ mod tests {
         for (kind, name, query, options, url) in [
             ("link", "Docs", "", "{}", "https://docs.example/"),
             ("search", "Rusty", "rust ! old", r#"{"mode":"keywords","partial":true}"#, ""),
-            ("search", "Exact", "Caf\u{e9}", r#"{"mode":"exact","match_case":true}"#, ""),
+            ("search", "Exact", "Caf\u{e9}", r#"{"mode":"exact","match_case":true,"fields":["notes","url"]}"#, ""),
         ] {
             s.save_item(&SavedItem { id: 0, name: name.into(), kind: kind.into(), query: query.into(), options: options.into(), url: url.into() }).unwrap();
         }
@@ -279,6 +283,7 @@ mod tests {
         assert_eq!(back.iter().map(|i| (i.name.as_str(), i.kind.as_str(), i.query.as_str(), i.url.as_str())).collect::<Vec<_>>(),
             [("Docs", "link", "", "https://docs.example/"), ("Rusty", "search", "rust ! old", ""), ("Exact", "search", "Caf\u{e9}", "")]);
         assert!(back[2].options.contains("\"match_case\":true"));
+        assert!(back[2].options.contains(r#""fields":["url","notes"]"#), "field mask round-trips");
         assert!(again.keywords("").unwrap().iter().any(|k| k.keyword == "food" && k.tagged));
     }
 

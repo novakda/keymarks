@@ -9,7 +9,7 @@ mod query;
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-pub use query::{FIELDS, Mode, SearchOptions, SortKey};
+pub use query::{FIELDS, Mode, PM_FIELD_BITS, SearchOptions, SortKey};
 pub use rusqlite::Result;
 
 /// A search that couldn't run: bad query syntax (show it to the user) or a database error.
@@ -925,11 +925,9 @@ pub struct KeywordCount {
 
 /// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
 /// first spelling wins), order kept, single-space separated.
-/// A Powermarks macro record as a saved item. The writer's layouts tell the kinds apart:
-/// 5 fields = URL macro; 7 ending in 0/1 = keyword search (first option taken as "partial
-/// matches"); 7 ending in a larger number = string search (match case, field mask).
-/// ponytail: the type number and field-mask bits were never seen in a real file, so the
-/// shape decides and string searches get all fields; refine with a macro-bearing file.
+/// A Powermarks macro record (`type, name, mtime, hotkey, text` + options, decoded from
+/// pm.exe) as a saved item. Type 0 = URL, 1 = keyword search (option taken as "partial
+/// matches"), 2 = exact string search (match case, field mask).
 fn macro_item(m: &[String]) -> Option<SavedItem> {
     let name = decode_text(m.get(1)?).trim().to_string();
     let value = decode_text(m.get(4)?).trim().to_string();
@@ -937,10 +935,18 @@ fn macro_item(m: &[String]) -> Option<SavedItem> {
         return None;
     }
     let item = |kind: &str, query: String, options: serde_json::Value, url: String| SavedItem { id: 0, name: name.clone(), kind: kind.into(), query, options: options.to_string(), url };
-    Some(match m.len() {
-        5 => item("link", String::new(), serde_json::json!({}), value),
-        7 if m[6] == "0" || m[6] == "1" => item("search", value, serde_json::json!({ "mode": "keywords", "partial": m[5] == "1" }), String::new()),
-        7 => item("search", value, serde_json::json!({ "mode": "exact", "match_case": m[5] == "1", "fields": crate::FIELDS }), String::new()),
+    let flag = |i: usize| m.get(i).is_some_and(|f| f == "1");
+    Some(match m[0].as_str() {
+        "0" => item("link", String::new(), serde_json::json!({}), value),
+        "1" => item("search", value, serde_json::json!({ "mode": "keywords", "partial": flag(5) }), String::new()),
+        "2" => {
+            let mask = m.get(6).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0x1F);
+            let mut fields: Vec<&str> = PM_FIELD_BITS.iter().enumerate().filter(|(i, _)| mask & 1 << i != 0).map(|(_, f)| *f).collect();
+            if fields.is_empty() {
+                fields = FIELDS.to_vec();
+            }
+            item("search", value, serde_json::json!({ "mode": "exact", "match_case": flag(5), "fields": fields }), String::new())
+        }
         _ => return None,
     })
 }
@@ -1190,7 +1196,7 @@ mod tests {
 
     #[test]
     fn pm35_macros_and_tagged_keywords_import() {
-        let file: &[u8] = b"<HTML><HEAD>\r\n<!--macro=[0][Docs][0][0][http://x.example/]-->\r\n<!--macro=[1][Rust stuff][0][0][rust ! old][1][0]-->\r\n<!--macro=[2][Exact][0][0][Caf\xe9][1][1F]-->\r\n</HEAD><BODY><DL>\r\n\
+        let file: &[u8] = b"<HTML><HEAD>\r\n<!--macro=[0][Docs][0][0][http://x.example/]-->\r\n<!--macro=[1][Rust stuff][0][0][rust ! old][1][0]-->\r\n<!--macro=[2][Exact][0][0][Caf\xe9][1][5]-->\r\n</HEAD><BODY><DL>\r\n\
 <DT><A HREF=\"http://a.example/\">A</A>\r\n<DD><!--keywords-->food\r\n<!--mdata=[Weekly][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
 </DL><p>\r\n<!--kword=[food][1][0]-->\r\n</BODY></HTML>";
         let mut s = Store::open(":memory:").unwrap();
@@ -1200,6 +1206,7 @@ mod tests {
         assert_eq!(saved[0].url, "http://x.example/");
         assert!(saved[1].options.contains("\"keywords\"") && saved[1].query == "rust ! old");
         assert!(saved[2].options.contains("\"exact\"") && saved[2].options.contains("\"match_case\":true") && saved[2].query == "Caf\u{e9}");
+        assert!(saved[2].options.contains(r#""fields":["title","keywords"]"#), "mask bits 0 and 2");
         assert!(s.keywords("").unwrap().iter().any(|k| k.keyword == "food" && k.tagged), "kword block tags it");
     }
 
