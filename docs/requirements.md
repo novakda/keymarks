@@ -69,7 +69,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-04 | Click-to-sort columns | §5.3; ini `display.sort_prop`, `sort_order` | Click header toggles asc/desc; persist | P1 | done |
 | DISP-05 | Two-level stable sort | Ties broken by the previous sort key (b326) | `ORDER BY new, previous` | P2 | done |
 | DISP-06 | Resort on demand | F5 Refresh (b282) | Not needed if the list re-queries live; keep F5 as refresh | P3 | todo |
-| DISP-07 | Status icon per row | Waiting/Checking/Error/Changed icons (§5.4.4) | Small icon or emoji column | P1 | todo |
+| DISP-07 | Status icon per row | Waiting/Checking/Error/Changed icons (§5.4.4) | Small icon or emoji column | P1 | done (title mark in cards and table, Status column; ◌ Waiting while a check runs) |
 | DISP-08 | Customisable status icons | Options > Icons; ini `gui.status_ind_map` (§8.1.9) | Drop; fixed accessible icons plus tooltip text | P3 | drop |
 | DISP-09 | Rating colour coding | readme "Color code bookmarks based on their rating"; ini `colors.ratings` | Row tint or badge colour scale by rating; configurable | P2 | todo |
 | DISP-10 | Hide http:// and ftp:// prefixes | §8.1.2; ini `gui.hide_http_prefix` | Display option (strip `https://`, `www.` too) | P2 | partial (table URL column) |
@@ -77,7 +77,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-12 | Display font | §8.1.3; ini `gui.font_*` | Font size setting plus system UI font; follow OS text scaling | P2 | todo |
 | DISP-13 | Header colours | §8.1.4; ini `colors.header_*` | Drop; light/dark theme follows OS | P3 | drop |
 | DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | done (Saved and keyword pane, list, properties; draggable splitters remembered per machine, double-click resets) |
-| DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | partial (counts, messages; no check queue yet) |
+| DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | done (counts, messages, "Checking n/m" / "Paused at n/m" with problem and changed counts) |
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
 | DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
 | DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | done |
@@ -106,7 +106,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | done (with undo) |
 | EDIT-06 | Cut/Copy/Paste bookmarks | Copy puts URLs on the clipboard; Cut deletes; Paste into the list adds bookmarks (§10.1.3; exe `k_clipboard_bookmark_format`, HTML format) | Copy = URLs as text plus HTML links; Paste = ADD-07 path | P2 | todo |
 | EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | done (Ctrl+C in the list, context menu; several URLs one per line) |
-| FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | partial (automatic for new bookmarks without a title; no manual Fetch command yet) |
+| FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | done (F7 / right-click Fetch: replaces name and description, merges keywords, one undo step; automatic for new bookmarks) |
 | FETCH-02 | Fetch with authentication | Per-bookmark username/password, Basic auth (b278, Auth tab) | Basic auth from the credential store (CHK-11) | P3 | todo |
 | FETCH-03 | Background fetch queue | Clipboard adds fetch in the background; "Fetching" status (exe) | Same worker pool as status checking | P1 | todo |
 
@@ -158,7 +158,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | CHK-07 | Recheck pages already known changed | Option, off by default (§8.1.8; ini `statchk.recheck_new_pages`) | Setting | P3 | todo |
 | CHK-08 | Repair permanent redirects | Update URL on 301 (§8.1.8; ini `statchk.repair_url`) | Update on 301/308 (not 302/307); log old URL in history so it can be undone | P1 | done (301/308 only, undoable) |
 | CHK-09 | Max concurrent connections | Slider, default about 8 (§8.1.8; ini `statchk.max_conn`, `high_conn_limit`) | Concurrency setting (default 8, max 32); per-host limit 1–2; polite User-Agent | P1 | done (8 at once, 2 per site) |
-| CHK-10 | Pause/resume checking | Bookmarks > Pause Checking (§10.1.4; ini `statchk.pause`) | Toggle in footer/tray | P1 | partial (cancel; no pause/resume) |
+| CHK-10 | Pause/resume checking | Bookmarks > Pause Checking (§10.1.4; ini `statchk.pause`) | Toggle in footer/tray | P1 | done (Pause/Resume in the footer; links under way finish) |
 | CHK-11 | Authenticated pages | Per-bookmark user/password, Basic auth (b278; Auth tab; mdata f12/f13) | Windows Credential Manager (`keyring` crate); never in the DB in plain text. Most sites now use cookies/SSO, so this has limited use | P3 | todo |
 | CHK-12 | Offline detection | Suspends checking when offline; ICMP TTL=3 probe to a Microsoft IP; Dial-up/Direct setting (§8.1.8, §9; ini `internet.use_icmp`, `ttl`, `host`, `direct_conn`) | Windows Network List Manager connectivity (or a failed-DNS heuristic); drop ICMP and dial-up options | P1 | partial (stops if the first 10 results are network failures) |
 | CHK-13 | Only http checked | ftp/gopher skipped (§5.4) | http/https only; `file:` bookmarks could check existence (P3) | P1 | done |

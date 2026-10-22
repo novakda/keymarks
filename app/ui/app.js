@@ -39,15 +39,18 @@ const CHECK_LABELS = {
   server_error: '⚠ Server error', client_error: '⚠ Error', no_response: '⚠ No response',
   network_error: '⚠ Network error', redirect_error: '⚠ Redirect loop', skipped: '– Not a web page',
 };
+let waiting = new Set(); // queued in the running link check
+let checkEnded = true;
 function checkLabel(b) {
+  if (waiting.has(b.id)) return '◌ Waiting';
   if (!b.check_enabled) return '– Off';
   if (!b.check_status) return '';
   const label = CHECK_LABELS[b.check_status] ?? b.check_status;
   return b.http_status && !['ok', 'changed'].includes(b.check_status) ? `${label} (${b.http_status})` : label;
 }
-const checkMark = (b) => (b.check_enabled && b.check_status && b.check_status !== 'ok' ? checkLabel(b).split(' ')[0] + ' ' : '');
+const checkMark = (b) => (waiting.has(b.id) || (b.check_enabled && b.check_status && b.check_status !== 'ok') ? checkLabel(b).split(' ')[0] + ' ' : '');
 const COLUMNS = [
-  { id: 'title', label: 'Title', width: '34%', cell: (b) => stars(b.rating) + (b.title || b.url) },
+  { id: 'title', label: 'Title', width: '34%', cell: (b) => checkMark(b) + stars(b.rating) + (b.title || b.url) },
   { id: 'url', label: 'URL', width: '24%', cell: (b) => shortUrl(b.url) },
   { id: 'keywords', label: 'Keywords', width: '18%', cell: (b) => b.keywords },
   { id: 'description', label: 'Description', width: '20%', cell: (b) => b.description },
@@ -231,9 +234,35 @@ function spacer(tag, height, colspan) {
   return el;
 }
 
+// Column widths the user dragged, in px (per machine). Until then the defaults share the width.
+let colWidths = {};
+try { colWidths = JSON.parse(localStorage.getItem('col-widths') || '{}'); } catch {}
+function applyColWidths(cols) {
+  [...$('table-cols').children].forEach((col, n) => { col.style.width = colWidths[cols[n].id] ? `${colWidths[cols[n].id]}px` : cols[n].width; });
+  const all = cols.every((c) => colWidths[c.id]);
+  $('table').style.width = all ? `${cols.reduce((sum, c) => sum + colWidths[c.id], 0)}px` : '';
+  $('table').style.minWidth = all ? '0' : '';
+}
+function startColResize(e, cols, c) {
+  e.preventDefault();
+  e.stopPropagation();
+  // Freeze every column at its current width, so only the dragged one changes.
+  [...$('table-head').children].forEach((th, n) => { colWidths[cols[n].id] = th.offsetWidth; });
+  const x0 = e.clientX, w0 = colWidths[c.id];
+  const move = (m) => { colWidths[c.id] = Math.max(40, Math.round(w0 + m.clientX - x0)); applyColWidths(cols); };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    try { localStorage.setItem('col-widths', JSON.stringify(colWidths)); } catch {}
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
+
 function renderTable() {
   const cols = COLUMNS.filter((c) => shownCols.includes(c.id));
-  $('table-cols').replaceChildren(...cols.map((c) => Object.assign(document.createElement('col'), { style: `width:${c.width}` })));
+  $('table-cols').replaceChildren(...cols.map(() => document.createElement('col')));
+  applyColWidths(cols);
   $('table-head').replaceChildren(...cols.map((c) => {
     const th = document.createElement('th');
     th.scope = 'col';
@@ -249,7 +278,16 @@ function renderTable() {
     }
     btn.title = 'Sort (click again to reverse, a third time to clear)';
     btn.onclick = () => sortBy(c);
-    th.append(btn);
+    const grip = document.createElement('span');
+    grip.className = 'grip';
+    grip.title = 'Drag to resize; double-click to reset all columns';
+    grip.onpointerdown = (e) => startColResize(e, cols, c);
+    grip.ondblclick = () => {
+      colWidths = {};
+      try { localStorage.removeItem('col-widths'); } catch {}
+      applyColWidths(cols);
+    };
+    th.append(btn, grip);
     return th;
   }));
   const [a, z] = windowRange();
@@ -403,6 +441,21 @@ async function open(id) {
   } catch (e) { say(String(e)); }
 }
 
+// Powermarks' Fetch (F7): the pages' titles and descriptions replace the bookmarks', their
+// keywords are added. One undo step.
+const fetchNow = busyAware(async (toFetch) => {
+  if (!toFetch.length) return say('Select the bookmarks to fetch first.');
+  if (!confirmDiscard()) return;
+  say(`Fetching ${toFetch.length} page${toFetch.length === 1 ? '' : 's'}…`);
+  try {
+    const [changed, added] = await invoke('fetch_now', { ids: toFetch });
+    dirty = false;
+    await refreshDictionary();
+    await refresh();
+    say(changed ? `Name and description updated for ${changed} bookmark${changed === 1 ? '' : 's'}, ${added} keyword${added === 1 ? '' : 's'} added. (Ctrl+Z undoes)` : 'Nothing new on the page.');
+  } catch (e) { fail('Fetch')(e); }
+});
+
 // Ctrl+Plus / Ctrl+Minus: one step up or down the 0-10 scale, one undo step for all.
 const changeRating = busyAware(async (toRate, by) => {
   if (!toRate.length || !confirmDiscard()) return;
@@ -461,6 +514,7 @@ $('bctx').addEventListener('click', async (e) => {
   if (act === 'open') chosen.forEach(open);
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'check') startCheck(chosen);
+  else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
   else if (act === 'pin') $('pin-link').click();
   else if (act === 'export') {
@@ -560,9 +614,13 @@ async function startCheck(toCheck) {
   const ask = !toCheck ? 'Check the links of every bookmark that has link checking on?' : toCheck.length > 200 ? `Check ${toCheck.length.toLocaleString()} links?` : '';
   if (ask && !confirm(`${ask}\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
   document.body.dataset.checking = 'true'; // before any await, so watchers never see a gap
+  checkEnded = false;
   try {
-    const n = await invoke('start_check', { ids: toCheck });
-    showCheckBar({ done: 0, total: n, counts: {} });
+    const queued = await invoke('start_check', { ids: toCheck });
+    if (checkEnded) return; // a small batch can finish before this reply arrives
+    waiting = new Set(queued);
+    render();
+    showCheckBar({ done: 0, total: queued.length, counts: {} });
   } catch (e) {
     document.body.dataset.checking = 'false';
     fail('Link check')(e);
@@ -574,16 +632,21 @@ function showCheckBar(p) {
   $('check-selected').hidden = running;
   $('check-shown').hidden = running;
   $('check-cancel').hidden = !running;
+  $('check-pause').hidden = !running;
+  if (!running) setPaused(false);
   const problems = Object.entries(p.counts)
     .filter(([k]) => !['ok', 'changed', 'skipped'].includes(k))
     .reduce((n, [, v]) => n + v, 0);
   $('check-progress').textContent = running
-    ? `Checking ${p.done}/${p.total}${problems ? ` · ${problems} problem${problems === 1 ? '' : 's'}` : ''}${p.counts.changed ? ` · ${p.counts.changed} changed` : ''}`
+    ? `${document.body.dataset.paused === 'true' ? 'Paused at' : 'Checking'} ${p.done}/${p.total}${problems ? ` · ${problems} problem${problems === 1 ? '' : 's'}` : ''}${p.counts.changed ? ` · ${p.counts.changed} changed` : ''}`
     : '';
 }
 
 let checkRefresh = null;
 window.__TAURI__.event.listen('check-progress', async ({ payload: p }) => {
+  p.recent?.forEach((id) => waiting.delete(id));
+  if (p.finished) { waiting.clear(); checkEnded = true; }
+  renderRows(); // waiting marks; the results themselves come with the next refresh
   showCheckBar(p);
   if (!p.finished) {
     // Show results as they come in, at most every 1.5 s and never over unsaved edits.
@@ -605,11 +668,24 @@ window.__TAURI__.event.listen('check-progress', async ({ payload: p }) => {
 $('check-selected').onclick = () => startCheck([...selected]);
 $('check-shown').onclick = () => startCheck(ids);
 $('check-cancel').onclick = () => invoke('cancel_check');
+// Pause stops new links from being started; the few under way finish.
+function setPaused(paused) {
+  document.body.dataset.paused = String(paused);
+  $('check-pause').textContent = paused ? 'Resume' : 'Pause';
+  $('check-progress').textContent = $('check-progress').textContent.replace(paused ? /^Checking/ : /^Paused at/, paused ? 'Paused at' : 'Checking');
+}
+$('check-pause').onclick = () => {
+  const paused = document.body.dataset.paused !== 'true';
+  invoke('pause_check', { paused }).then(() => setPaused(paused), fail('Pause'));
+};
 // Ctrl+T works everywhere, including the search box (it means nothing while typing).
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 't') {
     e.preventDefault();
     startCheck([...selected]);
+  } else if (e.key === 'F7') {
+    e.preventDefault();
+    fetchNow([...selected]);
   } else if (e.key === 'F8') {
     e.preventDefault();
     startCheck(null);

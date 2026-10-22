@@ -665,6 +665,38 @@ impl Store {
         tx.commit()
     }
 
+    /// Powermarks' Fetch (F7): the page's title and description replace the bookmark's (when
+    /// the page has them) and its keywords are added, as one undoable step.
+    /// Returns (bookmarks changed, keywords added).
+    pub fn refetch(&mut self, fetched: &[(i64, PageMeta)]) -> Result<(usize, usize)> {
+        let mut updates = Vec::new(); // (id, title, description, keywords)
+        let mut added = 0;
+        for (id, meta) in fetched {
+            let Some(b) = self.get(*id)? else { continue };
+            let pick = |new: &str, old: &str| if new.trim().is_empty() { old.to_string() } else { new.trim().to_string() };
+            let (title, description) = (pick(&meta.title, &b.title), pick(&meta.description, &b.description));
+            let keywords = normalize_keywords(&format!("{} {}", b.keywords, meta.keywords.replace(',', " ")));
+            if (&title, &description, &keywords) != (&b.title, &b.description, &b.keywords) {
+                added += keywords.split_whitespace().count().saturating_sub(normalize_keywords(&b.keywords).split_whitespace().count());
+                updates.push((*id, title, description, keywords));
+            }
+        }
+        if updates.is_empty() {
+            return Ok((0, 0)); // no empty undo step
+        }
+        let ids: Vec<i64> = updates.iter().map(|u| u.0).collect();
+        let name = format!("Fetch {} bookmark{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, &ids, false, |s| {
+            let tx = s.conn.unchecked_transaction()?;
+            for (id, title, description, keywords) in &updates {
+                tx.execute("UPDATE bookmark SET title = ?2, description = ?3, keywords = ?4 WHERE id = ?1", params![id, title, description, keywords])?;
+                index_keywords(&tx, *id, keywords)?;
+            }
+            tx.commit()?;
+            Ok((updates.len(), added))
+        })
+    }
+
     /// Saved searches and links in the user's order.
     pub fn saved_items(&self) -> Result<Vec<SavedItem>> {
         self.conn
@@ -1251,6 +1283,22 @@ mod tests {
         assert_eq!(back, [b.clone(), "Aardvark".to_string(), a.clone()]);
         let kws = s.keywords_with("paris ! food", &all).unwrap();
         assert_eq!(kws.iter().map(|k| k.keyword.as_str()).collect::<Vec<_>>(), ["museum", "paris"]);
+    }
+
+    #[test]
+    fn refetch_replaces_title_merges_keywords_and_undoes() {
+        let mut s = store();
+        let id = s.search("", 1).unwrap()[0].id;
+        let before = s.get(id).unwrap().unwrap();
+        let meta = PageMeta { title: "Fresh title".into(), description: String::new(), keywords: "zebra, yak".into() };
+        assert_eq!(s.refetch(&[(id, meta.clone())]).unwrap(), (1, 2));
+        let after = s.get(id).unwrap().unwrap();
+        assert_eq!(after.title, "Fresh title");
+        assert_eq!(after.description, before.description, "empty page description keeps the old one");
+        assert!(after.keywords.ends_with("zebra yak"));
+        assert_eq!(s.refetch(&[(id, meta)]).unwrap(), (0, 0), "nothing new the second time");
+        s.undo().unwrap();
+        assert_eq!(s.get(id).unwrap().unwrap(), before);
     }
 
     #[test]

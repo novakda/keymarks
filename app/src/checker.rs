@@ -13,7 +13,7 @@ use reqwest::{Client, Url, redirect::Policy};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::{CheckRecord, CheckTarget, PageMeta};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
@@ -28,6 +28,8 @@ const OFFLINE_SAMPLE: usize = 10;
 pub struct CheckState {
     pub running: AtomicBool,
     pub cancel: AtomicBool,
+    /// No new links are started while set; the ones already under way finish.
+    pub paused: AtomicBool,
 }
 
 /// Sent to the UI as "check-progress" while a batch runs and once when it ends.
@@ -41,6 +43,8 @@ pub struct Progress {
     pub offline: bool,
     pub repaired: usize,
     pub error: Option<String>,
+    /// Bookmarks finished since the previous event (the UI clears their "waiting" mark).
+    pub recent: Vec<i64>,
 }
 
 /// Check `targets` in the background, store each result, and finally repair permanently
@@ -56,12 +60,15 @@ pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool) 
         }
     };
     let hosts: Mutex<HashMap<String, Arc<Semaphore>>> = Mutex::default();
-    let (client, hosts, cancel) = (&client, &hosts, &state.cancel);
+    let (client, hosts, cancel, paused) = (&client, &hosts, &state.cancel, &state.paused);
     let mut results = futures::stream::iter(targets)
         .map(|t| async move {
             let host = Url::parse(&t.url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_default();
             let site = hosts.lock().unwrap().entry(host).or_insert_with(|| Arc::new(Semaphore::new(PER_HOST))).clone();
             let _permit = site.acquire().await.ok()?;
+            while paused.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
             if cancel.load(Ordering::Relaxed) {
                 return None;
             }
@@ -70,13 +77,13 @@ pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool) 
         .buffer_unordered(PARALLEL);
     let mut moved = Vec::new();
     let mut network_failures = 0;
-    let mut last_emit = Instant::now();
     while let Some(result) = results.next().await {
         let Some((id, out)) = result else { continue }; // cancelled before it started
         if let Err(e) = app.state::<Db>().lock().unwrap().record_check(id, &out.record) {
             progress.error = Some(e.to_string());
         }
         progress.done += 1;
+        progress.recent.push(id);
         *progress.counts.entry(out.record.status.clone()).or_default() += 1;
         if let Some(to) = out.moved_to {
             moved.push((id, to));
@@ -88,10 +95,8 @@ pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool) 
                 cancel.store(true, Ordering::Relaxed);
             }
         }
-        if last_emit.elapsed() > Duration::from_millis(250) {
-            let _ = app.emit("check-progress", &progress);
-            last_emit = Instant::now();
-        }
+        let _ = app.emit("check-progress", &progress); // every result: the UI throttles its refreshes
+        progress.recent.clear();
     }
     progress.cancelled = cancel.load(Ordering::Relaxed);
     if repair && !moved.is_empty() {
@@ -106,6 +111,7 @@ pub async fn run_batch(app: AppHandle, targets: Vec<CheckTarget>, repair: bool) 
 fn end(app: &AppHandle, state: &CheckState, mut progress: Progress) {
     progress.finished = true;
     state.cancel.store(false, Ordering::Relaxed);
+    state.paused.store(false, Ordering::Relaxed);
     state.running.store(false, Ordering::Relaxed);
     let _ = app.emit("check-progress", &progress);
 }

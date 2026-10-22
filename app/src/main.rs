@@ -396,7 +396,8 @@ fn set_tray_results(app: AppHandle, items: Vec<(i64, String)>) -> Result<(), Str
 }
 
 /// Start checking the links of `ids` (all with checking on, if none given) in the background;
-/// progress arrives as "check-progress" events. Returns how many will be checked (enabled ones only).
+/// progress arrives as "check-progress" events. Returns the ones that will be checked (those
+/// with checking on).
 #[tauri::command]
 fn start_check(
     app: AppHandle,
@@ -404,7 +405,7 @@ fn start_check(
     checks: State<checker::CheckState>,
     settings: State<SettingsState>,
     ids: Option<Vec<i64>>,
-) -> Result<usize, String> {
+) -> Result<Vec<i64>, String> {
     use std::sync::atomic::Ordering;
     if checks.running.swap(true, Ordering::SeqCst) {
         return Err("a link check is already running".into());
@@ -417,10 +418,38 @@ fn start_check(
             return Err(err(e));
         }
     };
-    let n = targets.len();
+    let queued = targets.iter().map(|t| t.id).collect();
     let repair = settings.current.lock().unwrap().repair_moved_urls;
     tauri::async_runtime::spawn(checker::run_batch(app, targets, repair));
-    Ok(n)
+    Ok(queued)
+}
+
+#[tauri::command]
+fn pause_check(checks: State<checker::CheckState>, paused: bool) {
+    checks.paused.store(paused, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Powermarks' Fetch (F7): reload title, description and keywords from the pages, as one
+/// undoable step. Returns (bookmarks changed, keywords added).
+#[tauri::command]
+async fn fetch_now(app: AppHandle, ids: Vec<i64>) -> Result<(usize, usize), String> {
+    use futures::StreamExt;
+    let client = checker::fetch_client().map_err(err)?;
+    let urls: Vec<(i64, String)> = {
+        let db = app.state::<Db>();
+        let store = db.lock().unwrap();
+        ids.iter().filter_map(|&id| store.get(id).ok().flatten().map(|b| (id, b.url))).collect()
+    };
+    let client = &client;
+    let fetched: Vec<_> = futures::stream::iter(urls)
+        .map(|(id, url)| async move { checker::fetch_meta(client, &url).await.map(|m| (id, m)) })
+        .buffer_unordered(4)
+        .filter_map(|x| async move { x })
+        .collect()
+        .await;
+    let db = app.state::<Db>();
+    let out = db.lock().unwrap().refetch(&fetched).map_err(err);
+    out
 }
 
 #[tauri::command]
@@ -597,6 +626,8 @@ fn main() {
             cancel_check,
             set_check_enabled,
             change_rating,
+            pause_check,
+            fetch_now,
             browser_sources,
             import_browser,
             import_html_file,

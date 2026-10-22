@@ -363,6 +363,7 @@ try {
   const server = http.createServer((req, res) => {
     if (req.url === '/moved') { res.writeHead(301, { Location: '/new-home' }); res.end(); return; }
     if (req.url === '/new-home') { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<p>home</p>'); return; }
+    if (req.url.startsWith('/slow')) { setTimeout(() => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<p>slow</p>'); }, 700); return; }
     res.writeHead(404); res.end('gone');
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -402,6 +403,21 @@ try {
   await page.waitForFunction(() => document.body.dataset.checking === 'false', null, { timeout: 30000 });
   await idle();
   check('Ctrl+T in the search box checks the selection', /^Checked 1 link/.test(await statusText()), (await statusText()).replace(/"[^"]*"/g, '"…"'));
+  // Pause: the two links under way (two per site) finish, the other two wait for Resume.
+  await search('');
+  for (const row of [3, 4, 5, 6]) await setUrl(row, `${local}/slow${row}`);
+  await search(`${local}/slow`);
+  await page.click('#check-shown');
+  await page.click('#check-pause');
+  await page.waitForFunction(() => /^Paused at 2\//.test(document.getElementById('check-progress').textContent), null, { timeout: 5000 }).catch(() => {});
+  await sleep(800); // nothing more may start while paused
+  const pausedAt = await page.textContent('#check-progress');
+  const marked = (await visibleCells('Title')).filter((t) => t.startsWith('◌')).length;
+  check('Pause holds the remaining links, marked waiting', /^Paused at 2\/4/.test(pausedAt) && marked === 2, `${pausedAt}, ${marked} waiting`);
+  await page.click('#check-pause');
+  await page.waitForFunction(() => document.body.dataset.checking === 'false', null, { timeout: 30000 });
+  await idle();
+  check('Resume finishes the check', /^Checked 4 links/.test(await statusText()) && (await visibleCells('Title')).every((t) => !t.startsWith('◌')));
   server.close();
 
   // 12. New bookmark (Insert, as in Powermarks): its title is fetched from the page (local server only)
@@ -425,6 +441,16 @@ try {
   check('Insert adds and selects the new bookmark', (await page.inputValue('#f-url')) === pageUrl);
   await page.waitForFunction(() => document.getElementById('f-title')?.value === 'E2E Fetched Title', null, { timeout: 20000 }).catch(() => {});
   check('its title and description are fetched', (await page.inputValue('#f-title')) === 'E2E Fetched Title' && (await page.inputValue('#f-description')) === 'from the page');
+  await page.fill('#f-title', 'E2E old title');
+  await page.keyboard.press('Control+s');
+  await idle();
+  await page.focus('#tablewrap');
+  await page.keyboard.press('F7');
+  await idle();
+  check('F7 fetches the title again', (await page.inputValue('#f-title')) === 'E2E Fetched Title' && /^Name and description updated for 1/.test(await statusText()));
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('Ctrl+Z undoes the fetch', (await page.inputValue('#f-title')) === 'E2E old title');
   pages.close();
 
   // 13. Saved searches and links (Powermarks' macros). Links are never clicked: that would open a browser.
@@ -526,6 +552,22 @@ try {
   check('splitter resizes the side pane and remembers it', Math.abs(w1 - w0 - 60) <= 2 && (await navWidth()) === w1, `${w0} → ${w1}`);
   await page.dblclick('#split-left');
   check('double-click resets the pane', (await navWidth()) === w0);
+
+  // 10d. Table columns: drag a header edge, remembered across a reload, double-click resets
+  await page.click('#view-table');
+  const thWidth = () => page.evaluate(() => Math.round(document.querySelector('#table-head th').getBoundingClientRect().width));
+  const c0 = await thWidth();
+  const grip = await page.locator('#table-head th:first-child .grip').boundingBox();
+  await page.mouse.move(grip.x + 3, grip.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 53, grip.y + 5, { steps: 5 });
+  await page.mouse.up();
+  const c1 = await thWidth();
+  await page.reload();
+  await idle();
+  check('column edge drag resizes and is remembered', Math.abs(c1 - c0 - 50) <= 2 && (await thWidth()) === c1, `${c0} → ${c1}`);
+  await page.dblclick('#table-head th:first-child .grip');
+  check('double-click resets the columns', Math.abs((await thWidth()) - c0) <= 1);
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');

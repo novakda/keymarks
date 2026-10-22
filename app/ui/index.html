@@ -37,7 +37,9 @@
   /* table view */
   #tablewrap { overflow: auto; border-right: 1px solid var(--line); }
   #table { border-collapse: collapse; table-layout: fixed; width: 100%; min-width: 760px; font-size: 13px; }
-  #table th { position: sticky; top: 0; z-index: 1; background: var(--panel); text-align: left; font-weight: 600; padding: 0; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); resize: horizontal; overflow: hidden; }
+  #table th { position: sticky; top: 0; z-index: 1; background: var(--panel); text-align: left; font-weight: 600; padding: 0; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); overflow: hidden; }
+  #table th .grip { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; }
+  #table th .grip:hover { background: var(--accent); opacity: .4; }
   #table th button { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 6px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #table th button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   #table td { box-sizing: border-box; height: 26px; line-height: 17px; /* ROW_H.table */ padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; user-select: none; }
@@ -230,6 +232,7 @@
     <span id="check-progress" aria-live="polite"></span>
     <button id="check-selected" type="button" class="secondary" title="Check the selected bookmarks' links (Ctrl+T)">Check selected</button>
     <button id="check-shown" type="button" class="secondary" title="Check the links of every bookmark matching the search">Check shown</button>
+    <button id="check-pause" type="button" class="secondary" hidden>Pause</button>
     <button id="check-cancel" type="button" class="secondary" hidden>Cancel</button>
   </span>
 </footer>
@@ -240,6 +243,7 @@
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
+  <button role="menuitem" data-act="fetch">Fetch title and description (F7)</button>
   <button role="menuitem" data-act="checking"></button>
   <button role="menuitem" data-act="pin">Pin to Saved…</button>
   <button role="menuitem" data-act="export">Export…</button>
