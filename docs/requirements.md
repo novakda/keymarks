@@ -76,7 +76,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-11 | Date/time format | Custom format builder (§8.1.6; ini `gui.time_format`, default `%m-%d-%y %h:%M:%s %p`) | Use OS locale via `Intl.DateTimeFormat`; optional relative dates | P2 | todo |
 | DISP-12 | Display font | §8.1.3; ini `gui.font_*` | Font size setting plus system UI font; follow OS text scaling | P2 | todo |
 | DISP-13 | Header colours | §8.1.4; ini `colors.header_*` | Drop; light/dark theme follows OS | P3 | drop |
-| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | partial (keywords | list | properties; no macro pane) |
+| DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | partial (keyword, list and properties panes; no macro pane yet) |
 | DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | partial (counts, messages; no check queue yet) |
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
 | DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
