@@ -32,6 +32,20 @@ try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOption
 const date = (t) => (t ? new Date(t * 1000).toLocaleDateString() : '');
 const shortUrl = (u) => u.replace(/^(https?|ftp):\/\/(www\.)?/i, '');
 const stars = (r) => (r > 0 ? '★'.repeat(Math.ceil(r / 2)) + ' ' : '');
+// Link-check results as shown to people (symbol + words; the symbol alone marks cards).
+const CHECK_LABELS = {
+  ok: '✓ OK', changed: '◆ Changed', not_found: '✗ Not found', server_not_found: '✗ Site not found',
+  bad_url: '✗ Bad URL', forbidden: '⛔ Blocked', unauthorized: '🔒 Needs login', rate_limited: '⏳ Rate limited',
+  server_error: '⚠ Server error', client_error: '⚠ Error', no_response: '⚠ No response',
+  network_error: '⚠ Network error', redirect_error: '⚠ Redirect loop', skipped: '– Not a web page',
+};
+function checkLabel(b) {
+  if (!b.check_enabled) return '– Off';
+  if (!b.check_status) return '';
+  const label = CHECK_LABELS[b.check_status] ?? b.check_status;
+  return b.http_status && !['ok', 'changed'].includes(b.check_status) ? `${label} (${b.http_status})` : label;
+}
+const checkMark = (b) => (b.check_enabled && b.check_status && b.check_status !== 'ok' ? checkLabel(b).split(' ')[0] + ' ' : '');
 const COLUMNS = [
   { id: 'title', label: 'Title', width: '34%', cell: (b) => stars(b.rating) + (b.title || b.url) },
   { id: 'url', label: 'URL', width: '24%', cell: (b) => shortUrl(b.url) },
@@ -44,6 +58,7 @@ const COLUMNS = [
   { id: 'last_checked', label: 'Last checked', width: '7em', cell: (b) => date(b.last_checked), desc: true },
   { id: 'visits', label: 'Visits', width: '4.5em', cell: (b) => String(b.visits), num: true, desc: true },
   { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
+  { id: 'check_status', label: 'Status', width: '9em', cell: checkLabel },
 ];
 let view = 'cards';
 let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
@@ -286,7 +301,7 @@ function renderCards() {
     li.classList.toggle('cursor', i === cursor);
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = b ? stars(b.rating) + (b.title || b.url) : '…';
+    title.textContent = b ? checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = b ? [b.keywords, b.url].filter(Boolean).join(' · ') : '';
@@ -424,6 +439,74 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
+// ---- link checking ----------------------------------------------------------------
+
+async function setCheckEnabled(toChange, enabled) {
+  try {
+    await invoke('set_check_enabled', { ids: toChange, enabled });
+    await refresh();
+  } catch (e) { fail('Change link checking')(e); }
+}
+
+// body[data-checking] is "true" while a batch runs (the e2e test waits on it too).
+document.body.dataset.checking = 'false';
+async function startCheck(toCheck) {
+  if (!toCheck.length) return say('Nothing to check.');
+  if (toCheck.length > 200 && !confirm(`Check ${toCheck.length.toLocaleString()} links?\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
+  document.body.dataset.checking = 'true'; // before any await, so watchers never see a gap
+  try {
+    const n = await invoke('start_check', { ids: toCheck });
+    showCheckBar({ done: 0, total: n, counts: {} });
+  } catch (e) {
+    document.body.dataset.checking = 'false';
+    fail('Link check')(e);
+  }
+}
+
+function showCheckBar(p) {
+  const running = !p.finished;
+  $('check-selected').hidden = running;
+  $('check-shown').hidden = running;
+  $('check-cancel').hidden = !running;
+  const problems = Object.entries(p.counts)
+    .filter(([k]) => !['ok', 'changed', 'skipped'].includes(k))
+    .reduce((n, [, v]) => n + v, 0);
+  $('check-progress').textContent = running
+    ? `Checking ${p.done}/${p.total}${problems ? ` · ${problems} problem${problems === 1 ? '' : 's'}` : ''}${p.counts.changed ? ` · ${p.counts.changed} changed` : ''}`
+    : '';
+}
+
+let checkRefresh = null;
+window.__TAURI__.event.listen('check-progress', async ({ payload: p }) => {
+  showCheckBar(p);
+  if (!p.finished) {
+    // Show results as they come in, at most every 1.5 s and never over unsaved edits.
+    if (!checkRefresh) checkRefresh = setTimeout(() => { checkRefresh = null; if (!dirty) refresh(); }, 1500);
+    return;
+  }
+  clearTimeout(checkRefresh);
+  checkRefresh = null;
+  if (!dirty) await refresh();
+  const parts = Object.entries(p.counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${(CHECK_LABELS[k] ?? k).replace(/^\S+ /, '').toLowerCase()}`);
+  let msg = p.offline ? 'Stopped: you seem to be offline.'
+    : `${p.cancelled ? 'Cancelled after' : 'Checked'} ${p.done} link${p.done === 1 ? '' : 's'}${parts.length ? `: ${parts.join(', ')}` : ''}.`;
+  if (p.repaired) msg += ` Updated ${p.repaired} moved URL${p.repaired === 1 ? '' : 's'} (Ctrl+Z undoes).`;
+  if (p.error) msg += ` Error: ${p.error}`;
+  say(msg);
+  document.body.dataset.checking = 'false';
+});
+
+$('check-selected').onclick = () => startCheck([...selected]);
+$('check-shown').onclick = () => startCheck(ids);
+$('check-cancel').onclick = () => invoke('cancel_check');
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't' && !e.target.closest('input, textarea, select')) {
+    e.preventDefault();
+    startCheck([...selected]);
+  }
+});
+showCheckBar({ finished: true, counts: {} });
+
 // ---- settings -------------------------------------------------------------------
 
 $('settings-open').onclick = async () => {
@@ -433,6 +516,7 @@ $('settings-open').onclick = async () => {
     $('s-minimized').checked = s.start_minimized;
     $('s-close').checked = s.close_to_tray;
     $('s-hotkey').value = s.hotkey;
+    $('s-repair').checked = s.repair_moved_urls;
     $('s-error').textContent = '';
     $('settings').showModal();
   } catch (e) { fail('Settings')(e); }
@@ -454,6 +538,7 @@ $('s-save').onclick = busyAware(async () => {
     close_to_tray: $('s-close').checked,
     start_minimized: $('s-minimized').checked,
     hotkey: $('s-hotkey').value.trim(),
+    repair_moved_urls: $('s-repair').checked,
   };
   try {
     await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
@@ -734,10 +819,15 @@ function renderPanel() {
   const date = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
   $('info').textContent =
     `Added ${date(editing.added)} · Visited ${editing.visits} time${editing.visits === 1 ? '' : 's'} · Last visited ${date(editing.last_visited)}`;
-  form.oninput = (e) => { if (e.target.id !== 'f-kw') setDirty(true); };
+  form.oninput = (e) => { if (e.target.id !== 'f-kw' && e.target.id !== 'f-check') setDirty(true); };
   form.onsubmit = (e) => { e.preventDefault(); save(); };
   $('revert').onclick = () => { dirty = false; renderPanel(); };
   $('del-one').onclick = () => remove([editing.id]);
+  $('f-check').checked = editing.check_enabled;
+  $('f-check-status').textContent = editing.check_status
+    ? `· last result: ${checkLabel(editing)}${editing.last_checked ? `, ${new Date(editing.last_checked * 1000).toLocaleDateString()}` : ''}`
+    : '· never checked';
+  $('f-check').onchange = (e) => setCheckEnabled([editing.id], e.target.checked);
   $('kw-sort').onclick = () => { chips.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })); renderChips(); setDirty(true); };
   $('f-tags').onclick = (e) => { if (e.target.id === 'f-tags') $('f-kw').focus(); };
   const input = $('f-kw');
@@ -887,6 +977,8 @@ runHistory = busyAware(runHistory);
 restoreBackup = busyAware(restoreBackup);
 keywordChanged = busyAware(keywordChanged);
 /* eslint-enable no-func-assign */
+
+setCheckEnabled = busyAware(setCheckEnabled);
 
 setView(view);
 refreshDictionary().then(() => refresh({ keepSelection: false }));

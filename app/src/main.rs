@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backups;
+mod checker;
 mod desktop;
 
 use std::path::PathBuf;
@@ -212,6 +213,44 @@ fn set_tray_results(app: AppHandle, items: Vec<(i64, String)>) -> Result<(), Str
     Ok(())
 }
 
+/// Start checking the links of `ids` in the background; progress arrives as
+/// "check-progress" events. Returns how many will be checked (enabled ones only).
+#[tauri::command]
+fn start_check(
+    app: AppHandle,
+    db: State<Db>,
+    checks: State<checker::CheckState>,
+    settings: State<SettingsState>,
+    ids: Vec<i64>,
+) -> Result<usize, String> {
+    use std::sync::atomic::Ordering;
+    if checks.running.swap(true, Ordering::SeqCst) {
+        return Err("a link check is already running".into());
+    }
+    checks.cancel.store(false, Ordering::SeqCst);
+    let targets = match db.lock().unwrap().check_targets(&ids) {
+        Ok(t) => t,
+        Err(e) => {
+            checks.running.store(false, Ordering::SeqCst);
+            return Err(err(e));
+        }
+    };
+    let n = targets.len();
+    let repair = settings.current.lock().unwrap().repair_moved_urls;
+    tauri::async_runtime::spawn(checker::run_batch(app, targets, repair));
+    Ok(n)
+}
+
+#[tauri::command]
+fn cancel_check(checks: State<checker::CheckState>) {
+    checks.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn set_check_enabled(db: State<Db>, ids: Vec<i64>, enabled: bool) -> Result<usize, String> {
+    db.lock().unwrap().set_check_enabled(&ids, enabled).map_err(err)
+}
+
 /// Polled by the UI; changes when the browser extension's host adds a bookmark.
 #[tauri::command]
 fn data_version(db: State<Db>) -> Result<i64, String> {
@@ -281,6 +320,7 @@ fn main() {
             let store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
             app.manage(Mutex::new(store));
             app.manage(DataDir(dir.clone()));
+            app.manage(checker::CheckState::default());
 
             let settings = SettingsState::load(dir.join("settings.json"));
             let current = settings.current.lock().unwrap().clone();
@@ -327,7 +367,10 @@ fn main() {
             restore_backup,
             get_settings,
             save_settings,
-            set_tray_results
+            set_tray_results,
+            start_check,
+            cancel_check,
+            set_check_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");

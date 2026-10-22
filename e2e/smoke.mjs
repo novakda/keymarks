@@ -9,6 +9,7 @@
 import { chromium } from 'playwright-core';
 import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -271,6 +272,44 @@ try {
   await sleep(3000);
   check('second launch reuses the running app', running() === 1, `${running()} running`);
   check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));
+
+  // 10. Link checking against a local server only (no real site is contacted)
+  const server = http.createServer((req, res) => {
+    if (req.url === '/moved') { res.writeHead(301, { Location: '/new-home' }); res.end(); return; }
+    if (req.url === '/new-home') { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<p>home</p>'); return; }
+    res.writeHead(404); res.end('gone');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  // The port makes these URLs unique: the user's own data may contain other 127.0.0.1 links.
+  const local = `http://127.0.0.1:${server.address().port}`;
+  const setUrl = async (row, url) => {
+    await page.click(`#table-body tr.vrow:nth-child(${row})`);
+    await idle();
+    await page.fill('#f-url', url);
+    await page.keyboard.press('Control+s');
+    await idle();
+  };
+  await search('');
+  await setUrl(1, `${local}/moved`);
+  await setUrl(2, `${local}/missing`);
+  await setMode('exact');
+  await fields(['url']);
+  const localCount = await count(local);
+  check('two bookmarks point at the local server', localCount === 2, `${localCount}`);
+  await page.click('#check-shown');
+  await page.waitForFunction(() => document.body.dataset.checking === 'false', null, { timeout: 30000 });
+  await idle();
+  const summary = (await statusText()).replace(/"[^"]*"/g, '"…"');
+  const urlsNow = await visibleCells('URL');
+  check('link check finds the missing page', /not found/i.test(summary), summary);
+  check('permanent redirect is repaired', urlsNow.length === 2 && urlsNow.some((u) => u.endsWith('/new-home')) && /Updated 1 moved URL/.test(summary), `${urlsNow.length} rows`);
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('undo restores the original URL', (await visibleCells('URL')).some((u) => u.endsWith('/moved')));
+  server.close();
+  await fields(['title', 'url', 'keywords', 'description', 'notes']);
+  await setMode('all');
 } catch (e) {
   check('run completed', false, e.message);
 } finally {

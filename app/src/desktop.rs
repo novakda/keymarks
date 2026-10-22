@@ -22,11 +22,13 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Global shortcut that brings the window up ("" = none), e.g. "Ctrl+Alt+P".
     pub hotkey: String,
+    /// Link checks update URLs of pages that moved permanently (undoable).
+    pub repair_moved_urls: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { close_to_tray: false, start_minimized: true, hotkey: "Ctrl+Alt+P".into() }
+        Settings { close_to_tray: false, start_minimized: true, hotkey: "Ctrl+Alt+P".into(), repair_moved_urls: true }
     }
 }
 

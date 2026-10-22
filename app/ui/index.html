@@ -90,7 +90,12 @@
   .row { display: flex; gap: 8px; margin-top: 14px; }
   .info { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.5; }
   .hint { color: var(--muted); }
-  footer { grid-column: 1 / -1; padding: 4px 12px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+  footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 3px 12px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+  #status { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #check-bar { display: flex; align-items: center; gap: 6px; }
+  #check-bar button { padding: 2px 10px; font-size: 12px; }
+  .check-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .check-line input { width: auto; margin: 0; }
 
   #ctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
   #ctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
@@ -184,7 +189,15 @@
   </table>
 </div>
 <aside id="panel" aria-label="Bookmark properties"></aside>
-<footer id="status" aria-live="polite"></footer>
+<footer>
+  <span id="status" aria-live="polite"></span>
+  <span id="check-bar">
+    <span id="check-progress" aria-live="polite"></span>
+    <button id="check-selected" type="button" class="secondary" title="Check the selected bookmarks' links (Ctrl+T)">Check selected</button>
+    <button id="check-shown" type="button" class="secondary" title="Check the links of every bookmark matching the search">Check shown</button>
+    <button id="check-cancel" type="button" class="secondary" hidden>Cancel</button>
+  </span>
+</footer>
 
 <div id="ctx" role="menu" hidden>
   <strong id="ctx-title"></strong>
@@ -205,6 +218,7 @@
       <label><input type="checkbox" id="s-autostart"> Start Keymarks with Windows</label>
       <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
       <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
+      <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
       <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
       <input id="s-hotkey" placeholder="Press a key combination (empty = none)" aria-describedby="s-hotkey-help">
       <p id="s-hotkey-help" class="help">Click the box and press the keys, e.g. Ctrl+Alt+P. Backspace clears it. The tray icon's menu lists the top results of your current search.</p>
@@ -261,6 +275,7 @@
       <button id="revert" type="button" class="secondary" disabled>Revert</button>
       <button id="del-one" type="button" class="danger">Delete</button>
     </div>
+    <label class="check-line"><input type="checkbox" id="f-check"> Check this link <span id="f-check-status"></span></label>
     <div class="info" id="info"></div>
   </form>
 </template>

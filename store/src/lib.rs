@@ -89,7 +89,8 @@ END;
 /// keyword hits rank first, as Powermarks searched keywords by default.
 const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
 const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, \
-                    b.last_visited, b.visits, b.last_modified, b.last_checked, b.status";
+                    b.last_visited, b.visits, b.last_modified, b.last_checked, b.status, \
+                    b.check_enabled, b.check_status, b.http_status, b.changed";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -109,6 +110,40 @@ pub struct Bookmark {
     pub last_checked: Option<i64>,
     #[serde(default)]
     pub status: i64,
+    #[serde(default = "yes")]
+    pub check_enabled: bool,
+    /// Link-check result ("ok", "not_found", …); None if never checked.
+    #[serde(default)]
+    pub check_status: Option<String>,
+    #[serde(default)]
+    pub http_status: Option<i64>,
+    /// Content changed since it was last opened.
+    #[serde(default)]
+    pub changed: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckTarget {
+    pub id: i64,
+    pub url: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<i64>,
+    pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CheckRecord {
+    pub status: String,
+    pub http_status: Option<i64>,
+    pub etag: Option<String>,
+    pub last_modified: Option<i64>,
+    pub content_hash: Option<String>,
+    pub changed: bool,
+    pub error: Option<String>,
 }
 
 fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
@@ -126,6 +161,10 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
         last_modified: r.get(10)?,
         last_checked: r.get(11)?,
         status: r.get(12)?,
+        check_enabled: r.get(13)?,
+        check_status: r.get(14)?,
+        http_status: r.get(15)?,
+        changed: r.get(16)?,
     })
 }
 
@@ -182,6 +221,38 @@ impl Store {
                 }
             }
             tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
+        }
+        // v3: link checking. Powermarks' per-bookmark "status checking enabled" (mdata f8)
+        // carries over; everything else starts as never checked.
+        if version < 3 {
+            let tx = store.conn.transaction()?;
+            let have: Vec<String> =
+                tx.prepare("SELECT name FROM pragma_table_info('bookmark')")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
+            for (column, decl) in [
+                ("check_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                ("check_status", "TEXT"), // NULL: never checked
+                ("http_status", "INTEGER"),
+                ("etag", "TEXT"),
+                ("content_hash", "TEXT"),
+                ("changed", "INTEGER NOT NULL DEFAULT 0"),
+                ("check_error", "TEXT"),
+            ] {
+                // Idempotent, so re-running migrations (e.g. after a restore) is safe.
+                if !have.iter().any(|h| h == column) {
+                    tx.execute_batch(&format!("ALTER TABLE bookmark ADD COLUMN {column} {decl}"))?;
+                }
+            }
+            let mdata: Vec<(i64, String)> = tx
+                .prepare("SELECT id, pm_mdata FROM bookmark WHERE pm_mdata IS NOT NULL")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_>>()?;
+            for (id, raw) in mdata {
+                if raw.split("][").nth(field::CHECK_ENABLED) == Some("0") {
+                    tx.execute("UPDATE bookmark SET check_enabled = 0 WHERE id = ?1", [id])?;
+                }
+            }
+            tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
         Ok(())
@@ -243,7 +314,11 @@ impl Store {
                     num(field::STATUS),
                     e.mdata.join("]["),
                 ])?;
-                index_keywords(&tx, tx.last_insert_rowid(), &keywords)?;
+                let id = tx.last_insert_rowid();
+                if e.mdata.get(field::CHECK_ENABLED).map(String::as_str) == Some("0") {
+                    tx.execute("UPDATE bookmark SET check_enabled = 0 WHERE id = ?1", [id])?;
+                }
+                index_keywords(&tx, id, &keywords)?;
             }
         }
         tx.commit()?;
@@ -476,12 +551,68 @@ impl Store {
     }
 
     /// Record that a bookmark was opened (usage count and last-visited, as Powermarks did).
+    /// Opening a page also clears "changed" (it was seen), as in Powermarks.
     pub fn mark_visited(&self, id: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE bookmark SET visits = visits + 1, last_visited = unixepoch() WHERE id = ?1",
+            "UPDATE bookmark SET visits = visits + 1, last_visited = unixepoch(), changed = 0 WHERE id = ?1",
             [id],
         )?;
         Ok(())
+    }
+
+    /// What the link checker needs for each enabled bookmark among `ids`.
+    pub fn check_targets(&self, ids: &[i64]) -> Result<Vec<CheckTarget>> {
+        let json = serde_json::to_string(ids).expect("ids serialize");
+        self.conn
+            .prepare(
+                "SELECT id, url, etag, last_modified, content_hash FROM bookmark
+                 WHERE check_enabled = 1 AND id IN (SELECT value FROM json_each(?1))",
+            )?
+            .query_map([json], |r| {
+                Ok(CheckTarget { id: r.get(0)?, url: r.get(1)?, etag: r.get(2)?, last_modified: r.get(3)?, content_hash: r.get(4)? })
+            })?
+            .collect()
+    }
+
+    /// Store one check result. Validators and hash are only replaced when the check produced
+    /// them; "changed" stays set until the bookmark is opened.
+    pub fn record_check(&self, id: i64, r: &CheckRecord) -> Result<()> {
+        self.conn.execute(
+            "UPDATE bookmark SET check_status = ?2, http_status = ?3, etag = coalesce(?4, etag),
+                last_modified = coalesce(?5, last_modified), content_hash = coalesce(?6, content_hash),
+                changed = max(changed, ?7), check_error = ?8, last_checked = unixepoch()
+             WHERE id = ?1",
+            params![id, r.status, r.http_status, r.etag, r.last_modified, r.content_hash, r.changed, r.error],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_check_enabled(&mut self, ids: &[i64], enabled: bool) -> Result<usize> {
+        let name = format!("{} link checking for {} bookmark{}", if enabled { "Enable" } else { "Disable" }, ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let json = serde_json::to_string(ids).expect("ids serialize");
+            s.conn.execute(
+                "UPDATE bookmark SET check_enabled = ?2 WHERE id IN (SELECT value FROM json_each(?1))",
+                params![json, enabled],
+            )
+        })
+    }
+
+    /// Point bookmarks at the URLs they permanently moved to, as one undoable step.
+    pub fn repair_urls(&mut self, repairs: &[(i64, String)]) -> Result<usize> {
+        if repairs.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<i64> = repairs.iter().map(|(id, _)| *id).collect();
+        let name = format!("Fix {} moved URL{}", repairs.len(), if repairs.len() == 1 { "" } else { "s" });
+        self.record(name, &ids, false, |s| {
+            let tx = s.conn.transaction()?;
+            for (id, url) in repairs {
+                tx.execute("UPDATE bookmark SET url = ?2 WHERE id = ?1", params![id, url])?;
+            }
+            tx.commit()?;
+            Ok(repairs.len())
+        })
     }
 
     /// Changes whenever another connection (e.g. the browser host) commits to the database.
@@ -898,6 +1029,36 @@ mod tests {
         assert_eq!(back, [b.clone(), "Aardvark".to_string(), a.clone()]);
         let kws = s.keywords_with("paris ! food", &all).unwrap();
         assert_eq!(kws.iter().map(|k| k.keyword.as_str()).collect::<Vec<_>>(), ["museum", "paris"]);
+    }
+
+    #[test]
+    fn link_check_records_and_repairs() {
+        let mut s = store();
+        let ids: Vec<i64> = s.search("", 10).unwrap().into_iter().map(|b| b.id).collect();
+        assert_eq!(s.check_targets(&ids).unwrap().len(), 2, "imported with checking enabled");
+        let (a, b) = (ids[0], ids[1]);
+
+        s.record_check(a, &CheckRecord { status: "ok".into(), http_status: Some(200), etag: Some("\"v1\"".into()), content_hash: Some("h1".into()), ..Default::default() }).unwrap();
+        // A later check without validators keeps the old ones; "changed" is sticky.
+        s.record_check(a, &CheckRecord { status: "changed".into(), http_status: Some(200), changed: true, ..Default::default() }).unwrap();
+        s.record_check(a, &CheckRecord { status: "ok".into(), http_status: Some(304), ..Default::default() }).unwrap();
+        let t = &s.check_targets(&[a]).unwrap()[0];
+        assert_eq!((t.etag.as_deref(), t.content_hash.as_deref()), (Some("\"v1\""), Some("h1")));
+        let bm = s.get(a).unwrap().unwrap();
+        assert!(bm.changed && bm.check_status.as_deref() == Some("ok") && bm.last_checked.is_some());
+        s.mark_visited(a).unwrap();
+        assert!(!s.get(a).unwrap().unwrap().changed, "opening clears changed");
+
+        s.set_check_enabled(&[b], false).unwrap();
+        assert_eq!(s.check_targets(&ids).unwrap().len(), 1);
+        s.undo().unwrap();
+        assert_eq!(s.check_targets(&ids).unwrap().len(), 2);
+
+        s.repair_urls(&[(b, "https://moved.example/".into())]).unwrap();
+        assert_eq!(s.get(b).unwrap().unwrap().url, "https://moved.example/");
+        assert!(s.search("moved", 5).unwrap().iter().any(|x| x.id == b), "URL index updated");
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Fix 1 moved URL"));
+        assert_ne!(s.get(b).unwrap().unwrap().url, "https://moved.example/");
     }
 
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture

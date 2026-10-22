@@ -49,6 +49,9 @@ So this project is two things:
 - **Always at hand.** A global hotkey brings the window up, the tray menu lists the top
   results of your current search, and the app can start with Windows. Only one copy ever
   runs.
+- **Link checking.** Finds dead, blocked and changed pages, a few requests at a time.
+  "Changed" ignores ads, scripts and timestamps. It fixes the URLs of pages that moved
+  permanently, as an undoable step. Checks only run when you ask.
 - **Safe with your data.** It backs up on every start and keeps a copy of your largest
   collection so far, which survives an accidental mass delete. It also backs up before any
   cleanup or restore, and you can restore from inside the app.
@@ -129,12 +132,14 @@ A few decisions worth noting:
 
 - **Unit tests** (`cargo test --workspace`): format round-trips, every search operator and
   mode, keyword rename/merge, cleanup rules, undo/redo of each kind of change, backup
-  rotation, host message framing.
+  rotation, host message framing, and link-check statuses, change detection and redirects
+  against a local HTTP server.
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
   round-trip and timing on a real collection, plus an exact-undo check after a full cleanup.
-- **End-to-end** (`e2e/`, 31 checks in about 15 s): starts the real app with WebView2's
+- **End-to-end** (`e2e/`, 35 checks in about 20 s): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
-  sorts, scrolls to the last row, edits, deletes, undoes and checks single-instance.
+  sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
+  a link check against a local test server (it never contacts real sites).
   - It runs on a **temporary copy** of the database.
   - Its checks compare results to each other rather than to fixed numbers (for example,
     `a b` returns no more than `a`), so they pass on anyone's collection.
@@ -178,7 +183,7 @@ Data lives in `%APPDATA%\com.pattern158.keymarks\` (`bookmarks.db`, `settings.js
 
 Next, from the requirements doc:
 
-- **Link checking:** dead, redirected and changed pages, checked on a schedule.
+- **Scheduled link checking** (opt-in), plus pause and resume.
 - **Import from Chrome, Edge and Firefox,** with folders turned into keywords and
   duplicates skipped.
 - **Export** back to `pm35.htm` and to Netscape HTML.

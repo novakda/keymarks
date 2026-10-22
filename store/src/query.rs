@@ -46,7 +46,8 @@ impl SortKey {
     pub fn sql(&self) -> Option<String> {
         let expr = match self.column.as_str() {
             "title" | "url" | "keywords" | "description" | "notes" => format!("b.{} COLLATE NOCASE", self.column),
-            "added" | "last_visited" | "last_modified" | "last_checked" | "visits" | "rating" | "status" => {
+            "check_status" => "b.check_status COLLATE NOCASE".to_string(),
+            "added" | "last_visited" | "last_modified" | "last_checked" | "visits" | "rating" | "status" | "changed" => {
                 format!("b.{}", self.column)
             }
             _ => return None,

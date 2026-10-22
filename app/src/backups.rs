@@ -34,10 +34,15 @@ fn kind(name: &str) -> &'static str {
     }
 }
 
-/// Write a consistent copy named `<prefix>-<unix time>.db`; returns its file name.
+/// Write a consistent copy named `<prefix>-<unix time>.db` (with `-2`, `-3`… if several are
+/// taken in the same second); returns its file name.
 pub fn take(store: &Store, dir: &Path, prefix: &str) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let name = format!("{prefix}-{}.db", now());
+    let stamp = now();
+    let name = (1..)
+        .map(|n| if n == 1 { format!("{prefix}-{stamp}.db") } else { format!("{prefix}-{stamp}-{n}.db") })
+        .find(|name| !dir.join(name).exists())
+        .expect("unbounded");
     let path = dir.join(&name);
     store.backup_to(path.to_str().ok_or("backup path is not UTF-8")?).map_err(|e| e.to_string())?;
     Ok(name)
@@ -129,6 +134,10 @@ mod tests {
         }
         on_startup(&s, &dir).unwrap();
         assert_eq!(list(&dir).iter().filter(|b| b.kind == "Automatic").count(), KEEP_AUTO);
+
+        // Several backups in the same second get distinct names.
+        let (a, b) = (take(&s, &dir, "manual").unwrap(), take(&s, &dir, "manual").unwrap());
+        assert_ne!(a, b);
 
         let any = list(&dir).remove(0).name;
         assert!(resolve(&dir, &any).is_ok());
