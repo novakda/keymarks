@@ -188,7 +188,7 @@ Next, from the requirements doc:
 
 ## Licence
 
-To be decided before publishing (likely MIT or Apache-2.0).
+[MIT](LICENSE).
 
 *Powermarks is a trademark of Kaylon Technologies. Keymarks is not affiliated with or
 endorsed by Kaylon Technologies.*
