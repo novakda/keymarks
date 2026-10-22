@@ -81,12 +81,6 @@ function cleanupWork() {
   }
   if (fs.existsSync(work)) log(`WARNING: temporary copy still exists: ${work}`);
 }
-setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); restoreKeymarks(usersKeymarks); process.exit(2); }, 240_000).unref();
-log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
-const { browser, page } = await connect();
-log(`connected to ${page.url()}`);
-
 // Whatever happens, close the test app, delete the copy and give the user their app back.
 let cleanedUp = false;
 function emergencyExit(e) {
@@ -100,6 +94,12 @@ function emergencyExit(e) {
 }
 process.on('uncaughtException', emergencyExit);
 process.on('unhandledRejection', emergencyExit);
+setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); restoreKeymarks(usersKeymarks); process.exit(2); }, 240_000).unref();
+log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
+startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
+const { browser, page } = await connect().catch(emergencyExit);
+log(`connected to ${page.url()}`);
+
 
 // WebView2 shows confirm()/prompt() as real Windows dialogs, which take focus from whatever
 // the user is doing. So the page's dialogs are replaced by answers the test queues up front;

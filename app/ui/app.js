@@ -386,6 +386,8 @@ function onListKeys(e) {
   } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && inList) {
     ids.forEach((x) => selected.add(x));
     render();
+  } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && inList) {
+    copyUrls(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'Delete' && inList) {
     remove([...selected]);
   } else return;
@@ -414,6 +416,13 @@ async function remove(toDelete) {
   } catch (e) { fail('Delete')(e); }
 }
 
+async function copyUrls(chosen) {
+  if (!chosen.length) return;
+  await fetchRows(chosen);
+  await navigator.clipboard.writeText(chosen.map((id) => cache.get(id)?.url).filter(Boolean).join('\n'));
+  say(chosen.length === 1 ? 'URL copied.' : `${chosen.length} URLs copied.`);
+}
+
 // Right-click a bookmark: it joins the selection (or replaces it, like Explorer).
 async function showBookmarkMenu(e, i) {
   if (!selected.has(ids[i])) await select(i);
@@ -424,7 +433,7 @@ async function showBookmarkMenu(e, i) {
   const on = [...selected].every((id) => cache.get(id)?.check_enabled);
   m.querySelector('[data-act=checking]').textContent = on ? 'Turn link checking off' : 'Turn link checking on';
   m.querySelector('[data-act=pin]').hidden = many;
-  m.querySelector('[data-act=copy]').textContent = many ? 'Copy URLs' : 'Copy URL';
+  m.querySelector('[data-act=copy]').textContent = many ? 'Copy URLs (Ctrl+C)' : 'Copy URL (Ctrl+C)';
   m.hidden = false;
   m.style.left = `${Math.min(e.clientX, innerWidth - m.offsetWidth - 4)}px`;
   m.style.top = `${Math.min(e.clientY, innerHeight - m.offsetHeight - 4)}px`;
@@ -437,11 +446,8 @@ $('bctx').addEventListener('click', async (e) => {
   $('bctx').hidden = true;
   const chosen = ids.filter((id) => selected.has(id)); // in list order
   if (act === 'open') chosen.forEach(open);
-  else if (act === 'copy') {
-    await fetchRows(chosen);
-    await navigator.clipboard.writeText(chosen.map((id) => cache.get(id)?.url).filter(Boolean).join('\n'));
-    say(chosen.length === 1 ? 'URL copied.' : `${chosen.length} URLs copied.`);
-  } else if (act === 'check') startCheck(chosen);
+  else if (act === 'copy') copyUrls(chosen);
+  else if (act === 'check') startCheck(chosen);
   else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
   else if (act === 'pin') $('pin-link').click();
   else if (act === 'export') {

@@ -105,7 +105,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | EDIT-04 | User-defined field | Per-file label set in File > Information (b278, §10.1.1) | `user_field` column plus a label in settings | P2 | partial (stored) |
 | EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | done (with undo) |
 | EDIT-06 | Cut/Copy/Paste bookmarks | Copy puts URLs on the clipboard; Cut deletes; Paste into the list adds bookmarks (§10.1.3; exe `k_clipboard_bookmark_format`, HTML format) | Copy = URLs as text plus HTML links; Paste = ADD-07 path | P2 | todo |
-| EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | todo |
+| EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | done (Ctrl+C in the list, context menu; several URLs one per line) |
 | FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | partial (automatic for new bookmarks without a title; no manual Fetch command yet) |
 | FETCH-02 | Fetch with authentication | Per-bookmark username/password, Basic auth (b278, Auth tab) | Basic auth from the credential store (CHK-11) | P3 | todo |
 | FETCH-03 | Background fetch queue | Clipboard adds fetch in the background; "Fetching" status (exe) | Same worker pool as status checking | P1 | todo |
@@ -176,8 +176,8 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | todo |
 | RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | partial (sort by rating; no filter) |
 | RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | todo |
-| USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | todo |
-| USE-02 | Last visited timestamp | mdata f2 | Set on open | P1 | todo |
+| USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | done (opening from Keymarks; Visits column, sortable) |
+| USE-02 | Last visited timestamp | mdata f2 | Set on open | P1 | done (Last visited column, sortable) |
 | USE-03 | Disable usage tracking | Privacy option (§8.1.2; ini `gui.no_usage_count`) | Setting | P2 | todo |
 | USE-04 | Mark Visited | Bookmarks > Mark Visited (§10.1.4) | Command on selection | P2 | todo |
 | USE-05 | Count visits made directly in the browser | Not in original. The "Access Cache" (`pm35.cache`, ini `misc.readonly_cache`) appears to store visit data for read-only files (unconfirmed) | Optional: extension `history.onVisited` for bookmarked URLs updates counts (off by default, for privacy) | P3 | todo |
