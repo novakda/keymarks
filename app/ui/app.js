@@ -119,7 +119,6 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   version = v;
   narrowed = kw;
   cache.clear(); // rows may have changed; visible ones are refetched below
-  importBtn.hidden = total > 0;
   const present = new Set(ids);
   selected = keepSelection ? new Set([...selected].filter((id) => present.has(id))) : new Set();
   cursor = Math.max(0, keepSelection ? ids.indexOf(cursorId) : 0);
@@ -180,7 +179,7 @@ function render() {
   renderRows();
   renderPanel();
   say(total === 0
-    ? 'No bookmarks yet. Import your Powermarks database to get started.'
+    ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
     : `${ids.length} matching · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
 }
 
@@ -959,14 +958,60 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
 });
 
-importBtn.addEventListener('click', busyAware(async () => {
-  say('Importing…');
+// ---- import --------------------------------------------------------------------
+
+function importDone(report, from) {
+  if (!report) return; // file dialog cancelled
+  const dup = report.duplicates ? `, skipped ${report.duplicates} already here` : '';
+  say(`Imported ${report.added} bookmark${report.added === 1 ? '' : 's'} from ${from}${dup}. Ctrl+Z undoes it.`);
+}
+
+async function afterImport(report, from) {
+  $('import-dlg').close();
+  await refreshDictionary();
+  await refresh({ keepSelection: false });
+  importDone(report, from);
+}
+
+importBtn.onclick = busyAware(async () => {
+  if (!confirmDiscard()) return;
+  $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'Looking for browsers…' }));
+  $('import-dlg').showModal();
+  try {
+    const sources = await invoke('browser_sources');
+    if (!sources.length) {
+      $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'No Chrome, Edge or Firefox profiles found. You can still import an exported bookmarks file.' }));
+      return;
+    }
+    const table = document.createElement('table');
+    for (const src of sources) {
+      const tr = table.insertRow();
+      tr.insertCell().textContent = `${src.browser} · ${src.profile}`;
+      Object.assign(tr.insertCell(), { className: 'num', textContent: src.count === null ? "can't read" : `${src.count.toLocaleString()} bookmarks` });
+      const btn = Object.assign(document.createElement('button'), { type: 'button', className: 'secondary', textContent: 'Import', disabled: !src.count });
+      btn.onclick = busyAware(async () => {
+        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile }), `${src.browser}`); }
+        catch (e) { fail('Import')(e); }
+      });
+      tr.insertCell().append(btn);
+    }
+    $('import-sources').replaceChildren(table);
+  } catch (e) { fail('Import')(e); }
+});
+
+$('import-html').onclick = busyAware(async () => {
+  try {
+    const report = await invoke('import_html_file');
+    if (report) await afterImport(report, 'the file');
+  } catch (e) { fail('Import')(e); }
+});
+
+$('import-pm35').onclick = busyAware(async () => {
   try {
     const n = await invoke('import_pm35');
-    if (n !== null) { await refreshDictionary(); await refresh({ keepSelection: false }); }
-    else render();
+    if (n !== null) await afterImport({ added: n, duplicates: 0 }, 'Powermarks');
   } catch (e) { fail('Import')(e); }
-}));
+});
 
 // Every user action counts as busy until its follow-up refresh and message are done.
 /* eslint-disable no-func-assign */

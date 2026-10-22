@@ -7,7 +7,7 @@ mod desktop;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use store::{Bookmark, CleanupItem, KeywordCount, SearchOptions, Store};
+use store::{Bookmark, CleanupItem, ImportReport, KeywordCount, SearchOptions, Store, browsers};
 use desktop::{Settings, SettingsState};
 use tauri::{AppHandle, Manager, Runtime, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -62,9 +62,49 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>) -> Result<Option<usize>,
     let parsed = pm35::parse(&bytes)?;
     let mut store = db.lock().unwrap();
     if store.count().map_err(|e| e.to_string())? > 0 {
-        return Err("bookmarks already imported".into());
+        return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
     store.import_pm35(&parsed).map(Some).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct SourceView {
+    browser: &'static str,
+    profile: String,
+    /// Bookmarks found, or None if the file couldn't be read.
+    count: Option<usize>,
+}
+
+/// Browsers and profiles found on this machine, with how many bookmarks each has.
+#[tauri::command]
+async fn browser_sources() -> Vec<SourceView> {
+    browsers::detect()
+        .into_iter()
+        .map(|s| SourceView { count: browsers::read(&s).ok().map(|b| b.len()), browser: s.browser, profile: s.profile })
+        .collect()
+}
+
+/// Merge-import one detected browser profile (looked up again here: the UI never passes paths).
+#[tauri::command]
+async fn import_browser(db: State<'_, Db>, browser: String, profile: String) -> Result<ImportReport, String> {
+    let source = browsers::detect()
+        .into_iter()
+        .find(|s| s.browser == browser && s.profile == profile)
+        .ok_or_else(|| format!("{browser} profile {profile} not found"))?;
+    let items = browsers::read(&source)?;
+    db.lock().unwrap().import_bookmarks(&format!("{browser} ({profile})"), &items).map_err(err)
+}
+
+/// Pick an exported bookmarks HTML file (any browser) and merge it in.
+#[tauri::command]
+async fn import_html_file(app: AppHandle, db: State<'_, Db>) -> Result<Option<ImportReport>, String> {
+    let picked = app.dialog().file().add_filter("Bookmarks HTML", &["html", "htm"]).blocking_pick_file();
+    let Some(path) = picked else { return Ok(None) };
+    let path = path.into_path().map_err(err)?;
+    let bytes = std::fs::read(&path).map_err(err)?;
+    let items = browsers::read_netscape_html(&String::from_utf8_lossy(&bytes));
+    let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    db.lock().unwrap().import_bookmarks(&label, &items).map(Some).map_err(err)
 }
 
 /// Open a bookmark in the default browser and count the visit.
@@ -370,7 +410,10 @@ fn main() {
             set_tray_results,
             start_check,
             cancel_check,
-            set_check_enabled
+            set_check_enabled,
+            browser_sources,
+            import_browser,
+            import_html_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");

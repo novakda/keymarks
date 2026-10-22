@@ -188,16 +188,16 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 |---|---|---|---|---|---|
 | IMP-01 | Import pm35.htm losslessly | Native format (§7) | Parser plus writer round-trip; store import of every bookmark field plus raw mdata | P1 | done |
 | IMP-02 | Import pm35 head/tail blocks | `document=`, `scs=`, `macro=`, `kword=` (format spec) | Parser keeps them as raw head/tail; store must import schedules, macros and tagged keywords | P1 | todo |
-| IMP-03 | Import into a non-empty collection | Import merges and skips duplicate URLs (§7) | Currently only into an empty store. Need a merge import that dedupes by URL | P1 | todo |
-| IMP-04 | Netscape bookmark HTML import | Folder names → keywords (§7.1, b297) | Universal format exported by every browser; parse `<H3>` path → keywords | P1 | todo |
+| IMP-03 | Import into a non-empty collection | Import merges and skips duplicate URLs (§7) | Currently only into an empty store. Need a merge import that dedupes by URL | P1 | done (merge, duplicates skipped, undoable) — pm35 import still needs an empty collection |
+| IMP-04 | Netscape bookmark HTML import | Folder names → keywords (§7.1, b297) | Universal format exported by every browser; parse `<H3>` path → keywords | P1 | done |
 | IMP-05 | Any HTML file | Extracts all links, honours `<BASE>` (b286) | Same parser, links outside `<DL>` too | P2 | todo |
 | IMP-06 | Old Powermarks 1.0/2.0/3.0 files | Import plus "Convert" dialog with backup (§7, exe) | Only if the user has such files; see Q6 | P3 | todo |
 | IMP-07 | IE Favorites folder (.url) | §7.2 | Edge/IE legacy `.url` folder import (simple INI parse) | P3 | todo |
 | IMP-08 | Opera .adr hotlist; Mozilla bookmarks.html | §7.3, b326 | Drop .adr; Mozilla HTML = IMP-04 | P3 | drop |
-| IMP-09 | Import Wizard (auto-detect installed browsers) | §7.3 | "Import from browser": Chrome/Edge `Bookmarks` JSON, Firefox `places.sqlite` (read-only copy), or via the extension `bookmarks` API | P1 | todo |
+| IMP-09 | Import Wizard (auto-detect installed browsers) | §7.3 | "Import from browser": Chrome/Edge `Bookmarks` JSON, Firefox `places.sqlite` (read-only copy), or via the extension `bookmarks` API | P1 | done (Chrome, Edge, Firefox profiles detected) |
 | IMP-10 | Sync with browser bookmarks | F6 / at startup: add **new** browser bookmarks not yet in Powermarks; per-browser include flags (§8.1.1, §8.1.13–17; ini `*.autosync`, `startup.browser_sync`) | Extension (with `bookmarks` permission) pushes new or changed browser bookmarks, or one-shot scan of browser files. One-way, browser → PM | P2 | todo |
 | IMP-11 | Import from clipboard | b290 | ADD-07 | P1 | todo |
-| IMP-12 | Import report | "%u Powermarks imported from %s"; Wizard: "%d Favorites, %d Bookmarks…" (exe) | Toast with added/skipped counts | P1 | partial |
+| IMP-12 | Import report | "%u Powermarks imported from %s"; Wizard: "%d Favorites, %d Bookmarks…" (exe) | Toast with added/skipped counts | P1 | done (added / skipped summary) |
 | EXP-01 | Export pm35 (3.5) format | "can be imported at a later time with no loss of information" (exe) | Store → pm35 writer using raw mdata plus edited fields. Escape hatch back to the original program | P1 | todo |
 | EXP-02 | Export Netscape HTML | Without notes/keywords (exe) | Netscape HTML with `TAGS="…"` attribute (Firefox/Pinboard keep tags) | P1 | todo |
 | EXP-03 | Export printable HTML | Title, fields chosen (§5.6) | Printable HTML or app Print view (`window.print()`) | P2 | todo |

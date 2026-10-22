@@ -316,6 +316,14 @@ try {
   await idle();
   check('Ctrl+T in the search box checks the selection', /^Checked 1 link/.test(await statusText()), (await statusText()).replace(/"[^"]*"/g, '"…"'));
   server.close();
+
+  // 11. Import dialog: lists browser profiles (counts only; nothing is imported here)
+  await page.click('#import');
+  await page.waitForSelector('#import-dlg[open]');
+  await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
+  const sourceRows = await page.locator('#import-sources tr').count();
+  check('Import lists browser profiles', sourceRows > 0 || (await page.textContent('#import-sources')).includes('No Chrome'), `${sourceRows} profiles`);
+  await page.click('#import-dlg button[value=close]');
   await fields(['title', 'url', 'keywords', 'description', 'notes']);
   await setMode('all');
 } catch (e) {

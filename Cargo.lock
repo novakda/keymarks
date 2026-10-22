@@ -3926,6 +3926,7 @@ version = "0.1.0"
 dependencies = [
  "html-escape",
  "pm35",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

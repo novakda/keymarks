@@ -51,6 +51,24 @@ impl Store {
         Ok(out)
     }
 
+    /// Like `record`, for changes that create bookmarks: `change` returns the new ids, which
+    /// can't be known beforehand. Undo deletes them; redo puts them back.
+    pub(crate) fn record_created<T>(
+        &mut self,
+        name: String,
+        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>)>,
+    ) -> Result<T> {
+        let (out, ids) = change(self)?;
+        let after = self.snapshot(&ids, false)?;
+        let h = &mut self.history;
+        h.redo.clear();
+        h.undo.push(Step { name, ids, before: Snapshot { rows: Vec::new(), tagged: None }, after });
+        if h.undo.len() > MAX_STEPS {
+            h.undo.remove(0);
+        }
+        Ok(out)
+    }
+
     /// Undo the most recent change. Returns its name, or None if there is nothing to undo.
     pub fn undo(&mut self) -> Result<Option<String>> {
         self.step(true)

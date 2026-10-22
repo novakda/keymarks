@@ -1,6 +1,7 @@
 //! SQLite bookmark store with full-text keyword search.
 //! Imports Powermarks 3.5 databases (field meanings: docs/pm35-format.md).
 
+pub mod browsers;
 mod history;
 mod query;
 
@@ -124,6 +125,24 @@ pub struct Bookmark {
 
 fn yes() -> bool {
     true
+}
+
+/// A bookmark coming from another browser or a file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewBookmark {
+    pub url: String,
+    pub title: String,
+    pub keywords: String,
+    pub description: String,
+    /// Unix seconds; None means "now".
+    pub added: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
+pub struct ImportReport {
+    pub added: usize,
+    /// Already in the collection (same URL), or repeated within the import.
+    pub duplicates: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +301,35 @@ impl Store {
         index_keywords(&tx, id, &keywords)?;
         tx.commit()?;
         Ok((id, false))
+    }
+
+    /// Merge bookmarks into the collection, skipping URLs it already has (exact match, as
+    /// Powermarks did). One undoable step named after `source`.
+    pub fn import_bookmarks(&mut self, source: &str, items: &[NewBookmark]) -> Result<ImportReport> {
+        let name = format!("Import from {source}");
+        self.record_created(name, |s| {
+            let tx = s.conn.transaction()?;
+            let mut report = ImportReport::default();
+            let mut ids = Vec::new();
+            for b in items {
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE url = ?1)", [&b.url], |r| r.get(0))?;
+                if exists || b.url.trim().is_empty() {
+                    report.duplicates += 1;
+                    continue;
+                }
+                let keywords = normalize_keywords(&b.keywords);
+                tx.execute(
+                    "INSERT INTO bookmark (url, title, keywords, description, added) VALUES (?1, ?2, ?3, ?4, coalesce(?5, unixepoch()))",
+                    params![b.url, b.title, keywords, b.description, b.added],
+                )?;
+                let id = tx.last_insert_rowid();
+                index_keywords(&tx, id, &keywords)?;
+                ids.push(id);
+                report.added += 1;
+            }
+            tx.commit()?;
+            Ok((report, ids))
+        })
     }
 
     /// Import every Powermarks entry in one transaction. Returns the number imported.
@@ -1059,6 +1107,22 @@ mod tests {
         assert!(s.search("moved", 5).unwrap().iter().any(|x| x.id == b), "URL index updated");
         assert_eq!(s.undo().unwrap().as_deref(), Some("Fix 1 moved URL"));
         assert_ne!(s.get(b).unwrap().unwrap().url, "https://moved.example/");
+    }
+
+    #[test]
+    fn browser_import_merges_skips_duplicates_and_undoes() {
+        let mut s = store(); // has http://example.com/?a=1&b=2 and http://example.com/u
+        let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), added: None };
+        let items = [nb("http://example.com/u", "dup"), nb("https://new.example/", "Dev Tools"), nb("https://new.example/", "again"), nb("https://two.example/", "")];
+        let r = s.import_bookmarks("Chrome (Default)", &items).unwrap();
+        assert_eq!(r, ImportReport { added: 2, duplicates: 2 });
+        assert_eq!(s.count().unwrap(), 4);
+        assert_eq!(s.search("tools", 5).unwrap().len(), 1, "folder keywords searchable");
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Import from Chrome (Default)"));
+        assert_eq!(s.count().unwrap(), 2);
+        assert!(s.search("tools", 5).unwrap().is_empty());
+        s.redo().unwrap();
+        assert_eq!(s.count().unwrap(), 4);
     }
 
     /// PM35_REAL=/path/to/pm35.htm cargo test -p store -- --ignored --nocapture

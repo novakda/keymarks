@@ -122,6 +122,11 @@
   .settings-body label.indent { margin-left: 22px; }
   .settings-body input[type=checkbox] { width: auto; margin-right: 6px; vertical-align: -2px; }
   .error { color: var(--danger); font-size: 13px; min-height: 1em; margin: 6px 0 0; }
+  #import-sources { padding: 0 16px; border-block: 1px solid var(--line); font-size: 13px; }
+  #import-sources table { width: 100%; border-collapse: collapse; }
+  #import-sources td { padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  #import-sources td.num { text-align: right; color: var(--muted); }
+  #import-sources button { padding: 3px 10px; }
   #backup-list { overflow-y: auto; padding: 0 16px; border-block: 1px solid var(--line); }
   #backup-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
   #backup-list td, #backup-list th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; }
@@ -168,7 +173,7 @@
   </div>
   <button id="backups-open" type="button" class="secondary">Backups…</button>
   <button id="settings-open" type="button" class="secondary">Settings…</button>
-  <button id="import" hidden>Import pm35.htm…</button>
+  <button id="import" type="button" class="secondary">Import…</button>
 </header>
 
 <nav aria-label="Keyword dictionary">
@@ -210,6 +215,19 @@
 </div>
 
 <datalist id="kw-options"></datalist>
+
+<dialog id="import-dlg" aria-labelledby="import-title">
+  <form method="dialog">
+    <h2 id="import-title">Import bookmarks</h2>
+    <p class="intro">Bookmarks are merged in: folder names become keywords, and links you already have are skipped. Each import can be undone with Ctrl+Z.</p>
+    <div id="import-sources"></div>
+    <div class="row">
+      <button id="import-html" type="button" class="secondary">Bookmarks HTML file…</button>
+      <button id="import-pm35" type="button" class="secondary">Powermarks database…</button>
+      <button value="close">Close</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="settings" aria-labelledby="settings-title">
   <form method="dialog">
