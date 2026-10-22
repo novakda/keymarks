@@ -26,7 +26,7 @@ const stop = () => { try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ig
 stop();
 await sleep(1000);
 spawn(exe, [], {
-  env: { ...process.env, KEYMARKS_DATA_DIR: demo, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
+  env: { ...process.env, KEYMARKS_DATA_DIR: demo, KEYMARKS_NO_FOCUS: '1', WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
   detached: true, stdio: 'ignore',
 }).unref();
 
@@ -76,5 +76,5 @@ try {
   await browser?.close().catch(() => {});
   stop();
   await sleep(1000);
-  spawn('explorer.exe', [exe], { detached: true, stdio: 'ignore' }).unref();
+  spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -ArgumentList '--no-focus'`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 }

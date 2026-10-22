@@ -42,9 +42,9 @@ function startApp(env) {
   if (env) {
     spawn(exe, [], { env: { ...process.env, ...env }, detached: true, stdio: 'ignore' }).unref();
   } else {
-    // Via Explorer: a normal launch that inherits none of our handles, so callers waiting
-    // on this script's output aren't kept waiting by the app.
-    spawn('explorer.exe', [exe], { detached: true, stdio: 'ignore' }).unref();
+    // Via PowerShell Start-Process: inherits none of our handles (so callers waiting on this
+    // script's output aren't kept waiting), and --no-focus keeps it behind the user's work.
+    spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -ArgumentList '--no-focus'`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   }
 }
 
@@ -82,7 +82,7 @@ function cleanupWork() {
 }
 setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); startApp(); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work });
+startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
 const { browser, page } = await connect();
 log(`connected to ${page.url()}`);
 
@@ -318,7 +318,7 @@ try {
   check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
   await page.click('#settings button[data-close]');
   const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString().split('keymarks.exe').length - 1;
-  spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+  spawn(exe, [], { detached: true, stdio: 'ignore', env: { ...process.env, KEYMARKS_NO_FOCUS: '1' } }).unref();
   await sleep(3000);
   check('second launch reuses the running app', running() === 1, `${running()} running`);
   check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));

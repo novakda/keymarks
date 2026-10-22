@@ -15,7 +15,9 @@
         "height": 820,
         "minWidth": 900,
         "minHeight": 500,
-        "visible": false
+        "visible": false,
+        "label": "main",
+        "create": false
       }
     ],
     "security": {

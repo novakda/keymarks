@@ -489,6 +489,13 @@ fn main() {
             register_bundled_host(app.handle());
             // Started with Windows (autostart passes --minimized): stay in the tray if asked.
             let autostarted = std::env::args().any(|a| a == "--minimized");
+            // The window is created here (not from config) so no-focus mode can open it
+            // visible but unfocused; normally it starts hidden and show_main focuses it.
+            let quiet = desktop::no_focus();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
+                .focused(!quiet)
+                .visible(quiet)
+                .build()?;
             if !(autostarted && current.start_minimized) {
                 desktop::show_main(app.handle());
             }
