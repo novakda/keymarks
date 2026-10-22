@@ -189,7 +189,17 @@ fn path_str(p: &std::path::Path) -> Result<&str, String> {
 }
 
 fn reg(args: &[&str]) -> Result<(), String> {
-    let out = Command::new("reg").args(args).output().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("reg");
+    cmd.args(args);
+    // No console window: when the app registers the host at startup there is no console to
+    // share, and a new one would pop up and take focus.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {

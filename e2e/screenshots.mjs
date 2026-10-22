@@ -23,13 +23,13 @@ const port = await new Promise((resolve) => {
     srv.close(() => resolve(port));
   });
 });
-const stop = () => { try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore' }); } catch {} };
+const stop = () => { try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch {} };
 const usersKeymarks = runningKeymarks();
 stop();
 await sleep(1000);
 spawn(exe, [], {
   env: { ...process.env, KEYMARKS_DATA_DIR: demo, KEYMARKS_NO_FOCUS: '1', WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-  detached: true, stdio: 'ignore',
+  detached: true, stdio: 'ignore', windowsHide: true,
 }).unref();
 
 let browser, page;

@@ -535,14 +535,15 @@ fn main() {
             register_bundled_host(app.handle());
             // Started with Windows (autostart passes --minimized): stay in the tray if asked.
             let autostarted = std::env::args().any(|a| a == "--minimized");
-            // The window is created here (not from config) so no-focus mode can open it
-            // visible but unfocused; normally it starts hidden and show_main focuses it.
-            let quiet = desktop::no_focus();
+            // Created here (not from config) so test mode can make it impossible to activate.
+            // Normally it starts hidden and show_main shows and focuses it.
+            let test = desktop::test_mode();
             tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
-                .focused(!quiet)
-                .visible(quiet)
+                .focused(!test)
+                .focusable(!test)
+                .visible(test)
                 .build()?;
-            if !(autostarted && current.start_minimized) {
+            if !(autostarted && current.start_minimized) && !desktop::background_start() {
                 desktop::show_main(app.handle());
             }
             // Startup backups off the UI thread; failures are logged, never fatal.

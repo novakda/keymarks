@@ -7,7 +7,7 @@
 //   npm run smoke            (from e2e/, on Windows; closes and reopens the running app)
 
 import { chromium } from 'playwright-core';
-import { execSync, spawn } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -19,7 +19,7 @@ import { restoreKeymarks, runningKeymarks } from './running.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (msg) => process.stderr.write(`· ${msg}\n`);
+const log = (msg) => process.stderr.write(`· ${new Date().toTimeString().slice(0, 8)} ${msg}\n`);
 
 // Other apps (e.g. Electron) squat on common debug ports: ask the OS for a free one.
 const PORT = await new Promise((resolve) => {
@@ -31,16 +31,19 @@ const PORT = await new Promise((resolve) => {
 
 // Waits until the app has really exited, so its files can be deleted.
 function stopApp() {
-  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore' }); } catch { /* not running */ }
+  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
   for (let i = 0; i < 50; i++) {
-    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString();
+    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString();
     if (!out.includes('keymarks.exe')) return;
-    execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 100"');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
   }
 }
 
+// On a desktop of its own (desktop.ps1): nothing the app does can reach the user's screen or focus.
 function startApp(env) {
-  spawn(exe, [], { env: { ...process.env, ...env }, detached: true, stdio: 'ignore' }).unref();
+  execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(root, 'e2e', 'desktop.ps1')}" "${exe}"`, {
+    env: { ...process.env, ...env }, stdio: 'ignore', windowsHide: true,
+  });
 }
 
 // Whatever Keymarks the user had open (installed or dev) is put back at the end.
@@ -80,7 +83,7 @@ function cleanupWork() {
 }
 setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); restoreKeymarks(usersKeymarks); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
+startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
 const { browser, page } = await connect();
 log(`connected to ${page.url()}`);
 
@@ -317,8 +320,8 @@ try {
   await page.waitForSelector('#settings[open]');
   check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
   await page.click('#settings button[data-close]');
-  const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH').toString().split('keymarks.exe').length - 1;
-  spawn(exe, [], { detached: true, stdio: 'ignore', env: { ...process.env, KEYMARKS_NO_FOCUS: '1' } }).unref();
+  const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1;
+  startApp({ KEYMARKS_NO_FOCUS: '1' });
   await sleep(3000);
   check('second launch reuses the running app', running() === 1, `${running()} running`);
   check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));

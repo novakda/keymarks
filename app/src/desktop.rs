@@ -55,16 +55,22 @@ impl SettingsState {
     }
 }
 
-/// No-focus mode (`--no-focus` or KEYMARKS_NO_FOCUS): the window appears without taking
-/// focus and nothing raises it later. Used by the e2e tests and the relaunch after them, so
-/// automation never pulls focus away from whatever the user is doing.
-pub fn no_focus() -> bool {
-    std::env::var_os("KEYMARKS_NO_FOCUS").is_some() || std::env::args().any(|a| a == "--no-focus")
+/// Test mode (KEYMARKS_NO_FOCUS, set only by the e2e and screenshot scripts): the window is
+/// shown but can never be activated (WS_EX_NOACTIVATE), so automation can't take focus from
+/// whatever the user is doing. Tests drive the page over CDP and need no OS focus.
+pub fn test_mode() -> bool {
+    std::env::var_os("KEYMARKS_NO_FOCUS").is_some()
+}
+
+/// `--background` (or the older `--no-focus`): start hidden in the tray and show nothing until
+/// the user opens it (tray, hotkey). Used when automation puts the user's own copy back.
+pub fn background_start() -> bool {
+    std::env::args().any(|a| a == "--background" || a == "--no-focus")
 }
 
 /// Show, un-minimise and focus the main window, and put the cursor in the search box.
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
-    if no_focus() {
+    if test_mode() {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
