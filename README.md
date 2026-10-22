@@ -5,6 +5,8 @@
 Type a few words, see the bookmarks that match, press Enter. No folders to file things in, no
 cloud account, no browser lock-in: one local database you can search the way you think.
 
+![Searching "rust": the list and the keyword panel narrow as you type](docs/screenshots/search.png)
+
 > Keymarks is an independent project. It is not affiliated with Kaylon Technologies, and it
 > contains none of Powermarks' code, binaries or documentation. It can import Powermarks
 > 3.5 files, which it reads using a format description recovered for interoperability.
@@ -66,6 +68,14 @@ So this project is two things:
   repairs text the original had stored double- or triple-encoded, even when one field mixes
   encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks
   HTML file for any browser. Both round-trip a real 13,000-bookmark collection exactly.
+
+| Table view, `docs \| web` sorted by rating | Keyword dictionary actions |
+|---|---|
+| ![Table view](docs/screenshots/table.png) | ![Keyword menu](docs/screenshots/keywords.png) |
+
+*Screenshots use the demo collection in [docs/demo](docs/demo/bookmarks.html) (public sites
+only). Rebuild it with `cargo run -p store --example demo -- <folder>` and re-shoot with
+`node e2e/screenshots.mjs <folder>`.*
 
 ## How it was built
 
