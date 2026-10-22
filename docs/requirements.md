@@ -224,7 +224,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | BR-11 | Add link under cursor | Not in original | Context menu on links: "Fast add link to Powermarks" (fetch fills metadata) | P2 | done (right-click a link: Fast add link) |
 | BR-12 | Search Powermarks from the browser | Not in original | Omnibox keyword (`pm <query>`) via host search → suggestions. High value with no browser-side UI | P2 | todo |
 | BR-13 | Mail links go to the mail client | b297 | `mailto:` opened via shell | P2 | todo |
-| BR-14 | Firefox and Edge support | Many browsers (§3.1) | MV3 extension works in Chrome/Edge; Firefox needs host manifest registration under the Mozilla key and `gecko` id (present) | P1 | partial (verify Firefox registration) |
+| BR-14 | Firefox and Edge support | Many browsers (§3.1) | MV3 extension works in Chrome/Edge; Firefox needs host manifest registration under the Mozilla key and `gecko` id (present) | P1 | done (Chrome, Edge and Firefox: the Firefox build reaches the app through the native host; verified by lookup of an existing bookmark) |
 | BR-15 | Live list refresh when the extension adds | Single process, no issue | Host writes to SQLite; app must notice (SQLite `data_version` poll or a host → app local IPC ping) and refresh | P1 | done |
 
 ### 2.9 NetSync (backup and multi-PC sync)
