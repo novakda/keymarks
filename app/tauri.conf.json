@@ -3,13 +3,46 @@
   "productName": "Keymarks",
   "version": "0.1.0",
   "identifier": "com.pattern158.keymarks",
-  "build": { "frontendDist": "ui" },
+  "build": {
+    "frontendDist": "ui"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "Keymarks", "width": 1320, "height": 820, "minWidth": 900, "minHeight": 500, "visible": false }],
+    "windows": [
+      {
+        "title": "Keymarks",
+        "width": 1320,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 500,
+        "visible": false
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
     }
   },
-  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png", "icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "publisher": "pattern158",
+    "copyright": "© 2026 xhiris. MIT licence.",
+    "shortDescription": "Keyword-first bookmark manager",
+    "longDescription": "Keymarks: a keyword-first bookmark manager for Windows and today's browsers, rebuilt from the ideas of Powermarks 3.5.",
+    "resources": {
+      "../target/release/keymarks-host.exe": "keymarks-host.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
 }

@@ -413,6 +413,25 @@ fn move_legacy_data(new: &std::path::Path) {
     let _ = std::fs::remove_dir(&old); // only if now empty
 }
 
+/// Installed builds ship keymarks-host.exe beside the app: (re)register it for Chrome, Edge
+/// and Firefox on each start, so the extension finds this install (cheap and idempotent).
+/// Development builds skip this; register target\debug\keymarks-host.exe by hand.
+#[cfg(not(debug_assertions))]
+fn register_bundled_host(app: &AppHandle) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(host) = app.path().resource_dir().map(|d| d.join("keymarks-host.exe")) else { return };
+    if !host.is_file() {
+        return;
+    }
+    std::thread::spawn(move || {
+        match std::process::Command::new(&host).arg("--install").creation_flags(CREATE_NO_WINDOW).status() {
+            Ok(s) if s.success() => {}
+            other => eprintln!("could not register the browser host: {other:?}"),
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         // First: a second launch hands over to the running app and exits.
@@ -466,6 +485,8 @@ fn main() {
                 eprintln!("{e}");
             }
             desktop::build_tray(app.handle())?;
+            #[cfg(not(debug_assertions))]
+            register_bundled_host(app.handle());
             // Started with Windows (autostart passes --minimized): stay in the tray if asked.
             let autostarted = std::env::args().any(|a| a == "--minimized");
             if !(autostarted && current.start_minimized) {
