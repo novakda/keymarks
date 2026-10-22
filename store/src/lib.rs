@@ -719,12 +719,13 @@ impl Store {
     }
 
     /// What the link checker needs for each enabled bookmark among `ids`.
-    pub fn check_targets(&self, ids: &[i64]) -> Result<Vec<CheckTarget>> {
-        let json = serde_json::to_string(ids).expect("ids serialize");
+    /// Bookmarks to check: the given ones, or (None) every one with checking on.
+    pub fn check_targets(&self, ids: Option<&[i64]>) -> Result<Vec<CheckTarget>> {
+        let json = ids.map(|ids| serde_json::to_string(ids).expect("ids serialize"));
         self.conn
             .prepare(
                 "SELECT id, url, etag, last_modified, content_hash FROM bookmark
-                 WHERE check_enabled = 1 AND id IN (SELECT value FROM json_each(?1))",
+                 WHERE check_enabled = 1 AND (?1 IS NULL OR id IN (SELECT value FROM json_each(?1)))",
             )?
             .query_map([json], |r| {
                 Ok(CheckTarget { id: r.get(0)?, url: r.get(1)?, etag: r.get(2)?, last_modified: r.get(3)?, content_hash: r.get(4)? })
@@ -752,6 +753,18 @@ impl Store {
             s.conn.execute(
                 "UPDATE bookmark SET check_enabled = ?2 WHERE id IN (SELECT value FROM json_each(?1))",
                 params![json, enabled],
+            )
+        })
+    }
+
+    /// Raise or lower the rating (0-10) of several bookmarks, as one undoable step.
+    pub fn change_rating(&mut self, ids: &[i64], by: i64) -> Result<usize> {
+        let name = format!("{} rating of {} bookmark{}", if by > 0 { "Raise" } else { "Lower" }, ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let json = serde_json::to_string(ids).expect("ids serialize");
+            s.conn.execute(
+                "UPDATE bookmark SET rating = max(0, min(10, rating + ?2)) WHERE id IN (SELECT value FROM json_each(?1))",
+                params![json, by],
             )
         })
     }
@@ -1241,17 +1254,36 @@ mod tests {
     }
 
     #[test]
+    fn rating_steps_clamp_and_undo() {
+        let mut s = store();
+        let ids: Vec<i64> = s.search("", 10).unwrap().into_iter().map(|b| b.id).collect();
+        let rating = |s: &Store| ids.iter().map(|&id| s.get(id).unwrap().unwrap().rating).collect::<Vec<_>>();
+        let before = rating(&s);
+        for _ in 0..12 {
+            s.change_rating(&ids, 1).unwrap();
+        }
+        assert_eq!(rating(&s), vec![10; ids.len()]);
+        s.change_rating(&ids, -1).unwrap();
+        assert_eq!(rating(&s), vec![9; ids.len()]);
+        assert_eq!(s.undo().unwrap().as_deref(), Some(format!("Lower rating of {} bookmarks", ids.len()).as_str()));
+        for _ in 0..12 {
+            s.undo().unwrap();
+        }
+        assert_eq!(rating(&s), before);
+    }
+
+    #[test]
     fn link_check_records_and_repairs() {
         let mut s = store();
         let ids: Vec<i64> = s.search("", 10).unwrap().into_iter().map(|b| b.id).collect();
-        assert_eq!(s.check_targets(&ids).unwrap().len(), 2, "imported with checking enabled");
+        assert_eq!(s.check_targets(Some(&ids)).unwrap().len(), 2, "imported with checking enabled");
         let (a, b) = (ids[0], ids[1]);
 
         s.record_check(a, &CheckRecord { status: "ok".into(), http_status: Some(200), etag: Some("\"v1\"".into()), content_hash: Some("h1".into()), ..Default::default() }).unwrap();
         // A later check without validators keeps the old ones; "changed" is sticky.
         s.record_check(a, &CheckRecord { status: "changed".into(), http_status: Some(200), changed: true, ..Default::default() }).unwrap();
         s.record_check(a, &CheckRecord { status: "ok".into(), http_status: Some(304), ..Default::default() }).unwrap();
-        let t = &s.check_targets(&[a]).unwrap()[0];
+        let t = &s.check_targets(Some(&[a])).unwrap()[0];
         assert_eq!((t.etag.as_deref(), t.content_hash.as_deref()), (Some("\"v1\""), Some("h1")));
         let bm = s.get(a).unwrap().unwrap();
         assert!(bm.changed && bm.check_status.as_deref() == Some("ok") && bm.last_checked.is_some());
@@ -1259,9 +1291,10 @@ mod tests {
         assert!(!s.get(a).unwrap().unwrap().changed, "opening clears changed");
 
         s.set_check_enabled(&[b], false).unwrap();
-        assert_eq!(s.check_targets(&ids).unwrap().len(), 1);
+        assert_eq!(s.check_targets(Some(&ids)).unwrap().len(), 1);
+        assert_eq!(s.check_targets(None).unwrap().len(), 1, "None = all with checking on");
         s.undo().unwrap();
-        assert_eq!(s.check_targets(&ids).unwrap().len(), 2);
+        assert_eq!(s.check_targets(Some(&ids)).unwrap().len(), 2);
 
         s.repair_urls(&[(b, "https://moved.example/".into())]).unwrap();
         assert_eq!(s.get(b).unwrap().unwrap().url, "https://moved.example/");

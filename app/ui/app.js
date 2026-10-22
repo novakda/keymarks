@@ -386,6 +386,8 @@ function onListKeys(e) {
   } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && inList) {
     ids.forEach((x) => selected.add(x));
     render();
+  } else if ((e.ctrlKey || e.metaKey) && ['+', '=', '-'].includes(e.key)) {
+    changeRating([...selected], e.key === '-' ? -1 : 1);
   } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && inList) {
     copyUrls(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'Delete' && inList) {
@@ -400,6 +402,17 @@ async function open(id) {
     refresh(); // visit count changed
   } catch (e) { say(String(e)); }
 }
+
+// Ctrl+Plus / Ctrl+Minus: one step up or down the 0-10 scale, one undo step for all.
+const changeRating = busyAware(async (toRate, by) => {
+  if (!toRate.length || !confirmDiscard()) return;
+  try {
+    await invoke('change_rating', { ids: toRate, by });
+    dirty = false;
+    await refresh();
+    say(`Rating ${by > 0 ? 'raised' : 'lowered'} for ${toRate.length} bookmark${toRate.length === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Rating')(e); }
+});
 
 async function remove(toDelete) {
   if (!toDelete.length) return;
@@ -541,9 +554,11 @@ async function setCheckEnabled(toChange, enabled) {
 
 // body[data-checking] is "true" while a batch runs (the e2e test waits on it too).
 document.body.dataset.checking = 'false';
+// `toCheck` null means every bookmark with link checking on (Powermarks' Force Status Check, F8).
 async function startCheck(toCheck) {
-  if (!toCheck.length) return say('Select the bookmarks to check first (or use Check shown).');
-  if (toCheck.length > 200 && !confirm(`Check ${toCheck.length.toLocaleString()} links?\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
+  if (toCheck && !toCheck.length) return say('Select the bookmarks to check first (or use Check shown).');
+  const ask = !toCheck ? 'Check the links of every bookmark that has link checking on?' : toCheck.length > 200 ? `Check ${toCheck.length.toLocaleString()} links?` : '';
+  if (ask && !confirm(`${ask}\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
   document.body.dataset.checking = 'true'; // before any await, so watchers never see a gap
   try {
     const n = await invoke('start_check', { ids: toCheck });
@@ -595,8 +610,12 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 't') {
     e.preventDefault();
     startCheck([...selected]);
+  } else if (e.key === 'F8') {
+    e.preventDefault();
+    startCheck(null);
   }
 });
+$('check-all').onclick = () => startCheck(null);
 showCheckBar({ finished: true, counts: {} });
 
 // ---- settings -------------------------------------------------------------------
@@ -840,6 +859,8 @@ function renderKeywords() {
     li.onclick = () => addToSearch(k.keyword);
     li.ondblclick = () => setSearch(k.keyword);
     li.oncontextmenu = (e) => { e.preventDefault(); showMenu(e, k, li); };
+    li.tabIndex = -1;
+    li.dataset.keyword = k.keyword;
     return li;
   }));
 }
@@ -907,6 +928,17 @@ async function keywordChanged(call, message) {
 document.addEventListener('click', (e) => { if (!$('ctx').contains(e.target)) hideMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideMenu(); });
 $('kw-filter').addEventListener('input', renderKeywords);
+// Keys as in Powermarks: Enter searches for the keyword, Ctrl+Enter adds it to the search.
+// In the filter box they act on the first match; arrows move into and through the list.
+$('kwlist').parentElement.addEventListener('keydown', (e) => {
+  const li = e.target.closest('#kwlist li') ?? (e.target.id === 'kw-filter' ? $('kwlist').firstElementChild : null);
+  if (!li) return;
+  if (e.key === 'Enter') (e.ctrlKey || e.metaKey ? addToSearch : setSearch)(li.dataset.keyword);
+  else if (e.key === 'ArrowDown') (e.target.id === 'kw-filter' ? li : li.nextElementSibling)?.focus();
+  else if (e.key === 'ArrowUp' && e.target !== $('kw-filter')) (li.previousElementSibling ?? $('kw-filter')).focus();
+  else return;
+  e.preventDefault();
+});
 $('kw-tagged').addEventListener('change', renderKeywords);
 
 // ---- keyword cleanup (Powermarks' Dictionary Cleanup) ------------------------

@@ -74,7 +74,7 @@
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
   #savedlist .hint { color: var(--muted); font-size: 12px; padding: 0 10px 6px; cursor: default; }
   #kwlist li { display: flex; gap: 6px; padding: 2px 10px; cursor: default; user-select: none; content-visibility: auto; contain-intrinsic-size: auto 22px; }
-  #kwlist li:hover, #kwlist li.active { background: var(--sel); }
+  #kwlist li:hover, #kwlist li.active, #kwlist li:focus { background: var(--sel); outline: none; }
   #kwlist .n { margin-left: auto; color: var(--muted); font-size: 12px; }
   .tagmark { color: var(--tag); width: 1em; }
 
@@ -195,6 +195,7 @@
       <button id="add-clipboard" type="button" role="menuitem" title="Alt+Insert">Add links from clipboard</button>
       <button id="import" type="button" role="menuitem">Import…</button>
       <button id="export-open" type="button" role="menuitem">Export…</button>
+      <button id="check-all" type="button" role="menuitem" title="F8">Check all links…</button>
       <button id="backups-open" type="button" role="menuitem">Backups…</button>
       <button id="settings-open" type="button" role="menuitem">Settings…</button>
     </div>

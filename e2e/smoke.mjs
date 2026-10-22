@@ -74,6 +74,7 @@ for (const f of ['bookmarks.db', 'bookmarks.db-wal', 'bookmarks.db-shm']) {
 // The killed app can hold the files for a moment; retry rather than leave a copy behind.
 // The copy holds the user's private bookmarks: it must not be left behind.
 function cleanupWork() {
+  try { fs.rmSync(webviewData, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); } catch { /* no private data in it */ }
   try {
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   } catch (e) {
@@ -96,7 +97,10 @@ process.on('uncaughtException', emergencyExit);
 process.on('unhandledRejection', emergencyExit);
 setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); restoreKeymarks(usersKeymarks); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
-startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
+// A WebView2 profile of its own: one left over from a previous run (or the user's) would be
+// joined instead, and that one wasn't started with the debugging port.
+const webviewData = fs.mkdtempSync(path.join(os.tmpdir(), 'km-e2e-webview-'));
+startApp({ WEBVIEW2_USER_DATA_FOLDER: webviewData, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
 const { browser, page } = await connect().catch(emergencyExit);
 log(`connected to ${page.url()}`);
 
@@ -246,6 +250,18 @@ try {
   await idle();
   const after = Number((await statusText()).match(/^(\d+)/)[1]);
   check('keyword click adds to the search', (await page.inputValue('#q')) === `sql ${kw}` && after <= before, `${before} → ${after}`);
+  await search('sql');
+  await page.focus('#kw-filter');
+  await page.keyboard.press('ArrowDown');
+  const focused = await page.evaluate(() => document.activeElement.dataset.keyword);
+  await page.keyboard.press('Control+Enter');
+  await idle();
+  check('Ctrl+Enter on a keyword adds it to the search', focused && (await page.inputValue('#q')) === `sql ${focused}`);
+  const first = await page.getAttribute('#kwlist li', 'data-keyword');
+  await page.focus('#kw-filter');
+  await page.keyboard.press('Enter');
+  await idle();
+  check('Enter in the keyword filter searches for the first keyword', (await page.inputValue('#q')) === first);
 
   // 5. Sorting and scrolling (table)
   await search('');
@@ -307,6 +323,23 @@ try {
   await idle();
   const afterUndo = await everything();
   check('Ctrl+Z brings it back', afterUndo === all, `→ ${afterUndo}`);
+
+  // 7b. Rating keys and F8 (Check all asks first; the test answers No, so nothing is contacted)
+  await search('');
+  await page.click('#table-body tr.vrow');
+  await idle();
+  const r0 = Number(await page.inputValue('#f-rating'));
+  await page.focus('#tablewrap');
+  await page.keyboard.press(r0 === 10 ? 'Control+-' : 'Control+=');
+  await idle();
+  const r1 = Number(await page.inputValue('#f-rating'));
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('Ctrl+Plus/Minus changes the rating, Ctrl+Z restores it', Math.abs(r1 - r0) === 1 && Number(await page.inputValue('#f-rating')) === r0, `${r0} → ${r1}`);
+  await expectDialog(false);
+  await page.keyboard.press('F8');
+  await idle();
+  check('F8 asks before checking every link', (await page.evaluate(() => window.__e2eAnswers.length)) === 0 && (await page.evaluate(() => document.body.dataset.checking)) === 'false');
 
   // 8. Backups (one is taken at startup, in the background)
   await menu('backups-open');

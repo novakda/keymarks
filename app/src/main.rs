@@ -395,22 +395,22 @@ fn set_tray_results(app: AppHandle, items: Vec<(i64, String)>) -> Result<(), Str
     Ok(())
 }
 
-/// Start checking the links of `ids` in the background; progress arrives as
-/// "check-progress" events. Returns how many will be checked (enabled ones only).
+/// Start checking the links of `ids` (all with checking on, if none given) in the background;
+/// progress arrives as "check-progress" events. Returns how many will be checked (enabled ones only).
 #[tauri::command]
 fn start_check(
     app: AppHandle,
     db: State<Db>,
     checks: State<checker::CheckState>,
     settings: State<SettingsState>,
-    ids: Vec<i64>,
+    ids: Option<Vec<i64>>,
 ) -> Result<usize, String> {
     use std::sync::atomic::Ordering;
     if checks.running.swap(true, Ordering::SeqCst) {
         return Err("a link check is already running".into());
     }
     checks.cancel.store(false, Ordering::SeqCst);
-    let targets = match db.lock().unwrap().check_targets(&ids) {
+    let targets = match db.lock().unwrap().check_targets(ids.as_deref()) {
         Ok(t) => t,
         Err(e) => {
             checks.running.store(false, Ordering::SeqCst);
@@ -426,6 +426,11 @@ fn start_check(
 #[tauri::command]
 fn cancel_check(checks: State<checker::CheckState>) {
     checks.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn change_rating(db: State<Db>, ids: Vec<i64>, by: i64) -> Result<usize, String> {
+    db.lock().unwrap().change_rating(&ids, by).map_err(err)
 }
 
 #[tauri::command]
@@ -482,6 +487,14 @@ fn main() {
     tauri::Builder::default()
         // First: a second launch hands over to the running app and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| desktop::show_main(app)))
+        // Size and position only: restoring "maximised" would show a window meant to start in
+        // the tray. The test window is left alone, so a test never overwrites the user's.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::SIZE | tauri_plugin_window_state::StateFlags::POSITION)
+                .with_denylist(if desktop::test_mode() { &["main"] } else { &[] })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -583,6 +596,7 @@ fn main() {
             start_check,
             cancel_check,
             set_check_enabled,
+            change_rating,
             browser_sources,
             import_browser,
             import_html_file,

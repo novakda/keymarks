@@ -82,7 +82,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
 | DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | done |
 | DISP-19 | Context menus | Bookmark(s), tray icon, search field, macros, dictionary words (§10.4). Bookmark menu: Open in <browser>, Open in New Window, Properties, Make Shortcut Macro, Copy URL, Set Status Checking, Add Common Keywords, Status Check (Ctrl+T), Mark Visited, Export (exe) | Custom HTML context menu (or Tauri native menu) | P1 | done (Open, Copy URL, Check link, link checking on/off, Pin to Saved, Export, Delete; works on multi-selections) |
-| DISP-20 | Main window state restore | Size, position, maximised (b326; ini `window.*`) | `tauri-plugin-window-state` | P1 | todo |
+| DISP-20 | Main window state restore | Size, position, maximised (b326; ini `window.*`) | `tauri-plugin-window-state` | P1 | done (size and position; not maximised, which would show a window meant to start in the tray) |
 
 ### 2.2 Adding, editing and fetching bookmarks
 
@@ -117,7 +117,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | KW-01 | Space-separated keywords per bookmark | §5.2; format spec | Stored as text; also normalise into a `keyword(bookmark_id, word)` table for the dictionary | P1 | done (normalised on save) |
 | KW-02 | Allowed-character rule | Forbidden: `< > / \ ! & * % + = ? . , \| ^ ( ) { } [ ] : ; ~`; `.` allowed only inside (`v1.0`) (§5.2.1) | Validate/strip on save; matters because `& \| ! ( ) .` are search operators | P1 | todo |
 | KW-03 | Dictionary pane | List of all keywords; exe "Dictionary [%d]" count; type-ahead find; arrow/Esc resets (§5.5.2) | Side panel, keyword list with usage counts, filter box | P1 | done |
-| KW-04 | Click/Enter keyword → search; Ctrl+Enter add to search | §5.5.2, §10.3 | Same | P1 | partial (click adds, double-click searches) |
+| KW-04 | Click/Enter keyword → search; Ctrl+Enter add to search | §5.5.2, §10.3 | Same | P1 | done (click adds, double-click searches; Enter / Ctrl+Enter in the list and filter box, arrows move) |
 | KW-05 | Dictionary follows the result set | After a space, shows only keywords of the displayed bookmarks (§10.5.1); exe "The Dictionary Window is only displayed when the search type is set to Keyword" | Facet list: keywords in the current result set with counts (drill-down) | P1 | done |
 | KW-06 | Tag/untag keywords | Yellow tag marks "important" keywords; multi-select tag/untag (§5.5.2). Stored in `<!--kword=…-->` | `keyword_meta(word, tagged)`; import from pm35 `kword` block (parser keeps it, store doesn't yet) | P1 | done |
 | KW-07 | Show only tagged | ini `gui.show_tagged_kwords_only` | Filter toggle | P2 | done |
@@ -150,7 +150,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | CHK-01 | Check selected bookmarks | Context "Status Check" Ctrl+T (§5.4.1) | Command on selection; async worker pool in Rust | P1 | done (Ctrl+T / Check selected) |
-| CHK-02 | Force check all | F8 Bookmarks > Force Status Check: all with checking enabled (§5.4.1) | Command; progress in footer | P1 | partial (Check shown = current results; no "all enabled" shortcut) |
+| CHK-02 | Force check all | F8 Bookmarks > Force Status Check: all with checking enabled (§5.4.1) | Command; progress in footer | P1 | done (F8 / ⋯ Check all links, after a confirmation) |
 | CHK-03 | Per-bookmark enable/disable | Status tab "Enable Status Checking and Fetching" (§5.4.2; mdata f8) | Boolean column; also bulk "Set Status Checking for Group" (exe) | P1 | done (per bookmark, imported from mdata f8) |
 | CHK-04 | Dead-link detection | Status texts: Never checked, Waiting, Checking, Fetching, No change, Changed, Page not found, Server not found, Server address unknown, Unauthorized, Proxy Unauthorized, Redirection error, Server error, Timed Out, No Response, Network Failure, Unchecked scheme, Checking Off, Bad URL (exe) | Map to a modern enum (HTTP status, DNS failure, TLS error, timeout); keep text for the Status column | P1 | done |
 | CHK-05 | Change detection | Page "changed since last visit"; Last-Modified plus content hash ("intelligent: ignores advertising banners and other extraneous tags", readme); mdata f7/f9 hash mode | Prefer ETag/Last-Modified; else hash of normalised text (strip scripts, styles, iframes, ad/tracker elements, timestamps). Store the hash | P1 | done (ETag/Last-Modified, normalised-text hash) |
@@ -173,7 +173,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | RATE-01 | Rating 1–10 (0 = not rated) | Slider on User tab; "Rating: NR" (b278, exe; mdata f11) | Stored; shown as stars (½-star per point). Needs an editor | P1 | done (editable 0–10) |
-| RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | todo |
+| RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | done (one undo step for the whole selection) |
 | RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | partial (sort by rating; no filter) |
 | RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | todo |
 | USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | done (opening from Keymarks; Visits column, sortable) |
