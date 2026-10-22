@@ -8,6 +8,7 @@ import { execSync, spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const exe = path.join(root, 'target', 'debug', 'keymarks.exe');
@@ -23,6 +24,7 @@ const port = await new Promise((resolve) => {
   });
 });
 const stop = () => { try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore' }); } catch {} };
+const usersKeymarks = runningKeymarks();
 stop();
 await sleep(1000);
 spawn(exe, [], {
@@ -76,5 +78,5 @@ try {
   await browser?.close().catch(() => {});
   stop();
   await sleep(1000);
-  spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -ArgumentList '--no-focus'`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  restoreKeymarks(usersKeymarks);
 }

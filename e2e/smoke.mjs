@@ -14,6 +14,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
@@ -39,14 +40,11 @@ function stopApp() {
 }
 
 function startApp(env) {
-  if (env) {
-    spawn(exe, [], { env: { ...process.env, ...env }, detached: true, stdio: 'ignore' }).unref();
-  } else {
-    // Via PowerShell Start-Process: inherits none of our handles (so callers waiting on this
-    // script's output aren't kept waiting), and --no-focus keeps it behind the user's work.
-    spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process -FilePath '${exe}' -ArgumentList '--no-focus'`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  }
+  spawn(exe, [], { env: { ...process.env, ...env }, detached: true, stdio: 'ignore' }).unref();
 }
+
+// Whatever Keymarks the user had open (installed or dev) is put back at the end.
+const usersKeymarks = runningKeymarks();
 
 async function connect() {
   for (let i = 0; i < 60; i++) {
@@ -80,7 +78,7 @@ function cleanupWork() {
   }
   if (fs.existsSync(work)) log(`WARNING: temporary copy still exists: ${work}`);
 }
-setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); startApp(); process.exit(2); }, 240_000).unref();
+setTimeout(() => { log('timed out after 4 minutes'); stopApp(); cleanupWork(); restoreKeymarks(usersKeymarks); process.exit(2); }, 240_000).unref();
 log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
 startApp({ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
 const { browser, page } = await connect();
@@ -94,7 +92,7 @@ function emergencyExit(e) {
   log(`aborted: ${String(e?.message ?? e).replace(/"[^"]*"/g, '"…"')}`);
   stopApp();
   cleanupWork();
-  startApp();
+  restoreKeymarks(usersKeymarks);
   process.exit(1);
 }
 process.on('uncaughtException', emergencyExit);
@@ -411,7 +409,7 @@ try {
   cleanedUp = true;
   stopApp();
   cleanupWork();
-  startApp();
+  restoreKeymarks(usersKeymarks);
 }
 
 const width = Math.max(...results.map((r) => r.name.length));
