@@ -307,6 +307,14 @@ try {
   await page.keyboard.press('Control+z');
   await idle();
   check('undo restores the original URL', (await visibleCells('URL')).some((u) => u.endsWith('/moved')));
+  // Ctrl+T from the search box checks the selection (here: one of the two local bookmarks).
+  await page.click('#table-body tr.vrow');
+  await idle();
+  await page.focus('#q');
+  await page.keyboard.press('Control+t');
+  await page.waitForFunction(() => document.body.dataset.checking === 'false', null, { timeout: 30000 });
+  await idle();
+  check('Ctrl+T in the search box checks the selection', /^Checked 1 link/.test(await statusText()), (await statusText()).replace(/"[^"]*"/g, '"…"'));
   server.close();
   await fields(['title', 'url', 'keywords', 'description', 'notes']);
   await setMode('all');

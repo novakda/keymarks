@@ -451,7 +451,7 @@ async function setCheckEnabled(toChange, enabled) {
 // body[data-checking] is "true" while a batch runs (the e2e test waits on it too).
 document.body.dataset.checking = 'false';
 async function startCheck(toCheck) {
-  if (!toCheck.length) return say('Nothing to check.');
+  if (!toCheck.length) return say('Select the bookmarks to check first (or use Check shown).');
   if (toCheck.length > 200 && !confirm(`Check ${toCheck.length.toLocaleString()} links?\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
   document.body.dataset.checking = 'true'; // before any await, so watchers never see a gap
   try {
@@ -499,8 +499,9 @@ window.__TAURI__.event.listen('check-progress', async ({ payload: p }) => {
 $('check-selected').onclick = () => startCheck([...selected]);
 $('check-shown').onclick = () => startCheck(ids);
 $('check-cancel').onclick = () => invoke('cancel_check');
+// Ctrl+T works everywhere, including the search box (it means nothing while typing).
 document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't' && !e.target.closest('input, textarea, select')) {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 't') {
     e.preventDefault();
     startCheck([...selected]);
   }
