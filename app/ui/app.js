@@ -74,6 +74,9 @@ const tablewrap = $('tablewrap');
 const say = (text) => { status.textContent = text; };
 const fail = (what) => (e) => say(`${what} failed: ${e}`);
 const words = (s) => s.split(/[\s,]+/).filter(Boolean);
+// Keywords as Powermarks allows them (same rule as the store): these characters separate
+// keywords, and a '.' stays only inside a word.
+const keywordWords = (s) => s.split(/[\s<>/\\!&*%+=?,|^(){}[\]:;~]+/).map((w) => w.replace(/^\.+|\.+$/g, '')).filter(Boolean);
 // Search terms without operators, for "is this keyword already in the query?".
 const terms = (s) => s.split(/[\s&|!()]+/).map((w) => w.replace(/\.+$/, '')).filter((w) => w && !/^\.(and|or|not)$/i.test(w));
 const lower = (s) => s.toLocaleLowerCase();
@@ -451,7 +454,7 @@ function onListKeys(e) {
     const i = Math.max(0, Math.min(ids.length - 1, cursor + moves[e.key]));
     select(i, { shiftKey: e.shiftKey });
   } else if (e.key === 'Enter') {
-    if (ids[cursor] !== undefined) open(ids[cursor]);
+    if (ids[cursor] !== undefined) open(ids[cursor], { newWindow: e.shiftKey });
   } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && inList) {
     ids.forEach((x) => selected.add(x));
     render();
@@ -465,9 +468,9 @@ function onListKeys(e) {
   e.preventDefault();
 }
 
-async function open(id) {
+async function open(id, { newWindow = false } = {}) {
   try {
-    await invoke('open_bookmark', { id });
+    await invoke(newWindow ? 'open_bookmark_new_window' : 'open_bookmark', { id });
     refresh(); // visit count changed
   } catch (e) { say(String(e)); }
 }
@@ -542,7 +545,8 @@ $('bctx').addEventListener('click', async (e) => {
   if (!act) return;
   $('bctx').hidden = true;
   const chosen = ids.filter((id) => selected.has(id)); // in list order
-  if (act === 'open') chosen.forEach(open);
+  if (act === 'open') chosen.forEach((id) => open(id));
+  else if (act === 'open-new') chosen.forEach((id) => open(id, { newWindow: true }));
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
@@ -723,6 +727,15 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('check-all').onclick = () => startCheck(null);
+function showKeys() {
+  if ($('keys-dlg').open) return;
+  invoke('get_settings').then((st) => { $('keys-hotkey').textContent = st.hotkey || '(none)'; }, () => {});
+  $('keys-dlg').showModal();
+}
+$('keys-open').onclick = showKeys;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'F1') { e.preventDefault(); showKeys(); }
+});
 showCheckBar({ finished: true, counts: {} });
 
 // ---- settings -------------------------------------------------------------------
@@ -1212,7 +1225,7 @@ function renderPanel() {
 
 function commitChip() {
   const input = $('f-kw');
-  for (const w of words(input.value)) {
+  for (const w of keywordWords(input.value)) {
     if (!chips.some((c) => lower(c) === lower(w))) chips.push(w);
   }
   input.value = '';

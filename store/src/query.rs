@@ -230,8 +230,21 @@ impl Parser {
     }
 }
 
+/// `rating>=7`, `rating<3`, `rating=0` (0 = not rated): a filter instead of a word.
+fn rating_filter(word: &str) -> Option<(&'static str, i64)> {
+    let rest = word.strip_prefix("rating").or_else(|| word.strip_prefix("Rating"))?;
+    let (op, n) = [(">=", ">="), ("<=", "<="), (">", ">"), ("<", "<"), ("=", "=")]
+        .into_iter()
+        .find_map(|(p, op)| rest.strip_prefix(p).map(|n| (op, n)))?;
+    Some((op, n.parse().ok()?))
+}
+
 fn emit(e: &Expr, opts: &SearchOptions, negated: bool, f: &mut Filter, positive: &mut Vec<String>) {
     match e {
+        Expr::Term { word, .. } if rating_filter(word).is_some() => {
+            let (op, n) = rating_filter(word).unwrap();
+            f.sql += &format!("b.rating {op} {n}"); // op from a fixed list, n parsed as a number
+        }
         Expr::Term { word, whole } => {
             let star = if *whole || !opts.partial { "" } else { "*" };
             let column = if opts.mode == Mode::Keywords { "keywords : " } else { "" };
@@ -314,6 +327,16 @@ mod tests {
         assert_eq!(f.params, [".edu/"]);
         let none = SearchOptions { mode: Mode::Exact, fields: vec![], ..all };
         assert!(compile("x", &none).is_err());
+    }
+
+    #[test]
+    fn rating_filters() {
+        let opts = SearchOptions::default();
+        let f = compile("rust rating>=7", &opts).unwrap().unwrap();
+        assert!(f.sql.contains("b.rating >= 7") && f.params.len() == 1, "{}", f.sql);
+        assert!(compile("rating<3 | rating=0", &opts).unwrap().unwrap().sql.contains("b.rating < 3 OR b.rating = 0"));
+        assert_eq!(rating_filter("rating>=x"), None, "not a number: an ordinary word");
+        assert_eq!(rating_filter("ratings"), None);
     }
 
     #[test]

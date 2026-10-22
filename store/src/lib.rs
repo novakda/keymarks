@@ -833,9 +833,14 @@ pub struct KeywordCount {
 
 /// Keywords as stored: split on whitespace/commas, duplicates dropped (case-insensitive,
 /// first spelling wins), order kept, single-space separated.
+/// Characters Powermarks doesn't allow in keywords (several are search operators); they
+/// separate keywords instead. A '.' is kept only inside a word (`v1.0`).
+pub const KEYWORD_SEPARATORS: &str = "<>/\\!&*%+=?,|^(){}[]:;~";
+
 pub fn normalize_keywords(s: &str) -> String {
     let mut seen = std::collections::HashSet::new();
-    s.split(|c: char| c.is_whitespace() || c == ',')
+    s.split(|c: char| c.is_whitespace() || KEYWORD_SEPARATORS.contains(c))
+        .map(|k| k.trim_matches('.'))
         .filter(|k| !k.is_empty() && seen.insert(k.to_lowercase()))
         .collect::<Vec<_>>()
         .join(" ")
@@ -1037,6 +1042,11 @@ fn cp1252(b: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keywords_follow_the_powermarks_character_rule() {
+        assert_eq!(super::normalize_keywords("c++ node/express a&b .net v1.0. x,y Dup dup (z)"), "c node express a b net v1.0 x y Dup z");
+    }
+
     use super::*;
 
     const SAMPLE: &[u8] = b"<HTML><BODY><DL>\r\n\
@@ -1208,7 +1218,6 @@ mod tests {
             .collect();
         let find = |k: &str| plan.iter().find(|(kw, ..)| kw == k).map(|(_, r, i)| (*r, i.clone()));
         assert_eq!(find("The"), Some(("common word", None)));
-        assert_eq!(find("the."), Some(("common word", None)));
         assert_eq!(find("2024"), Some(("number only", None)));
         assert_eq!(find("---"), Some(("no letters or digits", None)));
         assert_eq!(find("languages"), Some(("plural of another keyword", Some("language".into()))));

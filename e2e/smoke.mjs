@@ -203,6 +203,8 @@ try {
   const grouped = await count('(linux | windows) tutorial');
   check('parentheses group', grouped <= lw, `(linux|windows) tutorial=${grouped} of ${lw}`);
   check('dotted operators', (await count('sql .and .not mvc')) === (await count('sql ! mvc')));
+  const high = await count('rating>=8'), low = await count('rating<8');
+  check('rating>=N filters by rating', high + low === await count('!zzzzqqq') && (await count('sql rating>=8')) <= high, `${high} + ${low}`);
   const net = await count('net');
   const netWhole = await count('net.');
   check('word. is whole-word only', netWhole <= net, `net=${net} net.=${netWhole}`);
@@ -296,6 +298,16 @@ try {
   await idle();
   const savedTitle = await page.inputValue('#f-title');
   check('edit saves', savedTitle.endsWith('[e2e]') && (await statusText()) === 'Saved.');
+  await page.fill('#f-kw', 'e2ea+e2eb/e2ec.');
+  await page.keyboard.press('Enter');
+  const chipsNow = await page.$$eval('#f-tags .chip', (els) => els.map((e) => e.firstChild.textContent.replace(/^🏷 /, '')));
+  check('forbidden keyword characters separate keywords', ['e2ea', 'e2eb', 'e2ec'].every((k) => chipsNow.includes(k)) && !chipsNow.some((k) => /[+/]/.test(k)));
+  await page.click('#revert');
+  await idle();
+  await page.focus('#tablewrap');
+  await page.keyboard.press('F1');
+  check('F1 lists the keyboard shortcuts', await page.isVisible('#keys-dlg') && (await page.textContent('#keys-dlg')).includes('Shift+Enter'));
+  await page.click('#keys-dlg [data-close]');
   check('undo button names the edit', (await page.getAttribute('#undo', 'title')).startsWith('Undo: Edit'));
   await page.click('#undo');
   await idle();

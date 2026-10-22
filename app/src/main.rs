@@ -215,6 +215,53 @@ pub(crate) fn open_id<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64) ->
     store.mark_visited(id).map_err(err)
 }
 
+/// Powermarks' Shift+Enter: open in a new window of the default browser, counting the visit.
+/// Falls back to an ordinary open when the browser isn't one known to take `--new-window`.
+#[tauri::command]
+fn open_bookmark_new_window(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
+    let store = db.lock().unwrap();
+    let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
+    let web = ["http://", "https://"].iter().any(|p| url.to_ascii_lowercase().starts_with(p));
+    match default_browser().filter(|_| web) {
+        Some(exe) => drop(std::process::Command::new(exe).arg("--new-window").arg(&url).spawn().map_err(err)?),
+        None => open_checked(&app, &url)?,
+    }
+    store.mark_visited(id).map_err(err)
+}
+
+#[cfg(windows)]
+fn default_browser() -> Option<String> {
+    let reg = |args: &[&str]| {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new("reg").arg("query").args(args).creation_flags(CREATE_NO_WINDOW).output().ok()?;
+        reg_sz(&String::from_utf8_lossy(&out.stdout))
+    };
+    let prog_id = reg(&[r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", "/v", "ProgId"])?;
+    browser_exe(&reg(&[&format!(r"HKCR\{prog_id}\shell\open\command"), "/ve"])?)
+}
+
+#[cfg(not(windows))]
+fn default_browser() -> Option<String> {
+    None
+}
+
+/// The value of the first REG_SZ line in `reg query` output.
+fn reg_sz(out: &str) -> Option<String> {
+    out.lines().find_map(|l| l.split_once("REG_SZ").map(|(_, v)| v.trim().to_string())).filter(|v| !v.is_empty())
+}
+
+/// The executable of a browser's open command, if it's one that understands `--new-window`.
+fn browser_exe(command: &str) -> Option<String> {
+    let command = command.trim();
+    let exe = match command.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => command.split(' ').next()?,
+    };
+    let name = exe.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
+    ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "vivaldi.exe", "opera.exe"].contains(&name.as_str()).then(|| exe.to_string())
+}
+
 /// Hand a URL to the OS, but only for schemes on the allowlist.
 fn open_checked<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<(), String> {
     let lower = url.to_ascii_lowercase();
@@ -638,7 +685,8 @@ fn main() {
             save_item,
             delete_saved_item,
             move_saved_item,
-            open_link
+            open_link,
+            open_bookmark_new_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");
@@ -646,7 +694,16 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_url;
+    use super::{browser_exe, normalize_url, reg_sz};
+
+    #[test]
+    fn default_browser_command_is_parsed() {
+        let out = "\r\nHKEY_CLASSES_ROOT\\FirefoxURL\\shell\\open\\command\r\n    (Default)    REG_SZ    \"C:\\Program Files\\Mozilla Firefox\\firefox.exe\" -osint -url \"%1\"\r\n";
+        let cmd = reg_sz(out).unwrap();
+        assert_eq!(browser_exe(&cmd).as_deref(), Some(r"C:\Program Files\Mozilla Firefox\firefox.exe"));
+        assert_eq!(browser_exe(r#""C:\Apps\Unknown\browser.exe" "%1""#), None, "unknown browsers open normally");
+        assert_eq!(reg_sz("ERROR: not found"), None);
+    }
 
     #[test]
     fn urls_are_trimmed_completed_and_checked() {

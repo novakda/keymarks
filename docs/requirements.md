@@ -79,7 +79,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | done (Saved and keyword pane, list, properties; draggable splitters remembered per machine, double-click resets) |
 | DISP-15 | Status bar | Counts and messages ("%u Powermarks loaded", "SC: %u", "SC: paused", "%u of %u") (exe) | Footer: shown/total, check queue, last action | P1 | done (counts, messages, "Checking n/m" / "Paused at n/m" with problem and changed counts) |
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
-| DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
+| DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | done (arrows, PgUp/PgDn, Home/End, Enter; Shift+Enter opens a new window of the default browser when it is Chrome, Edge, Firefox, Brave, Vivaldi or Opera) |
 | DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | done |
 | DISP-19 | Context menus | Bookmark(s), tray icon, search field, macros, dictionary words (§10.4). Bookmark menu: Open in <browser>, Open in New Window, Properties, Make Shortcut Macro, Copy URL, Set Status Checking, Add Common Keywords, Status Check (Ctrl+T), Mark Visited, Export (exe) | Custom HTML context menu (or Tauri native menu) | P1 | done (Open, Copy URL, Check link, link checking on/off, Pin to Saved, Export, Delete; works on multi-selections) |
 | DISP-20 | Main window state restore | Size, position, maximised (b326; ini `window.*`) | `tauri-plugin-window-state` | P1 | done (size and position; not maximised, which would show a window meant to start in the tray) |
@@ -108,14 +108,14 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | EDIT-07 | Copy URL to clipboard | Toolbar, context menu (§10.2) | Ctrl+C on selection | P1 | done (Ctrl+C in the list, context menu; several URLs one per line) |
 | FETCH-01 | Fetch page metadata | F7 / Properties Fetch: GET page, replace name and description, **merge** new keywords; reports e.g. "Name and description updated and %d keyword(s) added" (§5.2.2, exe) | Rust `reqwest` GET, parse `<title>`, meta description/keywords, `og:*`; merge, don't overwrite keywords | P1 | done (F7 / right-click Fetch: replaces name and description, merges keywords, one undo step; automatic for new bookmarks) |
 | FETCH-02 | Fetch with authentication | Per-bookmark username/password, Basic auth (b278, Auth tab) | Basic auth from the credential store (CHK-11) | P3 | todo |
-| FETCH-03 | Background fetch queue | Clipboard adds fetch in the background; "Fetching" status (exe) | Same worker pool as status checking | P1 | todo |
+| FETCH-03 | Background fetch queue | Clipboard adds fetch in the background; "Fetching" status (exe) | Same worker pool as status checking | P1 | done (new and clipboard-added bookmarks fetch titles in the background, 4 at a time; "Fetching…" status) |
 
 ### 2.3 Keywords and the tagged-keyword dictionary
 
 | ID | Feature | Original (source) | Modern approach | Pri | Status |
 |---|---|---|---|---|---|
 | KW-01 | Space-separated keywords per bookmark | §5.2; format spec | Stored as text; also normalise into a `keyword(bookmark_id, word)` table for the dictionary | P1 | done (normalised on save) |
-| KW-02 | Allowed-character rule | Forbidden: `< > / \ ! & * % + = ? . , \| ^ ( ) { } [ ] : ; ~`; `.` allowed only inside (`v1.0`) (§5.2.1) | Validate/strip on save; matters because `& \| ! ( ) .` are search operators | P1 | todo |
+| KW-02 | Allowed-character rule | Forbidden: `< > / \ ! & * % + = ? . , \| ^ ( ) { } [ ] : ; ~`; `.` allowed only inside (`v1.0`) (§5.2.1) | Validate/strip on save; matters because `& \| ! ( ) .` are search operators | P1 | done (forbidden characters separate keywords, a "." is kept only inside a word; on save, import and fetch) |
 | KW-03 | Dictionary pane | List of all keywords; exe "Dictionary [%d]" count; type-ahead find; arrow/Esc resets (§5.5.2) | Side panel, keyword list with usage counts, filter box | P1 | done |
 | KW-04 | Click/Enter keyword → search; Ctrl+Enter add to search | §5.5.2, §10.3 | Same | P1 | done (click adds, double-click searches; Enter / Ctrl+Enter in the list and filter box, arrows move) |
 | KW-05 | Dictionary follows the result set | After a space, shows only keywords of the displayed bookmarks (§10.5.1); exe "The Dictionary Window is only displayed when the search type is set to Keyword" | Facet list: keywords in the current result set with counts (drill-down) | P1 | done |
@@ -174,7 +174,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 |---|---|---|---|---|---|
 | RATE-01 | Rating 1–10 (0 = not rated) | Slider on User tab; "Rating: NR" (b278, exe; mdata f11) | Stored; shown as stars (½-star per point). Needs an editor | P1 | done (editable 0–10) |
 | RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | done (one undo step for the whole selection) |
-| RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | partial (sort by rating; no filter) |
+| RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | done (column sort; `rating>=7`, `rating<3`, `rating=0` in searches, combinable with operators) |
 | RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | todo |
 | USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | done (opening from Keymarks; Visits column, sortable) |
 | USE-02 | Last visited timestamp | mdata f2 | Set on open | P1 | done (Last visited column, sortable) |
@@ -252,7 +252,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | HOT-01 | Global hotkey: switch to Powermarks | §8.1.7; ini `hotkeys.app` | `tauri-plugin-global-shortcut`; show window, focus and select the search box. This is the main way in | P1 | done (default Ctrl+Alt+P) |
 | HOT-02 | Global hotkey: add / fast add from browser | ini `hotkeys.browser_add`, `fast_add` | Extension `commands` (Alt+Shift+P exists for the popup); add a fast-add command. Optionally `"global": true` in Chrome | P1 | done (extension commands) |
 | HOT-03 | Global hotkey: add from clipboard | ini `hotkeys.clipboard_add` | Global shortcut → ADD-07 | P2 | todo |
-| HOT-04 | In-app shortcut set | §10.3 (Ins, Ctrl+Ins, Alt+Ins, Ctrl+A/C/E/F/I/N/O/P/S, F5–F9, Del, Enter, Shift+Enter, Ctrl+±, Alt+Enter Properties, Shift+F1 context menu) | Keep the same keys where they don't conflict with WebView defaults | P1 | todo |
+| HOT-04 | In-app shortcut set | §10.3 (Ins, Ctrl+Ins, Alt+Ins, Ctrl+A/C/E/F/I/N/O/P/S, F5–F9, Del, Enter, Shift+Enter, Ctrl+±, Alt+Enter Properties, Shift+F1 context menu) | Keep the same keys where they don't conflict with WebView defaults | P1 | done (F1 / ⋯ Keyboard shortcuts lists them; Ctrl+N is kept by WebView2, so Insert adds) |
 | HOT-05 | Shortcut list | Help > Shortcut Keys (b282) | `?` overlay | P2 | todo |
 | START-01 | Start with Windows; start minimised | §5.10, §8.1.1; ini `startup.startup_link`, `start_minimized` | `tauri-plugin-autostart` with `--minimized` → tray | P1 | done |
 | START-02 | Reload last file | ini `startup.load_file` | Implicit (single DB) | P1 | done (implicit) |

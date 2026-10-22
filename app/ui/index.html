@@ -117,6 +117,10 @@
   #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
   #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
   #bctx button[hidden] { display: none; }
+  .keys { border-collapse: collapse; margin: 4px 0 12px; font-size: 13px; }
+  .keys th { text-align: left; padding: 10px 0 4px; color: var(--muted); font-weight: 600; }
+  .keys td { padding: 3px 16px 3px 0; vertical-align: top; }
+  .keys td:first-child { white-space: nowrap; font-family: ui-monospace, monospace; }
   #sctx hr, #ctx hr, #bctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
   dialog { width: min(640px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
@@ -176,7 +180,7 @@
         <label><input type="checkbox" name="field" value="notes"> Notes</label>
         <label><input type="checkbox" id="opt-case"> Match case</label>
       </fieldset>
-      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · Esc clears</p>
+      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · <code>rating>=7</code> by rating · Esc clears</p>
     </div>
   </details>
   <div class="seg" role="group" aria-label="View">
@@ -201,6 +205,7 @@
       <button id="check-all" type="button" role="menuitem" title="F8">Check all links…</button>
       <button id="backups-open" type="button" role="menuitem">Backups…</button>
       <button id="settings-open" type="button" role="menuitem">Settings…</button>
+      <button id="keys-open" type="button" role="menuitem" title="F1">Keyboard shortcuts</button>
     </div>
   </details>
 </header>
@@ -238,9 +243,45 @@
   </span>
 </footer>
 
+<dialog id="keys-dlg" aria-labelledby="keys-title">
+  <form method="dialog">
+    <h2 id="keys-title">Keyboard shortcuts</h2>
+    <table class="keys">
+      <tr><th colspan="2">Finding</th></tr>
+      <tr><td>Type</td><td>Search as you type (see the Options menu for syntax)</td></tr>
+      <tr><td>Esc</td><td>Clear the search</td></tr>
+      <tr><td>↑ ↓ PgUp PgDn Home End</td><td>Move through the list (Shift extends the selection)</td></tr>
+      <tr><td>Ctrl+A</td><td>Select all shown</td></tr>
+      <tr><td>Alt+1…9</td><td>Run a saved search or link</td></tr>
+      <tr><td>Enter / Ctrl+Enter</td><td>In the keyword list: search for it / add it to the search</td></tr>
+      <tr><th colspan="2">Bookmarks</th></tr>
+      <tr><td>Enter</td><td>Open</td></tr>
+      <tr><td>Shift+Enter</td><td>Open in a new browser window</td></tr>
+      <tr><td>Insert</td><td>New bookmark</td></tr>
+      <tr><td>Alt+Insert</td><td>Add the links on the clipboard</td></tr>
+      <tr><td>Ctrl+S</td><td>Save the edited bookmark</td></tr>
+      <tr><td>Ctrl+C</td><td>Copy the selected URLs</td></tr>
+      <tr><td>Ctrl+Plus / Ctrl+Minus</td><td>Raise / lower the rating</td></tr>
+      <tr><td>Del</td><td>Delete</td></tr>
+      <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
+      <tr><th colspan="2">Pages and links</th></tr>
+      <tr><td>F7</td><td>Fetch title and description again</td></tr>
+      <tr><td>Ctrl+T</td><td>Check the selected links</td></tr>
+      <tr><td>F8</td><td>Check all links that have checking on</td></tr>
+      <tr><th colspan="2">Anywhere</th></tr>
+      <tr><td id="keys-hotkey">Ctrl+Alt+P</td><td>Show Keymarks (global; change it in Settings)</td></tr>
+      <tr><td>F1</td><td>This list</td></tr>
+    </table>
+    <div class="row">
+      <button type="button" data-close>Close</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="bctx" role="menu" hidden>
   <strong id="bctx-title"></strong>
-  <button role="menuitem" data-act="open">Open</button>
+  <button role="menuitem" data-act="open">Open (Enter)</button>
+  <button role="menuitem" data-act="open-new">Open in new window (Shift+Enter)</button>
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
