@@ -568,6 +568,25 @@ try {
   check('column edge drag resizes and is remembered', Math.abs(c1 - c0 - 50) <= 2 && (await thWidth()) === c1, `${c0} → ${c1}`);
   await page.dblclick('#table-head th:first-child .grip');
   check('double-click resets the columns', Math.abs((await thWidth()) - c0) <= 1);
+  const heads = () => page.$$eval('#table-head th', (ths) => ths.map((th) => th.dataset.col));
+  const sortsBefore = await page.$$eval('#table-head th', (ths) => ths.map((th) => th.ariaSort).join());
+  const order0 = await heads();
+  const dragHeader = async (from, to) => {
+    const a = await page.locator(`#table-head th:nth-child(${from}) button`).boundingBox();
+    const b = await page.locator(`#table-head th:nth-child(${to}) button`).boundingBox();
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 10, b.y + b.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await idle();
+  };
+  await dragHeader(2, 1);
+  const order1 = await heads();
+  await page.reload();
+  await idle();
+  check('dragging a header moves the column, remembered', order1[0] === order0[1] && order1[1] === order0[0] && (await heads()).join() === order1.join(), order1.join(' '));
+  check('a header drag does not sort', (await page.$$eval('#table-head th', (ths) => ths.map((th) => th.ariaSort).join())) === sortsBefore);
+  await dragHeader(1, 2);
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');

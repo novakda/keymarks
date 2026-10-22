@@ -65,7 +65,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | SRCH-18 | Search settings persisted | ini `search.type`, `partial_match`, `case_ins`, `implied_or`, `mpset` (meaning of `mpset` unknown) | Settings table | P1 | done (per machine) |
 | DISP-01 | Bookmark list (virtualised) | List view, fast with 60k entries (b278) | Virtual scrolling over the full result set (the 500-row cap is a stopgap) | P1 | done (all results, virtual scrolling) |
 | DISP-02 | Configurable columns | Right-click header or View > Columns; exe column names: Name, URL, Keywords, Description, Notes, Add Date, Last Visited, Last Modified, Last Checked, Visited, Rating, Status, Schedule, Status Checking, user field (§5.3, exe "Customize Columns") | Table mode with column chooser. The current two-line card view stays as a "compact" view | P1 | done (11 columns) |
-| DISP-03 | Reorder columns | Ctrl+drag headers (§5.3) | Drag headers | P2 | todo |
+| DISP-03 | Reorder columns | Ctrl+drag headers (§5.3) | Drag headers | P2 | done (drag a header onto another; order remembered with the shown columns) |
 | DISP-04 | Click-to-sort columns | §5.3; ini `display.sort_prop`, `sort_order` | Click header toggles asc/desc; persist | P1 | done |
 | DISP-05 | Two-level stable sort | Ties broken by the previous sort key (b326) | `ORDER BY new, previous` | P2 | done |
 | DISP-06 | Resort on demand | F5 Refresh (b282) | Not needed if the list re-queries live; keep F5 as refresh | P3 | todo |

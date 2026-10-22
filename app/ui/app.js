@@ -259,13 +259,44 @@ function startColResize(e, cols, c) {
   addEventListener('pointerup', up);
 }
 
+// Drag a header onto another to move the column there (order kept with the shown columns).
+// Pointer events rather than HTML drag and drop, which the webview keeps for dropped files.
+function startColMove(e, c) {
+  if (e.button !== 0) return;
+  const x0 = e.clientX;
+  let moving = false;
+  const target = (ev) => document.elementFromPoint(ev.clientX, 10 + $('table-head').getBoundingClientRect().top)?.closest('#table-head th');
+  const move = (m) => {
+    if (!moving && Math.abs(m.clientX - x0) < 6) return;
+    moving = true;
+    document.querySelectorAll('#table-head th').forEach((th) => th.classList.toggle('drop', th === target(m)));
+  };
+  const up = (u) => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    if (!moving) return; // a plain click sorts
+    addEventListener('click', (k) => k.stopPropagation(), { capture: true, once: true }); // not a sort
+    const to = target(u)?.dataset.col;
+    if (to && to !== c.id) {
+      shownCols = shownCols.filter((id) => id !== c.id);
+      shownCols.splice(shownCols.indexOf(to) + (u.clientX - x0 > 0 ? 1 : 0), 0, c.id);
+      try { localStorage.setItem('columns', JSON.stringify(shownCols)); } catch {}
+    }
+    render();
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+}
+
 function renderTable() {
-  const cols = COLUMNS.filter((c) => shownCols.includes(c.id));
+  const cols = shownCols.map((id) => COLUMNS.find((c) => c.id === id)).filter(Boolean);
   $('table-cols').replaceChildren(...cols.map(() => document.createElement('col')));
   applyColWidths(cols);
   $('table-head').replaceChildren(...cols.map((c) => {
     const th = document.createElement('th');
     th.scope = 'col';
+    th.dataset.col = c.id;
+    th.onpointerdown = (e) => startColMove(e, c);
     const level = opts.sort.findIndex((k) => k.column === c.id);
     th.ariaSort = level === 0 ? (opts.sort[0].desc ? 'descending' : 'ascending') : 'none';
     const btn = document.createElement('button');
@@ -276,7 +307,7 @@ function renderTable() {
       mark.textContent = (opts.sort[level].desc ? ' ▼' : ' ▲') + (level ? '2' : '');
       btn.append(mark);
     }
-    btn.title = 'Sort (click again to reverse, a third time to clear)';
+    btn.title = 'Click to sort (again to reverse, a third time to clear) · Drag to move the column';
     btn.onclick = () => sortBy(c);
     const grip = document.createElement('span');
     grip.className = 'grip';
@@ -379,7 +410,7 @@ $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
   box.checked = shownCols.includes(c.id);
   box.disabled = c.id === 'title';
   box.onchange = () => {
-    shownCols = COLUMNS.map((x) => x.id).filter((id) => (id === c.id ? box.checked : shownCols.includes(id)));
+    shownCols = box.checked ? [...shownCols, c.id] : shownCols.filter((id) => id !== c.id); // keeps the user's order
     try { localStorage.setItem('columns', JSON.stringify(shownCols)); } catch {}
     render();
   };
