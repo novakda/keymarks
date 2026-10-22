@@ -102,21 +102,28 @@ which turned up features the manual never mentions. The result is
 modern approach, a priority and a status. Obsolete parts (Netscape DDE, IE toolbars,
 trial nags) are explicitly dropped, with the reason.
 
-**Progress:** 46 of 103 core features done and 11 partial. See the doc for the full
+**Progress:** 69 of 104 core features done and 13 partial. See the doc for the full
 scoreboard.
 
 ### 3. Architecture
 
-```
- Browser extension (MV3)          Keymarks app (Tauri 2)
-  popup: title, meta keywords      ┌─────────────────────────────┐
-        │ native messaging          │ HTML/JS UI (no framework)   │
-        ▼                           │   ▲ invoke()                │
-  keymarks-host.exe ──┐             │ Rust commands               │
-  (validates input)   │             │   tray · hotkey · backups   │
-                      ▼             └──────────────┬──────────────┘
-                 SQLite (WAL) ◄────────────────────┘
-                 bookmarks + FTS5 index + keyword index
+```mermaid
+flowchart LR
+    subgraph browser["Browser"]
+        ext["Extension (Manifest V3)<br/>Chrome, Edge, Firefox"]
+    end
+    subgraph app["Keymarks app (Tauri 2)"]
+        ui["HTML/JS UI<br/>(no framework)"]
+        cmds["Rust commands<br/>search, tray, hotkey, backups, link checks"]
+        ui -->|"invoke()"| cmds
+    end
+    host["keymarks-host.exe<br/>(validates every message)"]
+    db[("SQLite (WAL)<br/>bookmarks, FTS5 index, keyword index")]
+    files[/"pm35.htm, browser profiles,<br/>bookmark HTML files"/]
+    ext -->|native messaging| host
+    host --> db
+    cmds --> db
+    files -.->|import / export| cmds
 ```
 
 | Crate / folder | Role |
