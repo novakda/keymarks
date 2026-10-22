@@ -20,7 +20,12 @@
   .seg button:first-child { border-radius: 6px 0 0 6px; }
   .seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
   .seg button[aria-pressed=true] { background: var(--sel); }
-  #opts, #cols { position: relative; }
+  #opts, #cols, #more { position: relative; }
+  #more summary { list-style: none; padding: 7px 14px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; user-select: none; height: 100%; display: flex; align-items: center; font-weight: 700; }
+  #more summary::-webkit-details-marker { display: none; }
+  #more .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+  #more .menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 6px 14px; }
+  #more .menu button:hover, #more .menu button:focus-visible { background: var(--sel); outline: none; }
   #cols summary { list-style: none; padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; user-select: none; height: 100%; display: flex; align-items: center; }
   #cols summary::-webkit-details-marker { display: none; }
   #cols .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; width: 200px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); font-size: 13px; }
@@ -120,6 +125,9 @@
   .settings-body { padding: 4px 16px 8px; font-size: 13px; }
   .settings-body label { display: block; margin: 8px 0 4px; }
   .settings-body label.indent { margin-left: 22px; }
+  fieldset.plain { border: 0; padding: 0; margin: 4px 0 10px; }
+  fieldset.plain legend { font-weight: 600; padding: 0; margin-bottom: 2px; }
+  .settings-body input[type=radio] { width: auto; margin-right: 6px; vertical-align: -2px; }
   .settings-body input[type=checkbox] { width: auto; margin-right: 6px; vertical-align: -2px; }
   .error { color: var(--danger); font-size: 13px; min-height: 1em; margin: 6px 0 0; }
   #import-sources { padding: 0 16px; border-block: 1px solid var(--line); font-size: 13px; }
@@ -171,9 +179,15 @@
     <button id="undo" type="button" class="secondary" disabled aria-label="Undo">↶</button>
     <button id="redo" type="button" class="secondary" disabled aria-label="Redo">↷</button>
   </div>
-  <button id="backups-open" type="button" class="secondary">Backups…</button>
-  <button id="settings-open" type="button" class="secondary">Settings…</button>
-  <button id="import" type="button" class="secondary">Import…</button>
+  <details id="more">
+    <summary class="secondary" aria-label="More">⋯</summary>
+    <div class="menu" role="menu">
+      <button id="import" type="button" role="menuitem">Import…</button>
+      <button id="export-open" type="button" role="menuitem">Export…</button>
+      <button id="backups-open" type="button" role="menuitem">Backups…</button>
+      <button id="settings-open" type="button" role="menuitem">Settings…</button>
+    </div>
+  </details>
 </header>
 
 <nav aria-label="Keyword dictionary">
@@ -225,6 +239,27 @@
       <button id="import-html" type="button" class="secondary">Bookmarks HTML file…</button>
       <button id="import-pm35" type="button" class="secondary">Powermarks database…</button>
       <button value="close">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="export-dlg" aria-labelledby="export-title">
+  <form method="dialog">
+    <h2 id="export-title">Export bookmarks</h2>
+    <div class="settings-body">
+      <fieldset class="plain"><legend>Format</legend>
+        <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (keywords become tags)</label>
+        <label><input type="radio" name="ex-format" value="pm35"> Powermarks 3.5 (pm35.htm): open in the original Powermarks</label>
+      </fieldset>
+      <fieldset class="plain"><legend>Which bookmarks</legend>
+        <label><input type="radio" name="ex-scope" value="all" checked> <span id="ex-all">All</span></label>
+        <label><input type="radio" name="ex-scope" value="matching"> <span id="ex-matching">Matching the search</span></label>
+        <label><input type="radio" name="ex-scope" value="selected"> <span id="ex-selected">Selected</span></label>
+      </fieldset>
+    </div>
+    <div class="row">
+      <button value="cancel" class="secondary">Cancel</button>
+      <button id="ex-go" type="button">Export…</button>
     </div>
   </form>
 </dialog>

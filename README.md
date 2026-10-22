@@ -57,8 +57,10 @@ So this project is two things:
   cleanup or restore, and you can restore from inside the app.
 - **Import from Chrome, Edge and Firefox** (every profile), or any exported bookmarks
   file. Folders become keywords, duplicates are skipped, and each import can be undone.
-- **Lossless Powermarks import.** It reads `pm35.htm` byte for byte, and repairs text that
-  the original had stored double- or triple-encoded.
+- **Lossless Powermarks import, and export back.** It reads `pm35.htm` byte for byte and
+  repairs text the original had stored double- or triple-encoded, even when one field mixes
+  encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks
+  HTML file for any browser. Both round-trip a real 13,000-bookmark collection exactly.
 
 ## How it was built
 
@@ -137,8 +139,9 @@ A few decisions worth noting:
   rotation, host message framing, and link-check statuses, change detection and redirects
   against a local HTTP server.
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
-  round-trip and timing on a real collection, plus an exact-undo check after a full cleanup.
-- **End-to-end** (`e2e/`, 37 checks in about 20 s): starts the real app with WebView2's
+  round-trip and timing on a real collection, an exact-undo check after a full cleanup, and
+  both export formats read back field by field.
+- **End-to-end** (`e2e/`, 38 checks in about 20 s): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
   sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
   a link check against a local test server (it never contacts real sites).
@@ -186,7 +189,6 @@ Data lives in `%APPDATA%\com.pattern158.keymarks\` (`bookmarks.db`, `settings.js
 Next, from the requirements doc:
 
 - **Scheduled link checking** (opt-in), plus pause and resume.
-- **Export** back to `pm35.htm` and to Netscape HTML.
 - **Saved searches and URL macros.**
 - **Fast Add** and add-from-clipboard.
 - **Two-way sync** between PCs.

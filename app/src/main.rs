@@ -107,6 +107,28 @@ async fn import_html_file(app: AppHandle, db: State<'_, Db>) -> Result<Option<Im
     db.lock().unwrap().import_bookmarks(&label, &items).map(Some).map_err(err)
 }
 
+/// Export bookmarks (`ids` in that order, or all) as "html" (any browser) or "pm35"
+/// (Powermarks 3.5) to a file the user picks. Returns (count, file name), or None if cancelled.
+#[tauri::command]
+async fn export_file(app: AppHandle, db: State<'_, Db>, format: String, ids: Option<Vec<i64>>) -> Result<Option<(usize, String)>, String> {
+    let (default, filter, ext) = match format.as_str() {
+        "html" => ("keymarks-bookmarks.html", "Bookmarks HTML", "html"),
+        "pm35" => ("pm35.htm", "Powermarks 3.5 database", "htm"),
+        other => return Err(format!("unknown export format {other}")),
+    };
+    let rows = db.lock().unwrap().export_rows(ids.as_deref()).map_err(err)?;
+    let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
+    let Some(path) = picked else { return Ok(None) };
+    let path = path.into_path().map_err(err)?;
+    let bytes = match format.as_str() {
+        "html" => store::export::to_netscape(&rows).into_bytes(),
+        _ => store::export::to_pm35(&rows),
+    };
+    std::fs::write(&path, bytes).map_err(err)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(Some((rows.len(), name)))
+}
+
 /// Open a bookmark in the default browser and count the visit.
 #[tauri::command]
 fn open_bookmark(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
@@ -413,7 +435,8 @@ fn main() {
             set_check_enabled,
             browser_sources,
             import_browser,
-            import_html_file
+            import_html_file,
+            export_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");

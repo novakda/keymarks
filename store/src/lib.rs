@@ -2,6 +2,7 @@
 //! Imports Powermarks 3.5 databases (field meanings: docs/pm35-format.md).
 
 pub mod browsers;
+pub mod export;
 mod history;
 mod query;
 
@@ -223,22 +224,10 @@ impl Store {
             tx.commit()?;
         }
         // v2: repair text that was already double/triple UTF-8-encoded in the source file.
+        // v2: repair text that was already UTF-8-encoded more than once in the source file.
         if version < 2 {
             let tx = store.conn.transaction()?;
-            let rows: Vec<[String; 5]> = tx
-                .prepare("SELECT id, title, keywords, description, notes FROM bookmark")?
-                .query_map([], |r| Ok([r.get::<_, i64>(0)?.to_string(), r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))?
-                .collect::<Result<_>>()?;
-            for [id, title, keywords, description, notes] in rows {
-                let fixed = [&title, &keywords, &description, &notes].map(|t| fix_mojibake(t));
-                if fixed != [&title, &keywords, &description, &notes].map(|t| t.to_string()) {
-                    tx.execute(
-                        "UPDATE bookmark SET title = ?2, keywords = ?3, description = ?4, notes = ?5 WHERE id = ?1",
-                        params![id, fixed[0], fixed[1], fixed[2], fixed[3]],
-                    )?;
-                    index_keywords(&tx, id.parse().unwrap(), &fixed[1])?;
-                }
-            }
+            repair_text(&tx)?;
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
@@ -272,6 +261,16 @@ impl Store {
                 }
             }
             tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
+        // v4: the repair learned non-Latin scripts and fields mixing encodings. Databases
+        // repaired by the older v2 get it again; newer ones already had it at v2.
+        if version < 4 {
+            let tx = store.conn.transaction()?;
+            if version >= 2 {
+                repair_text(&tx)?;
+            }
+            tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
         Ok(())
@@ -686,6 +685,24 @@ pub fn normalize_keywords(s: &str) -> String {
         .join(" ")
 }
 
+fn repair_text(tx: &Connection) -> Result<()> {
+    let rows: Vec<(i64, [String; 4])> = tx
+        .prepare("SELECT id, title, keywords, description, notes FROM bookmark")?
+        .query_map([], |r| Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?])))?
+        .collect::<Result<_>>()?;
+    for (id, text) in rows {
+        let fixed = text.clone().map(|t| fix_mojibake(&t));
+        if fixed != text {
+            tx.execute(
+                "UPDATE bookmark SET title = ?2, keywords = ?3, description = ?4, notes = ?5 WHERE id = ?1",
+                params![id, fixed[0], fixed[1], fixed[2], fixed[3]],
+            )?;
+            index_keywords(tx, id, &fixed[1])?;
+        }
+    }
+    Ok(())
+}
+
 /// Rename `old` (case-insensitive) on every bookmark using it; see `Store::rename_keyword`.
 fn rename_in(tx: &Connection, old: &str, new: &str) -> Result<usize> {
     let new = normalize_keywords(new);
@@ -787,29 +804,58 @@ fn index_keywords(conn: &Connection, id: i64, keywords: &str) -> Result<()> {
 }
 
 /// Raw pm35 text (one char per file byte, HTML entities) to display text.
-/// Powermarks files mix encodings per field: newer entries are UTF-8, older ones Windows-1252.
+/// Powermarks files mix encodings, even within one field: UTF-8 sequences next to
+/// Windows-1252 bytes. Each is decoded on its own terms.
 pub fn decode_text(raw: &str) -> String {
     let bytes: Vec<u8> = raw.chars().map(|c| c as u32 as u8).collect();
-    let s = match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => e.into_bytes().into_iter().map(cp1252).collect(),
-    };
-    fix_mojibake(&html_escape::decode_html_entities(&s))
+    fix_mojibake(&html_escape::decode_html_entities(&decode_mixed(&bytes)))
 }
 
-/// Undo UTF-8 text that was mis-decoded as Windows-1252 and re-encoded, possibly several
-/// times ("â€™" → "’", "Ãƒâ€" chains). Text that doesn't round-trip cleanly is left alone.
+/// Every valid UTF-8 sequence as UTF-8, every other byte as Windows-1252.
+fn decode_mixed(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let len = match bytes[i] {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => 1,
+        };
+        if let Some(seq) = bytes.get(i..i + len).filter(|_| len > 1).and_then(|s| std::str::from_utf8(s).ok()) {
+            out.push_str(seq);
+            i += len;
+        } else {
+            out.push(cp1252(bytes[i]));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Undo UTF-8 that was mis-decoded as Windows-1252 (possibly several times: "â€™" → "’",
+/// "Ãƒâ€" chains, "å­\u{90}" → "字"). Works run by run, so text mixing real Latin-1
+/// characters with mojibake is repaired too; anything that isn't valid UTF-8 is left alone.
 pub fn fix_mojibake(text: &str) -> String {
     let mut s = text.to_string();
     for _ in 0..3 {
-        if !(s.contains('Ã') || s.contains('â') || s.contains('Â')) {
+        let mut fixed = String::with_capacity(s.len());
+        let mut run = Vec::new();
+        for c in s.chars() {
+            match cp1252_byte(c) {
+                Some(b) => run.push(b),
+                None => {
+                    fixed.push_str(&decode_mixed(&run));
+                    run.clear();
+                    fixed.push(c);
+                }
+            }
+        }
+        fixed.push_str(&decode_mixed(&run));
+        if fixed == s {
             break;
         }
-        let bytes: Option<Vec<u8>> = s.chars().map(cp1252_byte).collect();
-        match bytes.and_then(|b| String::from_utf8(b).ok()) {
-            Some(fixed) if fixed != s => s = fixed,
-            _ => break,
-        }
+        s = fixed;
     }
     s
 }
@@ -860,6 +906,10 @@ mod tests {
             s = s.bytes().map(cp1252).collect::<String>();
         }
         assert_eq!(fix_mojibake(&s), "\u{2014}");
+        // Mixed in one field: a real Latin-1 é next to UTF-8 CJK read as Windows-1252.
+        let mixed: String = "caf\u{e9} ".chars().chain("\u{5b57}".bytes().map(cp1252)).collect();
+        assert_eq!(fix_mojibake(&mixed), "caf\u{e9} \u{5b57}");
+        assert_eq!(decode_mixed(b"caf\xe9 \xe5\xad\x97"), "caf\u{e9} \u{5b57}");
         // Legitimate text containing these letters is untouched.
         assert_eq!(fix_mojibake("\u{c2}a va? \u{c3}rvore \u{e2}me"), "\u{c2}a va? \u{c3}rvore \u{e2}me");
     }
@@ -1141,6 +1191,41 @@ mod tests {
         eprintln!("search 'a': {hits} hits in {:?}", t.elapsed());
         let mojibake = s.search("", usize::MAX).unwrap().iter().filter(|b| b.title.contains('\u{fffd}') || ["\u{e2}\u{20ac}", "\u{c3}\u{192}", "\u{c3}\u{a2}"].iter().any(|m| b.title.contains(m))).count();
         eprintln!("titles with leftover mojibake: {mojibake}");
+        {
+            // Export round trips: pm35 and Netscape HTML back into fresh stores, field by field.
+            let t = std::time::Instant::now();
+            let rows = export::export_rows_all(&s);
+            let pm = export::to_pm35(&rows);
+            let html = export::to_netscape(&rows);
+            eprintln!("exported {} rows ({} KB pm35, {} KB html) in {:?}", rows.len(), pm.len() / 1024, html.len() / 1024, t.elapsed());
+            let mut a = Store::open(":memory:").unwrap();
+            a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses")).unwrap();
+            let mut b = Store::open(":memory:").unwrap();
+            b.import_bookmarks("html", &browsers::read_netscape_html(&html)).unwrap();
+            let key = |st: &Store| {
+                let mut v: Vec<(String, String, String)> =
+                    st.search("", usize::MAX).unwrap().into_iter().map(|x| (x.url, x.title, normalize_keywords(&x.keywords))).collect();
+                v.sort();
+                v
+            };
+            let (orig, via_pm, via_html) = (key(&s), key(&a), key(&b));
+            let diff = |v: &Vec<(String, String, String)>| orig.iter().zip(v).filter(|(x, y)| x != y).count() + orig.len().abs_diff(v.len());
+            eprintln!("pm35 round trip: {} differences; html round trip: {} differences (html drops duplicate URLs)", diff(&via_pm), diff(&via_html));
+            for (x, y) in orig.iter().zip(&via_pm).filter(|(x, y)| x != y) {
+                // Describe the difference by field and character codes only (data is private).
+                let codes = |a: &str, b: &str| {
+                    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+                    let i = a.iter().zip(&b).position(|(p, q)| p != q).unwrap_or(a.len().min(b.len()));
+                    format!("at {i}: {:?} vs {:?}", a.get(i..i + 3).map(|c| c.iter().map(|c| *c as u32).collect::<Vec<_>>()), b.get(i..i + 3).map(|c| c.iter().map(|c| *c as u32).collect::<Vec<_>>()))
+                };
+                for (name, p, q) in [("url", &x.0, &y.0), ("title", &x.1, &y.1), ("keywords", &x.2, &y.2)] {
+                    if p != q {
+                        eprintln!("  differs in {name}: len {} vs {}, {}", p.chars().count(), q.chars().count(), codes(p, q));
+                    }
+                }
+            }
+            assert_eq!(diff(&via_pm), 0, "pm35 export must round-trip");
+        }
         for q in ["", "a"] {
             let t = std::time::Instant::now();
             let n = s.keywords(q).unwrap().len();

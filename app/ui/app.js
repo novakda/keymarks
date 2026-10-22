@@ -943,7 +943,8 @@ function optsChanged() {
 $('mode').addEventListener('change', optsChanged);
 $('opts').addEventListener('change', optsChanged);
 document.addEventListener('click', (e) => {
-  for (const id of ['opts', 'cols']) if (!$(id).contains(e.target)) $(id).open = false;
+  for (const id of ['opts', 'cols', 'more']) if (!$(id).contains(e.target)) $(id).open = false;
+  if (e.target.closest('#more .menu button')) $('more').open = false;
 });
 applyOptsToUi();
 
@@ -956,6 +957,30 @@ list.addEventListener('keydown', onListKeys);
 tablewrap.addEventListener('keydown', onListKeys);
 document.addEventListener('keydown', (e) => {
   if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+});
+
+// ---- export --------------------------------------------------------------------
+
+$('export-open').onclick = () => {
+  const n = (k) => k.toLocaleString();
+  $('ex-all').textContent = `All ${n(total)} bookmarks`;
+  $('ex-matching').textContent = `The ${n(ids.length)} matching the current search`;
+  $('ex-selected').textContent = `The ${n(selected.size)} selected`;
+  document.querySelector('input[name=ex-scope][value=selected]').disabled = selected.size === 0;
+  document.querySelector('input[name=ex-scope][value=all]').checked = true;
+  $('export-dlg').showModal();
+};
+
+$('ex-go').onclick = busyAware(async () => {
+  const format = document.querySelector('input[name=ex-format]:checked').value;
+  const scope = document.querySelector('input[name=ex-scope]:checked').value;
+  const chosen = scope === 'all' ? null : scope === 'matching' ? ids : [...selected];
+  try {
+    const done = await invoke('export_file', { format, ids: chosen });
+    if (!done) return; // save dialog cancelled
+    $('export-dlg').close();
+    say(`Exported ${done[0].toLocaleString()} bookmark${done[0] === 1 ? '' : 's'} to ${done[1]}.`);
+  } catch (e) { fail('Export')(e); }
 });
 
 // ---- import --------------------------------------------------------------------

@@ -98,6 +98,11 @@ async function count(text) {
   if (!m) throw new Error(`no result count after ${JSON.stringify(text)}: ${(await statusText()).replace(/"[^"]*"/g, '"…"')}`);
   return Number(m[1]);
 }
+// Import, Export, Backups and Settings live in the ⋯ menu.
+async function menu(id) {
+  await page.click('#more summary');
+  await page.click(`#${id}`);
+}
 async function setMode(mode) {
   await page.selectOption('#mode', mode);
   await idle();
@@ -256,14 +261,14 @@ try {
   check('Ctrl+Z brings it back', afterUndo === all, `→ ${afterUndo}`);
 
   // 8. Backups (one is taken at startup, in the background)
-  await page.click('#backups-open');
+  await menu('backups-open');
   await page.waitForSelector('#backup-list tbody tr', { timeout: 10000 }).catch(() => {});
   const backupRows = await page.locator('#backup-list tbody tr').count();
   check('Backups lists the startup backup', backupRows >= 1, `${backupRows} backups`);
   await page.click('#backups button[value=close]');
 
   // 9. Desktop: settings dialog, single instance (a second launch hands over and exits)
-  await page.click('#settings-open');
+  await menu('settings-open');
   await page.waitForSelector('#settings[open]');
   check('Settings shows the hotkey', (await page.inputValue('#s-hotkey')).length > 0);
   await page.click('#settings button[value=cancel]');
@@ -317,13 +322,17 @@ try {
   check('Ctrl+T in the search box checks the selection', /^Checked 1 link/.test(await statusText()), (await statusText()).replace(/"[^"]*"/g, '"…"'));
   server.close();
 
-  // 11. Import dialog: lists browser profiles (counts only; nothing is imported here)
-  await page.click('#import');
+  // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
+  await menu('import');
   await page.waitForSelector('#import-dlg[open]');
   await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
   const sourceRows = await page.locator('#import-sources tr').count();
   check('Import lists browser profiles', sourceRows > 0 || (await page.textContent('#import-sources')).includes('No Chrome'), `${sourceRows} profiles`);
   await page.click('#import-dlg button[value=close]');
+  await menu('export-open');
+  await page.waitForSelector('#export-dlg[open]');
+  check('Export offers all, matching and selected', /All [\d,]+ bookmarks/.test(await page.textContent('#ex-all')) && /matching/.test(await page.textContent('#ex-matching')));
+  await page.click('#export-dlg button[value=cancel]');
   await fields(['title', 'url', 'keywords', 'description', 'notes']);
   await setMode('all');
 } catch (e) {
