@@ -536,6 +536,16 @@ try {
   check('link checking toggles from the menu', (await toggleLabel()) !== label);
   await page.click('#bctx [data-act=checking]'); // put it back
   await idle();
+  await rightClick();
+  await page.click('#bctx [data-act=addkw]');
+  await page.fill('#ak-words', 'e2ecommonkw');
+  await page.keyboard.press('Enter');
+  await idle();
+  const tagged = await count('e2ecommonkw');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('Add keywords puts them on every selected bookmark, Ctrl+Z removes them', tagged === 2 && (await count('e2ecommonkw')) === 0, `${tagged}`);
   const count0 = await everything();
   await search('');
   await page.click('#table-body tr.vrow:nth-child(1)');
@@ -605,6 +615,7 @@ try {
   await page.waitForSelector('#import-dlg[open]');
   await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
   const sourceRows = await page.locator('#import-sources tr').count();
+  check('Import offers keywords from titles', await page.isVisible('#import-title-words'));
   check('Import lists browser profiles', sourceRows > 0 || (await page.textContent('#import-sources')).includes('No Chrome'), `${sourceRows} profiles`);
   await page.click('#import-dlg button[value=close]');
   await menu('export-open');

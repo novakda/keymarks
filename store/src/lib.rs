@@ -665,6 +665,31 @@ impl Store {
         tx.commit()
     }
 
+    /// Powermarks' Add Common Keywords: add `words` to every bookmark in `ids` (those that
+    /// already have them are left alone), as one undoable step. Returns how many changed.
+    pub fn add_keywords(&mut self, ids: &[i64], words: &str) -> Result<usize> {
+        let words = normalize_keywords(words);
+        if words.is_empty() {
+            return Ok(0);
+        }
+        let name = format!("Add keywords to {} bookmark{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let tx = s.conn.unchecked_transaction()?;
+            let mut changed = 0;
+            for &id in ids {
+                let Some(b) = s.get(id)? else { continue };
+                let keywords = normalize_keywords(&format!("{} {words}", b.keywords));
+                if keywords != b.keywords {
+                    tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![id, keywords])?;
+                    index_keywords(&tx, id, &keywords)?;
+                    changed += 1;
+                }
+            }
+            tx.commit()?;
+            Ok(changed)
+        })
+    }
+
     /// Powermarks' Fetch (F7): the page's title and description replace the bookmark's (when
     /// the page has them) and its keywords are added, as one undoable step.
     /// Returns (bookmarks changed, keywords added).
@@ -912,6 +937,17 @@ const STOP_WORDS: &[&str] = &[
     "your",
 ];
 
+/// Keywords from a title (Powermarks' "keywords from names" on import): its words, lower
+/// case, without common words, numbers and words under three letters.
+pub fn title_keywords(title: &str) -> String {
+    let words: Vec<String> = title
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .map(|w| w.trim_matches('-').to_lowercase())
+        .filter(|w| w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()) && !STOP_WORDS.contains(&w.as_str()))
+        .collect();
+    normalize_keywords(&words.join(" "))
+}
+
 /// Why a keyword should go (and where to), or None to keep it.
 fn cleanup_rule(
     keyword: &str,
@@ -1042,6 +1078,24 @@ fn cp1252(b: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn title_words_become_keywords() {
+        assert_eq!(super::title_keywords("The Rust Programming Language - 2nd Edition (2024) | rust-lang"), "rust programming language 2nd edition rust-lang");
+    }
+
+    #[test]
+    fn add_keywords_to_many_in_one_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let (a, _) = s.add("https://a.example/", "A", "x", "").unwrap();
+        let (b, _) = s.add("https://b.example/", "B", "y common", "").unwrap();
+        assert_eq!(s.add_keywords(&[a, b], "common, Extra").unwrap(), 2);
+        assert_eq!(s.get(a).unwrap().unwrap().keywords, "x common Extra");
+        assert_eq!(s.get(b).unwrap().unwrap().keywords, "y common Extra");
+        assert_eq!(s.search("extra", 5).unwrap().len(), 2, "indexed");
+        s.undo().unwrap();
+        assert_eq!(s.get(b).unwrap().unwrap().keywords, "y common");
+    }
+
     #[test]
     fn keywords_follow_the_powermarks_character_rule() {
         assert_eq!(super::normalize_keywords("c++ node/express a&b .net v1.0. x,y Dup dup (z)"), "c node express a b net v1.0 x y Dup z");

@@ -475,6 +475,28 @@ async function open(id, { newWindow = false } = {}) {
   } catch (e) { say(String(e)); }
 }
 
+// Powermarks' Add Common Keywords: the same words onto every selected bookmark, one undo step.
+let addKwIds = [];
+function openAddKeywords(chosen) {
+  if (!chosen.length || !confirmDiscard()) return;
+  addKwIds = chosen;
+  $('ak-label').textContent = `Keywords to add to ${chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`}`;
+  $('ak-words').value = '';
+  $('addkw-dlg').showModal();
+  $('ak-words').focus();
+}
+$('addkw-form').addEventListener('submit', busyAware(async (e) => {
+  e.preventDefault();
+  try {
+    const n = await invoke('add_keywords', { ids: addKwIds, words: $('ak-words').value });
+    $('addkw-dlg').close();
+    dirty = false;
+    await refreshDictionary();
+    await refresh();
+    say(`Keywords added to ${n} bookmark${n === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
+  } catch (err) { fail('Add keywords')(err); }
+}));
+
 // Powermarks' Fetch (F7): the pages' titles and descriptions replace the bookmarks', their
 // keywords are added. One undo step.
 const fetchNow = busyAware(async (toFetch) => {
@@ -550,6 +572,7 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
+  else if (act === 'addkw') openAddKeywords(chosen);
   else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
   else if (act === 'pin') $('pin-link').click();
   else if (act === 'export') {
@@ -1459,7 +1482,7 @@ importBtn.onclick = busyAware(async () => {
       Object.assign(tr.insertCell(), { className: 'num', textContent: src.count === null ? "can't read" : `${src.count.toLocaleString()} bookmarks` });
       const btn = Object.assign(document.createElement('button'), { type: 'button', className: 'secondary', textContent: 'Import', disabled: !src.count });
       btn.onclick = busyAware(async () => {
-        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile }), `${src.browser}`); }
+        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile, titleWords: $('import-title-words').checked }), `${src.browser}`); }
         catch (e) { fail('Import')(e); }
       });
       tr.insertCell().append(btn);
@@ -1468,9 +1491,12 @@ importBtn.onclick = busyAware(async () => {
   } catch (e) { fail('Import')(e); }
 });
 
+try { $('import-title-words').checked = localStorage.getItem('import-title-words') === '1'; } catch {}
+$('import-title-words').onchange = (e) => { try { localStorage.setItem('import-title-words', e.target.checked ? '1' : '0'); } catch {} };
+
 $('import-html').onclick = busyAware(async () => {
   try {
-    const report = await invoke('import_html_file');
+    const report = await invoke('import_html_file', { titleWords: $('import-title-words').checked });
     if (report) await afterImport(report, 'the file');
   } catch (e) { fail('Import')(e); }
 });

@@ -117,6 +117,7 @@
   #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
   #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
   #bctx button[hidden] { display: none; }
+  label.check { display: flex; gap: 6px; align-items: center; margin: 10px 0 0; }
   .keys { border-collapse: collapse; margin: 4px 0 12px; font-size: 13px; }
   .keys th { text-align: left; padding: 10px 0 4px; color: var(--muted); font-weight: 600; }
   .keys td { padding: 3px 16px 3px 0; vertical-align: top; }
@@ -287,6 +288,7 @@
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
   <button role="menuitem" data-act="fetch">Fetch title and description (F7)</button>
   <button role="menuitem" data-act="checking"></button>
+  <button role="menuitem" data-act="addkw">Add keywords…</button>
   <button role="menuitem" data-act="pin">Pin to Saved…</button>
   <button role="menuitem" data-act="export">Export…</button>
   <hr>
@@ -339,6 +341,7 @@
     <h2 id="import-title">Import bookmarks</h2>
     <p class="intro">Bookmarks are merged in: folder names become keywords, and links you already have are skipped. Each import can be undone with Ctrl+Z.</p>
     <div id="import-sources"></div>
+    <label class="check"><input id="import-title-words" type="checkbox"> Also make keywords from title words (common words left out)</label>
     <div class="row">
       <button id="import-html" type="button" class="secondary">Bookmarks HTML file…</button>
       <button id="import-pm35" type="button" class="secondary">Powermarks database…</button>
@@ -361,6 +364,20 @@
       <!-- type=button: Enter must submit through "Add", the form's only submit button -->
       <button id="n-cancel" type="button" class="secondary">Cancel</button>
       <button id="n-add" type="submit">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="addkw-dlg" aria-labelledby="addkw-title">
+  <form method="dialog" id="addkw-form">
+    <h2 id="addkw-title">Add keywords</h2>
+    <div class="settings-body">
+      <label for="ak-words" id="ak-label">Keywords to add</label>
+      <input id="ak-words" required autocomplete="off" list="kw-options" placeholder="e.g. reading later">
+    </div>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit">Add</button>
     </div>
   </form>
 </dialog>

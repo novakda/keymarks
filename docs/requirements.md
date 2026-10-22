@@ -126,11 +126,11 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | KW-10 | Delete keyword globally | §5.5.2 Delete; Del key | Same; undoable | P1 | done |
 | KW-11 | Copy keyword(s) | Copy selected words (§5.5.2) | Same | P3 | todo |
 | KW-12 | Copy whole dictionary to clipboard | Tools > Copy Keywords to Clipboard (§10.1.6) | Menu command (or via export) | P3 | todo |
-| KW-13 | Add Common Keywords | Add one or more keywords to all selected bookmarks; dialog shows the dictionary (§5.5.1) | Bulk "Add keywords…" on selection, with autocomplete | P1 | todo |
+| KW-13 | Add Common Keywords | Add one or more keywords to all selected bookmarks; dialog shows the dictionary (§5.5.1) | Bulk "Add keywords…" on selection, with autocomplete | P1 | done (right-click → Add keywords… on the selection, with keyword autocomplete; one undo step) |
 | KW-14 | Remove keyword from selection | Not in original (only global delete) | Bulk "Remove keywords…" (cheap addition) | P2 | todo |
 | KW-15 | Dictionary Cleanup | Merge keywords with common roots; remove keywords with non-printable characters; remove numeric-only keywords (exe dialog "Dictionary Cleanup"; not in manual) | Cleanup wizard with a preview before applying | P2 | done (preview + backup + undo) |
 | KW-16 | Sort keywords A→Z | Button in Properties (screenshot) | Normalise order on save, or a button | P3 | done |
-| KW-17 | Auto keywords on import | Folder names become keywords (b297, ini `import.tag_folders`); keywords also from names (§7.1) | Import option: folder path → keywords (done in IMP-xx); title words optional, with the stop list | P1 | todo |
+| KW-17 | Auto keywords on import | Folder names become keywords (b297, ini `import.tag_folders`); keywords also from names (§7.1) | Import option: folder path → keywords (done in IMP-xx); title words optional, with the stop list | P1 | done (folder names always; "keywords from title words" import option, common words left out) |
 
 ### 2.4 Macros (saved searches and shortcuts)
 

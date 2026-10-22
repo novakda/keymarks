@@ -105,7 +105,7 @@ which turned up features the manual never mentions. The result is
 modern approach, a priority and a status. Obsolete parts (Netscape DDE, IE toolbars,
 trial nags) are explicitly dropped, with the reason.
 
-**Progress:** 92 of 104 core features done and 5 partial. See the doc for the full
+**Progress:** 94 of 104 core features done and 5 partial. See the doc for the full
 scoreboard.
 
 ### 3. Architecture

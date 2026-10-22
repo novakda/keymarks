@@ -86,13 +86,29 @@ async fn browser_sources() -> Vec<SourceView> {
 
 /// Merge-import one detected browser profile (looked up again here: the UI never passes paths).
 #[tauri::command]
-async fn import_browser(db: State<'_, Db>, browser: String, profile: String) -> Result<ImportReport, String> {
+async fn import_browser(db: State<'_, Db>, browser: String, profile: String, title_words: bool) -> Result<ImportReport, String> {
     let source = browsers::detect()
         .into_iter()
         .find(|s| s.browser == browser && s.profile == profile)
         .ok_or_else(|| format!("{browser} profile {profile} not found"))?;
-    let items = browsers::read(&source)?;
+    let items = with_title_words(browsers::read(&source)?, title_words);
     db.lock().unwrap().import_bookmarks(&format!("Import from {browser} ({profile})"), &items).map_err(err)
+}
+
+/// The import option "keywords from titles": each title's words join its folder keywords.
+fn with_title_words(mut items: Vec<store::NewBookmark>, on: bool) -> Vec<store::NewBookmark> {
+    if on {
+        for b in &mut items {
+            b.keywords = format!("{} {}", b.keywords, store::title_keywords(&b.title));
+        }
+    }
+    items
+}
+
+/// Powermarks' Add Common Keywords, on the selection.
+#[tauri::command]
+fn add_keywords(db: State<Db>, ids: Vec<i64>, words: String) -> Result<usize, String> {
+    db.lock().unwrap().add_keywords(&ids, &words).map_err(err)
 }
 
 /// Trim, add "https://" when there is no scheme, and check it parses.
@@ -171,12 +187,12 @@ fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
 
 /// Pick an exported bookmarks HTML file (any browser) and merge it in.
 #[tauri::command]
-async fn import_html_file(app: AppHandle, db: State<'_, Db>) -> Result<Option<ImportReport>, String> {
+async fn import_html_file(app: AppHandle, db: State<'_, Db>, title_words: bool) -> Result<Option<ImportReport>, String> {
     let picked = app.dialog().file().add_filter("Bookmarks HTML", &["html", "htm"]).blocking_pick_file();
     let Some(path) = picked else { return Ok(None) };
     let path = path.into_path().map_err(err)?;
     let bytes = std::fs::read(&path).map_err(err)?;
-    let items = browsers::read_netscape_html(&String::from_utf8_lossy(&bytes));
+    let items = with_title_words(browsers::read_netscape_html(&String::from_utf8_lossy(&bytes)), title_words);
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     db.lock().unwrap().import_bookmarks(&format!("Import from {label}"), &items).map(Some).map_err(err)
 }
@@ -686,7 +702,8 @@ fn main() {
             delete_saved_item,
             move_saved_item,
             open_link,
-            open_bookmark_new_window
+            open_bookmark_new_window,
+            add_keywords
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");
