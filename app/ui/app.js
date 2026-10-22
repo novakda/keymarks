@@ -272,6 +272,7 @@ function renderTable() {
     }));
     tr.onclick = (e) => select(i, e);
     tr.ondblclick = () => open(ids[i]);
+    tr.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
     body.push(tr);
   }
   if (z < ids.length) body.push(spacer('tr', (ids.length - z) * h, cols.length));
@@ -313,6 +314,7 @@ function renderCards() {
     li.append(title, meta);
     li.onclick = (e) => select(i, e);
     li.ondblclick = () => open(ids[i]);
+    li.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
     items.push(li);
   }
   if (z < ids.length) items.push(spacer('li', (ids.length - z) * h));
@@ -411,6 +413,44 @@ async function remove(toDelete) {
     say(`Deleted ${n} bookmark${n === 1 ? '' : 's'}.`);
   } catch (e) { fail('Delete')(e); }
 }
+
+// Right-click a bookmark: it joins the selection (or replaces it, like Explorer).
+async function showBookmarkMenu(e, i) {
+  if (!selected.has(ids[i])) await select(i);
+  if (!selected.has(ids[i])) return; // unsaved edits kept the old selection
+  const m = $('bctx');
+  const many = selected.size > 1;
+  $('bctx-title').textContent = many ? `${selected.size} bookmarks` : (cache.get(ids[i])?.title || cache.get(ids[i])?.url || '');
+  const on = [...selected].every((id) => cache.get(id)?.check_enabled);
+  m.querySelector('[data-act=checking]').textContent = on ? 'Turn link checking off' : 'Turn link checking on';
+  m.querySelector('[data-act=pin]').hidden = many;
+  m.querySelector('[data-act=copy]').textContent = many ? 'Copy URLs' : 'Copy URL';
+  m.hidden = false;
+  m.style.left = `${Math.min(e.clientX, innerWidth - m.offsetWidth - 4)}px`;
+  m.style.top = `${Math.min(e.clientY, innerHeight - m.offsetHeight - 4)}px`;
+  m.querySelector('button').focus();
+}
+
+$('bctx').addEventListener('click', async (e) => {
+  const act = e.target.dataset?.act;
+  if (!act) return;
+  $('bctx').hidden = true;
+  const chosen = ids.filter((id) => selected.has(id)); // in list order
+  if (act === 'open') chosen.forEach(open);
+  else if (act === 'copy') {
+    await fetchRows(chosen);
+    await navigator.clipboard.writeText(chosen.map((id) => cache.get(id)?.url).filter(Boolean).join('\n'));
+    say(chosen.length === 1 ? 'URL copied.' : `${chosen.length} URLs copied.`);
+  } else if (act === 'check') startCheck(chosen);
+  else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
+  else if (act === 'pin') $('pin-link').click();
+  else if (act === 'export') {
+    $('export-open').click();
+    document.querySelector('input[name=ex-scope][value=selected]').checked = true;
+  } else if (act === 'delete') remove(chosen);
+});
+document.addEventListener('click', (e) => { if (!$('bctx').contains(e.target)) $('bctx').hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('bctx').hidden = true; });
 
 // ---- undo / redo ----------------------------------------------------------------
 

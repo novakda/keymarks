@@ -107,11 +107,12 @@
   .check-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .check-line input { width: auto; margin: 0; }
 
-  #sctx, #ctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
-  #sctx strong, #ctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-  #sctx button, #ctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
-  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible { background: var(--sel); outline: none; }
-  #sctx hr, #ctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #sctx, #ctx, #bctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+  #sctx strong, #ctx strong, #bctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
+  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
+  #bctx button[hidden] { display: none; }
+  #sctx hr, #ctx hr, #bctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
   dialog { width: min(640px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
   dialog::backdrop { background: rgb(0 0 0 / .35); }
@@ -227,6 +228,19 @@
     <button id="check-cancel" type="button" class="secondary" hidden>Cancel</button>
   </span>
 </footer>
+
+<div id="bctx" role="menu" hidden>
+  <strong id="bctx-title"></strong>
+  <button role="menuitem" data-act="open">Open</button>
+  <button role="menuitem" data-act="copy">Copy URL</button>
+  <hr>
+  <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
+  <button role="menuitem" data-act="checking"></button>
+  <button role="menuitem" data-act="pin">Pin to Saved…</button>
+  <button role="menuitem" data-act="export">Export…</button>
+  <hr>
+  <button role="menuitem" data-act="delete">Delete… (Del)</button>
+</div>
 
 <div id="sctx" class="ctxmenu" role="menu" hidden>
   <strong id="sctx-title"></strong>

@@ -449,6 +449,36 @@ try {
   }
   check('Delete removes both', (await savedNames()).every((n) => !n.startsWith('E2E')));
 
+  // 10b. Bookmark context menu (Copy URL is left out: it would overwrite the user's clipboard)
+  await search('');
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await page.click('#table-body tr.vrow:nth-child(2)', { modifiers: ['Control'] });
+  await idle();
+  const rightClick = async () => { await page.click('#table-body tr.vrow:nth-child(2)', { button: 'right' }); await idle(); };
+  await rightClick();
+  check('right-click keeps a multi-selection', (await page.textContent('#bctx-title')) === '2 bookmarks' && await page.isHidden('#bctx [data-act=pin]'));
+  const toggleLabel = () => page.textContent('#bctx [data-act=checking]');
+  const label = await toggleLabel();
+  await page.click('#bctx [data-act=checking]');
+  await idle();
+  await rightClick();
+  check('link checking toggles from the menu', (await toggleLabel()) !== label);
+  await page.click('#bctx [data-act=checking]'); // put it back
+  await idle();
+  const count0 = await everything();
+  await search('');
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await idle();
+  await rightClick(); // outside the selection: selects that row alone
+  await expectDialog();
+  await page.click('#bctx [data-act=delete]');
+  await idle();
+  check('menu Delete removes only the clicked bookmark', (await everything()) === count0 - 1);
+  await search('');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');
   await page.waitForSelector('#import-dlg[open]');

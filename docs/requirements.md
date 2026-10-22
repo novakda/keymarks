@@ -81,7 +81,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-16 | Tooltips, flat toolbar | §8.1.2; ini `gui.tooltips`, `flat_toolbar` | Drop as options; always have tooltips (title attr) | P3 | drop |
 | DISP-17 | Selected bookmark keyboard nav | Up/Down/Enter, Shift+Enter new window (§10.3) | Up/Down/Enter done; add Shift+Enter, PgUp/PgDn, Home/End, multi-select | P1 | partial (arrows, PgUp/PgDn, Home/End, Enter; no Shift+Enter) |
 | DISP-18 | Multi-select | Shift/Ctrl click; Ctrl+A select all (§4.7, §10.3) | Standard multi-select in the list | P1 | done |
-| DISP-19 | Context menus | Bookmark(s), tray icon, search field, macros, dictionary words (§10.4). Bookmark menu: Open in <browser>, Open in New Window, Properties, Make Shortcut Macro, Copy URL, Set Status Checking, Add Common Keywords, Status Check (Ctrl+T), Mark Visited, Export (exe) | Custom HTML context menu (or Tauri native menu) | P1 | todo |
+| DISP-19 | Context menus | Bookmark(s), tray icon, search field, macros, dictionary words (§10.4). Bookmark menu: Open in <browser>, Open in New Window, Properties, Make Shortcut Macro, Copy URL, Set Status Checking, Add Common Keywords, Status Check (Ctrl+T), Mark Visited, Export (exe) | Custom HTML context menu (or Tauri native menu) | P1 | done (Open, Copy URL, Check link, link checking on/off, Pin to Saved, Export, Delete; works on multi-selections) |
 | DISP-20 | Main window state restore | Size, position, maximised (b326; ini `window.*`) | `tauri-plugin-window-state` | P1 | todo |
 
 ### 2.2 Adding, editing and fetching bookmarks
