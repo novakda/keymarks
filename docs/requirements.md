@@ -190,7 +190,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | IMP-02 | Import pm35 head/tail blocks | `document=`, `scs=`, `macro=`, `kword=` (format spec) | Parser keeps them as raw head/tail; store must import schedules, macros and tagged keywords | P1 | done (schedules join Settings, tagged keywords and macros imported; the document id is kept only in the raw head) |
 | IMP-03 | Import into a non-empty collection | Import merges and skips duplicate URLs (§7) | Currently only into an empty store. Need a merge import that dedupes by URL | P1 | done (merge, duplicates skipped, undoable) — pm35 import still needs an empty collection |
 | IMP-04 | Netscape bookmark HTML import | Folder names → keywords (§7.1, b297) | Universal format exported by every browser; parse `<H3>` path → keywords | P1 | done |
-| IMP-05 | Any HTML file | Extracts all links, honours `<BASE>` (b286) | Same parser, links outside `<DL>` too | P2 | todo |
+| IMP-05 | Any HTML file | Extracts all links, honours `<BASE>` (b286) | Same parser, links outside `<DL>` too | P2 | done (Import… takes any HTML page: its links, relative ones resolved against `<BASE>`) |
 | IMP-06 | Old Powermarks 1.0/2.0/3.0 files | Import plus "Convert" dialog with backup (§7, exe) | Only if the user has such files; see Q6 | P3 | todo |
 | IMP-07 | IE Favorites folder (.url) | §7.2 | Edge/IE legacy `.url` folder import (simple INI parse) | P3 | todo |
 | IMP-08 | Opera .adr hotlist; Mozilla bookmarks.html | §7.3, b326 | Drop .adr; Mozilla HTML = IMP-04 | P3 | drop |
@@ -200,12 +200,12 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | IMP-12 | Import report | "%u Powermarks imported from %s"; Wizard: "%d Favorites, %d Bookmarks…" (exe) | Toast with added/skipped counts | P1 | done (added / skipped summary) |
 | EXP-01 | Export pm35 (3.5) format | "can be imported at a later time with no loss of information" (exe) | Store → pm35 writer using raw mdata plus edited fields. Escape hatch back to the original program | P1 | done (keeps imported mdata, updates known fields; all / results / selection) |
 | EXP-02 | Export Netscape HTML | Without notes/keywords (exe) | Netscape HTML with `TAGS="…"` attribute (Firefox/Pinboard keep tags) | P1 | done (keywords as TAGS; round-trips into Keymarks) |
-| EXP-03 | Export printable HTML | Title, fields chosen (§5.6) | Printable HTML or app Print view (`window.print()`) | P2 | todo |
-| EXP-04 | Delimited text | Delimiter string configurable (§7.4; ini `export.delimit_str`) | CSV (RFC 4180) | P2 | todo |
+| EXP-03 | Export printable HTML | Title, fields chosen (§5.6) | Printable HTML or app Print view (`window.print()`) | P2 | done (Printable list: a web page with a table of the chosen fields and a title) |
+| EXP-04 | Delimited text | Delimiter string configurable (§7.4; ini `export.delimit_str`) | CSV (RFC 4180) | P2 | done (CSV, RFC 4180, UTF-8 with BOM for Excel; dates as YYYY-MM-DD HH:MM UTC) |
 | EXP-05 | ASCII text / RTF | §7.4 | Drop RTF; plain text or Markdown list | P3 | drop |
 | EXP-06 | Old PM 1.0/2.0/3.0 formats | §7.4 | Drop: no consumer exists | P3 | drop |
-| EXP-07 | Export options | Range All/Selected; sort field and order; field checklist; title; overwrite warning (§7.4; ini `export.*`) | Same in one dialog; default "current results" as a third range | P2 | todo |
-| EXP-08 | JSON export/import | Not in original | Full-fidelity JSON (for scripts/backups) | P2 | todo |
+| EXP-07 | Export options | Range All/Selected; sort field and order; field checklist; title; overwrite warning (§7.4; ini `export.*`) | Same in one dialog; default "current results" as a third range | P2 | done (all / matching / selected; field checklist and title, remembered; order follows the list's sort; Windows' save dialog warns before overwriting) |
+| EXP-08 | JSON export/import | Not in original | Full-fidelity JSON (for scripts/backups) | P2 | done (every field incl. the Powermarks record; Import… reads it back, duplicates skipped, undoable) |
 
 ### 2.8 Browser integration
 

@@ -397,6 +397,37 @@ impl Store {
         })
     }
 
+    /// Merge rows from a Keymarks JSON export, every field kept, skipping URLs already here
+    /// (one undoable step).
+    pub fn import_rows(&mut self, step: &str, rows: &[export::ExportRow]) -> Result<ImportReport> {
+        self.record_created(step.to_string(), |s| {
+            let tx = s.conn.transaction()?;
+            let mut report = ImportReport::default();
+            for r in rows {
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE url = ?1)", [&r.url], |q| q.get(0))?;
+                if exists || r.url.trim().is_empty() {
+                    report.duplicates += 1;
+                    continue;
+                }
+                let keywords = normalize_keywords(&r.keywords);
+                tx.execute(
+                    "INSERT INTO bookmark (url, title, keywords, description, notes, user_field, added, last_visited,
+                        last_modified, last_checked, visits, rating, check_enabled, pm_mdata, schedule)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, coalesce(?7, unixepoch()), ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    params![r.url, r.title, keywords, r.description, r.notes, r.user_field, r.added, r.last_visited,
+                        r.last_modified, r.last_checked, r.visits.max(0), r.rating.clamp(0, 10), r.check_enabled, r.pm_mdata, r.schedule],
+                )?;
+                let id = tx.last_insert_rowid();
+                index_keywords(&tx, id, &keywords)?;
+                report.ids.push(id);
+                report.added += 1;
+            }
+            tx.commit()?;
+            let ids = report.ids.clone();
+            Ok((report, ids))
+        })
+    }
+
     /// Import every Powermarks entry in one transaction. Returns the number imported.
     pub fn import_pm35(&mut self, db: &Database) -> Result<usize> {
         let tx = self.conn.transaction()?;

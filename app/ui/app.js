@@ -1555,15 +1555,40 @@ $('export-open').onclick = () => {
   $('ex-selected').textContent = `The ${n(selected.size)} selected`;
   document.querySelector('input[name=ex-scope][value=selected]').disabled = selected.size === 0;
   document.querySelector('input[name=ex-scope][value=all]').checked = true;
+  exportFormatChanged();
   $('export-dlg').showModal();
 };
+
+// CSV and printable exports carry the fields ticked here (remembered); same order as the
+// store's EXPORT_FIELDS.
+const EXPORT_FIELDS = [['title', 'Title'], ['url', 'URL'], ['keywords', 'Keywords'], ['description', 'Description'],
+  ['notes', 'Notes'], ['user_field', 'User field'], ['rating', 'Rating'], ['visits', 'Visits'], ['added', 'Added'],
+  ['last_visited', 'Last visited'], ['last_modified', 'Last modified'], ['last_checked', 'Last checked'], ['schedule', 'Schedule']];
+let exportFields = ['title', 'url', 'keywords', 'description'];
+try { exportFields = JSON.parse(localStorage.getItem('export-fields') || 'null') || exportFields; } catch {}
+$('ex-fields').replaceChildren(...EXPORT_FIELDS.map(([id, label]) => {
+  const box = Object.assign(document.createElement('input'), { type: 'checkbox', value: id, checked: exportFields.includes(id) });
+  box.onchange = () => {
+    exportFields = [...$('ex-fields').querySelectorAll('input:checked')].map((b) => b.value);
+    try { localStorage.setItem('export-fields', JSON.stringify(exportFields)); savePrefs(); } catch {}
+  };
+  const l = document.createElement('label');
+  l.append(box, label);
+  return l;
+}));
+function exportFormatChanged() {
+  const format = document.querySelector('input[name=ex-format]:checked').value;
+  $('ex-options').hidden = !['csv', 'print'].includes(format);
+  $('ex-title').hidden = $('ex-title-label').hidden = format !== 'print';
+}
+document.querySelectorAll('input[name=ex-format]').forEach((r) => { r.onchange = exportFormatChanged; });
 
 $('ex-go').onclick = busyAware(async () => {
   const format = document.querySelector('input[name=ex-format]:checked').value;
   const scope = document.querySelector('input[name=ex-scope]:checked').value;
   const chosen = scope === 'all' ? null : scope === 'matching' ? ids : [...selected];
   try {
-    const done = await invoke('export_file', { format, ids: chosen });
+    const done = await invoke('export_file', { format, ids: chosen, fields: exportFields, title: $('ex-title').value });
     if (!done) return; // save dialog cancelled
     $('export-dlg').close();
     say(`Exported ${done[0].toLocaleString()} bookmark${done[0] === 1 ? '' : 's'} to ${done[1]}.`);

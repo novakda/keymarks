@@ -1,12 +1,14 @@
-//! Writing bookmarks out: Netscape bookmark HTML (any browser imports it) and Powermarks 3.5
-//! `pm35.htm` (the original program can open it again).
+//! Writing bookmarks out: Netscape bookmark HTML (any browser imports it), Powermarks 3.5
+//! `pm35.htm` (the original program can open it again), CSV, a printable HTML table and
+//! full-fidelity JSON (which Keymarks imports back).
 
 use crate::{Result, SavedItem, Store};
 use pm35::{Database, Entry, field};
 use rusqlite::params;
 
 /// Everything an export needs about one bookmark.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ExportRow {
     pub url: String,
     pub title: String,
@@ -73,6 +75,128 @@ impl Store {
         let tagged: Vec<String> = self.conn.prepare("SELECT keyword FROM tagged_keyword ORDER BY keyword")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
         Ok(to_pm35_with(&self.export_rows(ids)?, &self.saved_items()?, &tagged))
     }
+}
+
+/// Fields CSV and printable exports can carry, in this order, with their headings.
+pub const EXPORT_FIELDS: [(&str, &str); 13] = [
+    ("title", "Title"),
+    ("url", "URL"),
+    ("keywords", "Keywords"),
+    ("description", "Description"),
+    ("notes", "Notes"),
+    ("user_field", "User field"),
+    ("rating", "Rating"),
+    ("visits", "Visits"),
+    ("added", "Added"),
+    ("last_visited", "Last visited"),
+    ("last_modified", "Last modified"),
+    ("last_checked", "Last checked"),
+    ("schedule", "Schedule"),
+];
+
+/// Unix seconds as "YYYY-MM-DD HH:MM" (UTC), which spreadsheets read as a date.
+fn datetime(t: Option<i64>) -> String {
+    let Some(t) = t else { return String::new() };
+    // Days to civil date: Howard Hinnant's algorithm.
+    let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs % 3600 / 60)
+}
+
+impl ExportRow {
+    fn field(&self, name: &str) -> String {
+        match name {
+            "title" => self.title.clone(),
+            "url" => self.url.clone(),
+            "keywords" => self.keywords.clone(),
+            "description" => self.description.clone(),
+            "notes" => self.notes.clone(),
+            "user_field" => self.user_field.clone(),
+            "rating" if self.rating > 0 => self.rating.to_string(),
+            "visits" => self.visits.to_string(),
+            "added" => datetime(self.added),
+            "last_visited" => datetime(self.last_visited),
+            "last_modified" => datetime(self.last_modified),
+            "last_checked" => datetime(self.last_checked),
+            "schedule" => self.schedule.clone().unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+}
+
+/// The chosen fields (unknown names dropped) in EXPORT_FIELDS order; none = title and URL.
+fn chosen(fields: &[String]) -> Vec<(&'static str, &'static str)> {
+    let picked: Vec<_> = EXPORT_FIELDS.into_iter().filter(|(f, _)| fields.iter().any(|x| x == f)).collect();
+    if picked.is_empty() { EXPORT_FIELDS[..2].to_vec() } else { picked }
+}
+
+/// CSV (RFC 4180) with a heading row, UTF-8 with a byte-order mark so Excel reads it right.
+pub fn to_csv(rows: &[ExportRow], fields: &[String]) -> String {
+    let fields = chosen(fields);
+    let cell = |s: &str| if s.contains([',', '"', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
+    let line = |cells: Vec<String>| cells.iter().map(|c| cell(c)).collect::<Vec<_>>().join(",") + "\r\n";
+    let mut out = String::from("\u{feff}");
+    out += &line(fields.iter().map(|(_, h)| h.to_string()).collect());
+    for r in rows {
+        out += &line(fields.iter().map(|(f, _)| r.field(f)).collect());
+    }
+    out
+}
+
+/// A table to read or print (Powermarks' printable export), titled `title`.
+pub fn to_printable(rows: &[ExportRow], fields: &[String], title: &str) -> String {
+    let fields = chosen(fields);
+    let title = html(if title.trim().is_empty() { "Bookmarks" } else { title.trim() });
+    let mut out = format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>{title}</title>\n<style>\n\
+         body {{ font: 10pt system-ui, sans-serif; margin: 1.5em; color: #000; background: #fff; }}\n\
+         table {{ border-collapse: collapse; width: 100%; }}\n\
+         th, td {{ border-bottom: 1px solid #ccc; padding: 3px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }}\n\
+         th {{ border-bottom: 2px solid #000; }}\n\
+         thead {{ display: table-header-group; }} tr {{ break-inside: avoid; }}\n\
+         </style></head><body>\n<h1>{title}</h1>\n<p>{} bookmark{}</p>\n<table>\n<thead><tr>",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    );
+    for (_, h) in &fields {
+        out += &format!("<th>{h}</th>");
+    }
+    out += "</tr></thead>\n<tbody>\n";
+    for r in rows {
+        out += "<tr>";
+        for (f, _) in &fields {
+            out += &format!("<td>{}</td>", html(&r.field(f)));
+        }
+        out += "</tr>\n";
+    }
+    out + "</tbody></table>\n</body></html>\n"
+}
+
+/// Every field of every row, for scripts and for importing back into Keymarks.
+pub fn to_json(rows: &[ExportRow]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({ "format": "keymarks-1", "bookmarks": rows })).expect("rows serialize")
+}
+
+/// The bookmarks in a Keymarks JSON export.
+pub fn read_json(text: &str) -> std::result::Result<Vec<ExportRow>, String> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        format: String,
+        bookmarks: Vec<ExportRow>,
+    }
+    let file: File = serde_json::from_str(text).map_err(|e| format!("not a Keymarks JSON export: {e}"))?;
+    if file.format != "keymarks-1" {
+        return Err(format!("unknown Keymarks JSON format {}", file.format));
+    }
+    Ok(file.bookmarks)
 }
 
 #[cfg(test)]
@@ -214,6 +338,47 @@ mod tests {
         s.import_pm35(&pm35::parse(sample).unwrap()).unwrap();
         s.add("https://new.example/\u{4e2d}", "Emoji \u{1f600} title", "tag1 tag2", "a \"quoted\" <desc>").unwrap();
         s
+    }
+
+    #[test]
+    fn csv_quotes_and_picks_fields() {
+        let s = store();
+        let csv = to_csv(&export_rows_all(&s), &["description".into(), "url".into(), "added".into(), "bogus".into()]);
+        let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').split("\r\n").collect();
+        assert_eq!(lines[0], "URL,Description,Added", "EXPORT_FIELDS order, unknown dropped");
+        assert!(lines[2].starts_with("https://new.example/\u{4e2d},\"a \"\"quoted\"\" <desc>\","), "RFC 4180 quoting");
+        assert!(to_csv(&[], &[]).ends_with("Title,URL\r\n"), "no fields = title and URL");
+        assert_eq!(datetime(Some(1_700_000_000)), "2023-11-14 22:13");
+        assert_eq!(datetime(Some(0)), "1970-01-01 00:00");
+    }
+
+    #[test]
+    fn printable_escapes() {
+        let s = store();
+        let page = to_printable(&export_rows_all(&s), &["title".into(), "description".into()], "My <list>");
+        assert!(page.contains("<title>My &lt;list&gt;</title>") && page.contains("<p>2 bookmarks</p>"));
+        assert!(page.contains("<td>a &quot;quoted&quot; &lt;desc&gt;</td>"));
+    }
+
+    #[test]
+    fn json_round_trips_every_field() {
+        let mut s = store();
+        let id = s.search("Emoji", 1).unwrap()[0].id;
+        let mut b = s.get(id).unwrap().unwrap();
+        (b.notes, b.rating, b.user_field) = ("note".into(), 7, "uf".into());
+        s.update(&b).unwrap();
+        let rows = export_rows_all(&s);
+        let back = read_json(&to_json(&rows)).unwrap();
+        assert_eq!(back, rows);
+        let mut fresh = Store::open(":memory:").unwrap();
+        let report = fresh.import_rows("Import JSON", &back).unwrap();
+        assert_eq!((report.added, report.duplicates), (2, 0));
+        assert_eq!(export_rows_all(&fresh), rows, "every field, Powermarks record included");
+        assert_eq!(fresh.import_rows("again", &back).unwrap().duplicates, 2);
+        fresh.undo().unwrap();
+        fresh.undo().unwrap();
+        assert_eq!(fresh.count().unwrap(), 0);
+        assert!(read_json("[]").is_err() && read_json(r#"{"format":"other","bookmarks":[]}"#).is_err());
     }
 
     #[test]

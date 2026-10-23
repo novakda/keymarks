@@ -744,6 +744,16 @@ try {
   await menu('export-open');
   await page.waitForSelector('#export-dlg[open]');
   check('Export offers all, matching and selected', /All [\d,]+ bookmarks/.test(await page.textContent('#ex-all')) && /matching/.test(await page.textContent('#ex-matching')));
+  const fieldsHiddenForHtml = await page.isHidden('#ex-options');
+  await page.check('input[name=ex-format][value=csv]');
+  const csvFields = await page.isVisible('#ex-fields') && await page.isHidden('#ex-title');
+  await page.check('input[name=ex-format][value=print]');
+  await page.check('#ex-fields input[value=notes]');
+  const titleShown = await page.isVisible('#ex-title');
+  for (let i = 0; i < 20 && !uiPrefs()['export-fields']?.includes('notes'); i++) await sleep(100);
+  check('Export options: fields for CSV and printable, a title for printable, remembered', fieldsHiddenForHtml && csvFields && titleShown && uiPrefs()['export-fields']?.includes('notes'));
+  await page.uncheck('#ex-fields input[value=notes]');
+  await page.check('input[name=ex-format][value=html]');
   await page.click('#export-dlg button[data-close]');
 } catch (e) {
   check('run completed', false, e.message);

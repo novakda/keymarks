@@ -219,25 +219,42 @@ fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
     });
 }
 
-/// Pick an exported bookmarks HTML file (any browser) and merge it in.
+/// Pick a file and merge it in: bookmarks HTML (any browser), any web page (its links), or a
+/// Keymarks JSON export (every field kept).
 #[tauri::command]
 async fn import_html_file(app: AppHandle, db: State<'_, Db>, title_words: bool) -> Result<Option<ImportReport>, String> {
-    let picked = app.dialog().file().add_filter("Bookmarks HTML", &["html", "htm"]).blocking_pick_file();
+    let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
     let Some(path) = picked else { return Ok(None) };
     let path = path.into_path().map_err(err)?;
-    let bytes = std::fs::read(&path).map_err(err)?;
-    let items = with_title_words(browsers::read_netscape_html(&String::from_utf8_lossy(&bytes)), title_words);
+    let text = String::from_utf8_lossy(&std::fs::read(&path).map_err(err)?).into_owned();
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    db.lock().unwrap().import_bookmarks(&format!("Import from {label}"), &items).map(Some).map_err(err)
+    let step = format!("Import from {label}");
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        let rows = store::export::read_json(&text)?;
+        return db.lock().unwrap().import_rows(&step, &rows).map(Some).map_err(err);
+    }
+    let items = with_title_words(browsers::read_netscape_html(&text), title_words);
+    db.lock().unwrap().import_bookmarks(&step, &items).map(Some).map_err(err)
 }
 
-/// Export bookmarks (`ids` in that order, or all) as "html" (any browser) or "pm35"
-/// (Powermarks 3.5) to a file the user picks. Returns (count, file name), or None if cancelled.
+/// Export bookmarks (`ids` in that order, or all) to a file the user picks: "html" (any
+/// browser), "pm35" (Powermarks 3.5), "csv" or "print" (the chosen `fields`; `title` heads
+/// the printable page) or "json" (everything). Returns (count, file name), or None if cancelled.
 #[tauri::command]
-async fn export_file(app: AppHandle, db: State<'_, Db>, format: String, ids: Option<Vec<i64>>) -> Result<Option<(usize, String)>, String> {
+async fn export_file(
+    app: AppHandle,
+    db: State<'_, Db>,
+    format: String,
+    ids: Option<Vec<i64>>,
+    fields: Vec<String>,
+    title: String,
+) -> Result<Option<(usize, String)>, String> {
     let (default, filter, ext) = match format.as_str() {
         "html" => ("keymarks-bookmarks.html", "Bookmarks HTML", "html"),
         "pm35" => ("pm35.htm", "Powermarks 3.5 database", "htm"),
+        "csv" => ("keymarks-bookmarks.csv", "CSV (spreadsheets)", "csv"),
+        "print" => ("keymarks-list.html", "Web page", "html"),
+        "json" => ("keymarks-bookmarks.json", "Keymarks JSON", "json"),
         other => return Err(format!("unknown export format {other}")),
     };
     let rows = db.lock().unwrap().export_rows(ids.as_deref()).map_err(err)?;
@@ -246,6 +263,9 @@ async fn export_file(app: AppHandle, db: State<'_, Db>, format: String, ids: Opt
     let path = path.into_path().map_err(err)?;
     let bytes = match format.as_str() {
         "html" => store::export::to_netscape(&rows).into_bytes(),
+        "csv" => store::export::to_csv(&rows, &fields).into_bytes(),
+        "print" => store::export::to_printable(&rows, &fields, &title).into_bytes(),
+        "json" => store::export::to_json(&rows).into_bytes(),
         _ => db.lock().unwrap().export_pm35(ids.as_deref()).map_err(err)?,
     };
     std::fs::write(&path, bytes).map_err(err)?;

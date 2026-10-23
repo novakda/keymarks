@@ -86,6 +86,7 @@
   #list li { padding: 6px 12px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; cursor: default; user-select: none; }
   #list li.vrow { height: 50px; overflow: hidden; } /* must match ROW_H.cards in app.js */
   /* Colour by rating (Display menu): a bar from red (1) to green (10). */
+  .ex-fields { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 12px; margin-bottom: 8px; }
   .vrow.rated { box-shadow: inset 4px 0 hsl(calc(var(--rating) * 12) 70% 45%); }
   #list li.spacer, #table tr.spacer td { padding: 0; border: 0; }
   #list li.sel { background: var(--sel); }
@@ -364,7 +365,7 @@
     <div id="import-sources"></div>
     <label class="check"><input id="import-title-words" type="checkbox"> Also make keywords from title words (common words left out)</label>
     <div class="row">
-      <button id="import-html" type="button" class="secondary">Bookmarks HTML file…</button>
+      <button id="import-html" type="button" class="secondary" title="Browser bookmarks HTML, any web page (its links) or a Keymarks JSON export">Bookmarks, web page or JSON file…</button>
       <button id="import-pm35" type="button" class="secondary">Powermarks database…</button>
       <button value="close">Close</button>
     </div>
@@ -424,6 +425,14 @@
       <fieldset class="plain"><legend>Format</legend>
         <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (keywords become tags)</label>
         <label><input type="radio" name="ex-format" value="pm35"> Powermarks 3.5 (pm35.htm): open in the original Powermarks</label>
+        <label><input type="radio" name="ex-format" value="csv"> CSV: open in Excel or any spreadsheet</label>
+        <label><input type="radio" name="ex-format" value="print"> Printable list: a web page with a table, to read or print</label>
+        <label><input type="radio" name="ex-format" value="json"> Keymarks JSON: every field, for scripts or to import back</label>
+      </fieldset>
+      <fieldset class="plain" id="ex-options" hidden><legend>Fields</legend>
+        <div id="ex-fields" class="ex-fields"></div>
+        <label for="ex-title" id="ex-title-label">Page title</label>
+        <input id="ex-title" placeholder="Bookmarks">
       </fieldset>
       <fieldset class="plain"><legend>Which bookmarks</legend>
         <label><input type="radio" name="ex-scope" value="all" checked> <span id="ex-all">All</span></label>

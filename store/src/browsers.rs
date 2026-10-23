@@ -179,13 +179,24 @@ fn read_places(db: &Connection) -> Result<Vec<NewBookmark>, String> {
 }
 
 static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<h3[^>]*>(.*?)</h3>|<a\s([^>]*)>(.*?)</a>|<dd>([^<]*)|<dl\b[^>]*>|</dl>"#).unwrap()
+    Regex::new(r#"(?is)<h3[^>]*>(.*?)</h3>|<a\s([^>]*)>(.*?)</a>|<dd>([^<]*)|<dl\b[^>]*>|</dl>|<base\s([^>]*)>"#).unwrap()
 });
-static ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)([a-z_]+)\s*=\s*"([^"]*)""#).unwrap());
+static ATTR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)([a-z_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#).unwrap());
+static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").unwrap());
 
-/// Netscape bookmark HTML (what every browser's "Export bookmarks" writes).
-pub fn read_netscape_html(html: &str) -> Vec<NewBookmark> {
+fn attrs(s: &str) -> HashMap<String, String> {
     let text = |s: &str| html_escape::decode_html_entities(s.trim()).into_owned();
+    ATTR.captures_iter(s)
+        .map(|a| (a[1].to_ascii_lowercase(), text(a.get(2).or(a.get(3)).or(a.get(4)).map_or("", |m| m.as_str()))))
+        .collect()
+}
+
+/// Netscape bookmark HTML (what every browser's "Export bookmarks" writes), or any HTML page:
+/// its links, relative ones resolved against `<BASE>` (dropped without one).
+pub fn read_netscape_html(html: &str) -> Vec<NewBookmark> {
+    let text = |s: &str| html_escape::decode_html_entities(TAG.replace_all(s, " ").split_whitespace().collect::<Vec<_>>().join(" ").as_str()).into_owned();
+    let mut base: Option<url::Url> = None;
     let mut out: Vec<NewBookmark> = Vec::new();
     let mut path: Vec<String> = Vec::new();
     let mut pending: Option<String> = None; // folder named by <H3>, opened by the next <DL>
@@ -195,10 +206,23 @@ pub fn read_netscape_html(html: &str) -> Vec<NewBookmark> {
         let token = cap.get(0).unwrap().as_str().to_ascii_lowercase();
         if let Some(name) = cap.get(1) {
             pending = Some(text(name.as_str()));
+        } else if let Some(b) = cap.get(5) {
+            base = attrs(b.as_str()).get("href").and_then(|h| url::Url::parse(h).ok());
         } else if let (Some(attrs), Some(title)) = (cap.get(2), cap.get(3)) {
-            let attrs: HashMap<String, String> =
-                ATTR.captures_iter(attrs.as_str()).map(|a| (a[1].to_ascii_lowercase(), text(&a[2]))).collect();
-            let Some(url) = attrs.get("href").filter(|u| !u.is_empty()).cloned() else { continue };
+            let attrs = self::attrs(attrs.as_str());
+            let Some(href) = attrs.get("href").filter(|u| !u.is_empty() && !u.starts_with('#')) else { continue };
+            let url = match url::Url::parse(href) {
+                Ok(u) => u,
+                Err(_) => match base.as_ref().and_then(|b| b.join(href).ok()) {
+                    Some(u) => u,
+                    None => continue, // relative, nothing to resolve it against
+                },
+            };
+            if url.scheme() == "javascript" {
+                continue;
+            }
+            // Absolute links stay as written (what browsers exported); resolved ones normalised.
+            let url = if href.contains(':') { href.clone() } else { url.into() };
             let title = text(title.as_str());
             let tags = attrs.get("tags").map(|t| t.replace(',', " ")).unwrap_or_default();
             out.push(NewBookmark {
@@ -248,6 +272,20 @@ mod tests {
         assert_eq!(b[1].keywords, "Dev Tools Async IO");
         assert_eq!(b[1].title, "https://tokio.rs/", "untitled falls back to the URL");
         assert!(read_chromium("not json").is_err());
+    }
+
+    #[test]
+    fn any_html_page() {
+        let html = r##"<html><head><base href='https://site.example/docs/'></head><body>
+<p>See <a href="intro.html"><b>The</b> intro</a>, <a href=/about>About</a>, <a href="#top">top</a>,
+<a href="javascript:void(0)">js</a> and <a class=x href="https://other.example/">other</a>.</p></body></html>"##;
+        let b = read_netscape_html(html);
+        assert_eq!(b.iter().map(|b| (b.url.as_str(), b.title.as_str())).collect::<Vec<_>>(), [
+            ("https://site.example/docs/intro.html", "The intro"),
+            ("https://site.example/about", "About"),
+            ("https://other.example/", "other"),
+        ]);
+        assert_eq!(read_netscape_html(r#"<a href="page.html">no base</a>"#).len(), 0);
     }
 
     #[test]
