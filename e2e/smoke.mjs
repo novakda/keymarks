@@ -389,7 +389,19 @@ try {
   await page.click('#s-save');
   await idle();
   check('a bad schedule is refused', /needs a number/.test(await page.textContent('#s-error')));
-  await page.click('#settings button[data-close]');
+  await page.fill('#s-schedules', 'Daily = 1d\nWeekly = 1w\nMonthly = 1mo');
+  await page.check('#s-newwin');
+  await page.click('#s-save');
+  await idle();
+  const savedSettings = () => { try { return JSON.parse(fs.readFileSync(path.join(work, 'settings.json'), 'utf8')); } catch { return {}; } };
+  const opening = savedSettings();
+  await menu('settings-open');
+  await page.waitForSelector('#settings[open]');
+  const shown = await page.isChecked('#s-newwin');
+  await page.uncheck('#s-newwin');
+  await page.click('#s-save');
+  await idle();
+  check('opening settings save and show again, keeping view preferences', opening.open_new_window === true && shown && savedSettings().open_new_window === false && 'ui' in opening);
   const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1;
   startApp({ KEYMARKS_NO_FOCUS: '1' });
   await sleep(3000);
@@ -567,6 +579,20 @@ try {
   await page.keyboard.press('Enter');
   await idle();
   const tagged = await count('e2ecommonkw');
+  // Remove keywords (any case) from the same two, one undo step.
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await page.click('#table-body tr.vrow:nth-child(2)', { modifiers: ['Control'] });
+  await idle();
+  await rightClick();
+  await page.click('#bctx [data-act=rmkw]');
+  await page.fill('#ak-words', 'E2ECOMMONKW');
+  await page.keyboard.press('Enter');
+  await idle();
+  const removedLeft = await count('e2ecommonkw');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  check('Remove keywords takes them off the selection, Ctrl+Z puts them back', removedLeft === 0 && (await count('e2ecommonkw')) === 2, `${removedLeft}`);
   await page.focus('#tablewrap');
   await page.keyboard.press('Control+z');
   await idle();
@@ -661,6 +687,51 @@ try {
   const uiPrefs = () => { try { return JSON.parse(fs.readFileSync(path.join(work, 'settings.json'), 'utf8')).ui || {}; } catch { return {}; } };
   for (let i = 0; i < 20 && !uiPrefs().columns?.startsWith('["title"'); i++) await sleep(100);
   check('view and columns saved in settings.json', uiPrefs().view === 'table' && uiPrefs().columns?.startsWith('["title"'), Object.keys(uiPrefs()).join(' '));
+
+  // Display menu: colour by rating, relative dates.
+  await search('');
+  await page.click('#table-body tr.vrow:nth-child(1)');
+  await idle();
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+=');
+  await idle();
+  await page.click('#display summary');
+  await page.check('#d-rating');
+  await idle();
+  const rated = await page.$$eval('#table-body tr.vrow:nth-child(1).rated', (r) => r.length);
+  const addedCol = (await heads()).indexOf('added') + 1;
+  await page.selectOption('#d-dates', 'relative');
+  await idle();
+  const rel = await page.$$eval(`#table-body tr.vrow td:nth-child(${addedCol})`, (tds) => tds.filter((td) => /ago|yesterday|today|now|last|this/i.test(td.textContent)).length);
+  await page.selectOption('#d-dates', 'date');
+  await page.uncheck('#d-rating');
+  await page.click('#display summary');
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  for (let i = 0; i < 20 && uiPrefs()['date-format'] !== 'date'; i++) await sleep(100);
+  check('Display: colour by rating and relative dates', rated === 1 && rel > 0 && uiPrefs()['date-format'] === 'date', `${rated} ${rel}`);
+
+  // Mark visited counts a visit; Alt+Right goes to the next bookmark, saving edits first.
+  const visits = async () => Number((await page.textContent('#info')).match(/Visited (\d+)/)[1]);
+  const v0 = await visits();
+  await page.click('#table-body tr.vrow:nth-child(1)', { button: 'right' });
+  await idle();
+  await page.click('#bctx [data-act=visited]');
+  await idle();
+  check('Mark visited counts a visit', (await visits()) === v0 + 1, `${v0}`);
+  const second = await page.getAttribute(`#table-body tr.vrow:nth-child(2) td:nth-child(${(await heads()).indexOf('title') + 1})`, 'title');
+  await page.fill('#f-notes', 'e2e-alt-nav-note');
+  await page.keyboard.press('Alt+ArrowRight');
+  await idle();
+  const movedTo = await page.inputValue('#f-title');
+  const cur = await page.$$eval('#table-body tr.vrow', (rows) => rows.findIndex((r) => r.classList.contains('cursor')));
+  const noted = await count('e2e-alt-nav-note');
+  check('Alt+Right saves the edits and shows the next bookmark', cur === 1 && movedTo && second.endsWith(movedTo) && noted === 1, `cursor row ${cur} noted ${noted}`); // the cell has status marks before the title
+  await page.focus('#tablewrap');
+  await page.keyboard.press('Control+z');
+  await idle();
+  await search('');
 
   // 11. Import and Export dialogs (counts only; nothing is imported or exported here)
   await menu('import');

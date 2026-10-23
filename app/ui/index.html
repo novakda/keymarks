@@ -85,6 +85,8 @@
   #list { border-right: 1px solid var(--line); }
   #list li { padding: 6px 12px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; cursor: default; user-select: none; }
   #list li.vrow { height: 50px; overflow: hidden; } /* must match ROW_H.cards in app.js */
+  /* Colour by rating (Display menu): a bar from red (1) to green (10). */
+  .vrow.rated { box-shadow: inset 4px 0 hsl(calc(var(--rating) * 12) 70% 45%); }
   #list li.spacer, #table tr.spacer td { padding: 0; border: 0; }
   #list li.sel { background: var(--sel); }
   #list li.cursor { border-left-color: var(--cursor); }
@@ -195,6 +197,18 @@
     <summary class="secondary">Columns</summary>
     <div class="menu" id="cols-menu"></div>
   </details>
+  <details id="display">
+    <summary class="secondary">Display</summary>
+    <div class="menu">
+      <label><input type="checkbox" id="d-rating"> Colour by rating</label>
+      <label for="d-dates">Dates</label>
+      <select id="d-dates">
+        <option value="date">Date</option>
+        <option value="datetime">Date and time</option>
+        <option value="relative">Relative (3 days ago)</option>
+      </select>
+    </div>
+  </details>
   <div class="seg" role="group" aria-label="History">
     <button id="undo" type="button" class="secondary" disabled aria-label="Undo">↶</button>
     <button id="redo" type="button" class="secondary" disabled aria-label="Redo">↷</button>
@@ -256,6 +270,7 @@
       <tr><td>Esc</td><td>Clear the search</td></tr>
       <tr><td>↑ ↓ PgUp PgDn Home End</td><td>Move through the list (Shift extends the selection)</td></tr>
       <tr><td>Ctrl+A</td><td>Select all shown</td></tr>
+      <tr><td>Alt+← →</td><td>Previous / next bookmark, also while editing (saves the edits)</td></tr>
       <tr><td>Alt+1…9</td><td>Run a saved search or link</td></tr>
       <tr><td>Enter / Ctrl+Enter</td><td>In the keyword list: search for it / add it to the search</td></tr>
       <tr><th colspan="2">Bookmarks</th></tr>
@@ -287,12 +302,14 @@
   <button role="menuitem" data-act="open">Open (Enter)</button>
   <button role="menuitem" data-act="open-new">Open in new window (Shift+Enter)</button>
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
+  <button role="menuitem" data-act="visited">Mark visited</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
   <button role="menuitem" data-act="fetch">Fetch title and description (F7)</button>
   <button role="menuitem" data-act="checking"></button>
   <button role="menuitem" data-act="schedule">Check schedule…</button>
   <button role="menuitem" data-act="addkw">Add keywords…</button>
+  <button role="menuitem" data-act="rmkw">Remove keywords…</button>
   <button role="menuitem" data-act="pin">Pin to Saved…</button>
   <button role="menuitem" data-act="export">Export…</button>
   <hr>
@@ -395,7 +412,7 @@
     </div>
     <div class="row">
       <button type="button" class="secondary" data-close>Cancel</button>
-      <button type="submit">Add</button>
+      <button type="submit" id="ak-submit">Add</button>
     </div>
   </form>
 </dialog>
@@ -429,6 +446,11 @@
         <label><input type="checkbox" id="s-autostart"> Start Keymarks with Windows</label>
         <label class="indent"><input type="checkbox" id="s-minimized"> …and stay in the tray when it does</label>
         <label><input type="checkbox" id="s-close"> Closing the window keeps Keymarks running in the tray</label>
+      </fieldset>
+      <fieldset><legend>Opening bookmarks</legend>
+        <label><input type="checkbox" id="s-newwin"> Always open in a new browser window</label>
+        <label><input type="checkbox" id="s-hideopen"> Hide Keymarks after opening a bookmark</label>
+        <label><input type="checkbox" id="s-hidemin"> Minimising keeps Keymarks in the tray only (off the taskbar)</label>
       </fieldset>
       <fieldset><legend>Hotkey</legend>
         <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>

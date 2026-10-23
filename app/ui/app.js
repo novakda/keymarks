@@ -33,7 +33,28 @@ let opts = { ...DEFAULT_OPTS };
 try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
 
 // View: card list or Powermarks-style table with chosen columns.
-const date = (t) => (t ? new Date(t * 1000).toLocaleDateString() : '');
+// Display menu: dates as the date, date and time, or relative ("3 days ago").
+let dateFormat = 'date';
+let ratingColours = false;
+try {
+  dateFormat = localStorage.getItem('date-format') || dateFormat;
+  ratingColours = localStorage.getItem('rating-colours') === '1';
+} catch {}
+const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const UNITS = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
+function date(t) {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  if (dateFormat === 'datetime') return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  if (dateFormat !== 'relative') return d.toLocaleDateString();
+  const s = t - Date.now() / 1000;
+  const [unit, len] = UNITS.find(([, n]) => Math.abs(s) >= n) ?? ['second', 1];
+  return relative.format(Math.round(s / len), unit);
+}
+function rate(row, b) {
+  row.classList.toggle('rated', ratingColours && b?.rating > 0);
+  if (b?.rating) row.style.setProperty('--rating', b.rating);
+}
 const shortUrl = (u) => u.replace(/^(https?|ftp):\/\/(www\.)?/i, '');
 const stars = (r) => (r > 0 ? '★'.repeat(Math.ceil(r / 2)) + ' ' : '');
 // Link-check results as shown to people (symbol + words; the symbol alone marks cards).
@@ -340,6 +361,7 @@ function renderTable() {
     tr.ariaSelected = String(selected.has(ids[i]));
     tr.classList.toggle('sel', selected.has(ids[i]));
     tr.classList.toggle('cursor', i === cursor);
+    rate(tr, b);
     tr.append(...cols.map((c) => {
       const td = document.createElement('td');
       td.textContent = b ? c.cell(b) : (c.id === 'title' ? '…' : '');
@@ -382,6 +404,7 @@ function renderCards() {
     li.ariaSelected = String(selected.has(ids[i]));
     li.classList.toggle('sel', selected.has(ids[i]));
     li.classList.toggle('cursor', i === cursor);
+    rate(li, b);
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = b ? checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
@@ -410,6 +433,19 @@ function setView(v) {
   render();
   onScroll(); // fetch whatever the new view shows
 }
+
+$('d-rating').checked = ratingColours;
+$('d-dates').value = dateFormat;
+$('d-rating').onchange = (e) => {
+  ratingColours = e.target.checked;
+  try { localStorage.setItem('rating-colours', ratingColours ? '1' : '0'); savePrefs(); } catch {}
+  renderRows();
+};
+$('d-dates').onchange = (e) => {
+  dateFormat = e.target.value;
+  try { localStorage.setItem('date-format', dateFormat); savePrefs(); } catch {}
+  renderRows();
+};
 
 $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
   const label = document.createElement('label');
@@ -515,12 +551,18 @@ $('sched-form').addEventListener('submit', (e) => {
   setSchedule(schedIds, $('sd-schedule').value);
 });
 
-// Powermarks' Add Common Keywords: the same words onto every selected bookmark, one undo step.
+// Powermarks' Add Common Keywords: the same words onto every selected bookmark, one undo
+// step. The same dialog removes keywords from them.
 let addKwIds = [];
-function openAddKeywords(chosen) {
+let kwRemove = false;
+function openAddKeywords(chosen, remove = false) {
   if (!chosen.length || !confirmDiscard()) return;
   addKwIds = chosen;
-  $('ak-label').textContent = `Keywords to add to ${chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`}`;
+  kwRemove = remove;
+  const which = chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`;
+  $('addkw-title').textContent = remove ? 'Remove keywords' : 'Add keywords';
+  $('ak-label').textContent = remove ? `Keywords to remove from ${which}` : `Keywords to add to ${which}`;
+  $('ak-submit').textContent = remove ? 'Remove' : 'Add';
   $('ak-words').value = '';
   $('addkw-dlg').showModal();
   $('ak-words').focus();
@@ -528,14 +570,23 @@ function openAddKeywords(chosen) {
 $('addkw-form').addEventListener('submit', busyAware(async (e) => {
   e.preventDefault();
   try {
-    const n = await invoke('add_keywords', { ids: addKwIds, words: $('ak-words').value });
+    const n = await invoke(kwRemove ? 'remove_keywords' : 'add_keywords', { ids: addKwIds, words: $('ak-words').value });
     $('addkw-dlg').close();
     dirty = false;
     await refreshDictionary();
     await refresh();
-    say(`Keywords added to ${n} bookmark${n === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
-  } catch (err) { fail('Add keywords')(err); }
+    say(`Keywords ${kwRemove ? 'removed from' : 'added to'} ${n} bookmark${n === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
+  } catch (err) { fail(kwRemove ? 'Remove keywords' : 'Add keywords')(err); }
 }));
+
+// Powermarks' Mark Visited: counts a visit without opening the pages.
+const markVisited = busyAware(async (chosen) => {
+  try {
+    const n = await invoke('mark_visited', { ids: chosen });
+    await refresh();
+    say(`Marked ${n} bookmark${n === 1 ? '' : 's'} visited.`);
+  } catch (err) { fail('Mark visited')(err); }
+});
 
 // Powermarks' Fetch (F7): the pages' titles and descriptions replace the bookmarks', their
 // keywords are added. One undo step.
@@ -613,6 +664,8 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
+  else if (act === 'rmkw') openAddKeywords(chosen, true);
+  else if (act === 'visited') markVisited(chosen);
   else if (act === 'schedule') openScheduleDialog(chosen);
   else if (act === 'checking') setCheckEnabled(chosen, e.target.textContent.endsWith('on'));
   else if (act === 'pin') $('pin-link').click();
@@ -814,6 +867,9 @@ $('settings-open').onclick = async () => {
     $('s-repair').checked = s.repair_moved_urls;
     $('s-fast').value = s.fast_add_keywords;
     $('s-scheduled').checked = s.scheduled_checks;
+    $('s-newwin').checked = s.open_new_window;
+    $('s-hideopen').checked = s.hide_after_open;
+    $('s-hidemin').checked = s.hide_when_minimized;
     $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
     $('settings').showModal();
@@ -839,6 +895,9 @@ $('s-save').onclick = busyAware(async () => {
     repair_moved_urls: $('s-repair').checked,
     fast_add_keywords: $('s-fast').value.trim(),
     scheduled_checks: $('s-scheduled').checked,
+    open_new_window: $('s-newwin').checked,
+    hide_after_open: $('s-hideopen').checked,
+    hide_when_minimized: $('s-hidemin').checked,
     schedules: $('s-schedules').value,
   };
   try {
@@ -1345,6 +1404,19 @@ async function save() {
     say('Saved.');
   } catch (e) { fail('Save')(e); }
 }
+
+// Powermarks' Properties Alt+Left/Right: the previous or next bookmark, keeping edits.
+document.addEventListener('keydown', async (e) => {
+  if (!e.altKey || !['ArrowLeft', 'ArrowRight'].includes(e.key) || !ids.length || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  if (dirty) {
+    await save();
+    if (dirty) return; // not saved (invalid): stay
+  }
+  const field = panel.contains(document.activeElement) ? document.activeElement.id : null;
+  await select(Math.max(0, Math.min(ids.length - 1, cursor + (e.key === 'ArrowLeft' ? -1 : 1))), {});
+  if (field) $(field)?.focus();
+});
 
 function confirmDiscard() {
   if (!dirty) return true;

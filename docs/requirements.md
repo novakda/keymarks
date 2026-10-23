@@ -71,9 +71,9 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | DISP-06 | Resort on demand | F5 Refresh (b282) | Not needed if the list re-queries live; keep F5 as refresh | P3 | todo |
 | DISP-07 | Status icon per row | Waiting/Checking/Error/Changed icons (§5.4.4) | Small icon or emoji column | P1 | done (title mark in cards and table, Status column; ◌ Waiting while a check runs) |
 | DISP-08 | Customisable status icons | Options > Icons; ini `gui.status_ind_map` (§8.1.9) | Drop; fixed accessible icons plus tooltip text | P3 | drop |
-| DISP-09 | Rating colour coding | readme "Color code bookmarks based on their rating"; ini `colors.ratings` | Row tint or badge colour scale by rating; configurable | P2 | todo |
+| DISP-09 | Rating colour coding | readme "Color code bookmarks based on their rating"; ini `colors.ratings` | Row tint or badge colour scale by rating; configurable | P2 | done (Display → Colour by rating: a red-to-green bar on rated rows, cards and table) |
 | DISP-10 | Hide http:// and ftp:// prefixes | §8.1.2; ini `gui.hide_http_prefix` | Display option (strip `https://`, `www.` too) | P2 | partial (table URL column) |
-| DISP-11 | Date/time format | Custom format builder (§8.1.6; ini `gui.time_format`, default `%m-%d-%y %h:%M:%s %p`) | Use OS locale via `Intl.DateTimeFormat`; optional relative dates | P2 | todo |
+| DISP-11 | Date/time format | Custom format builder (§8.1.6; ini `gui.time_format`, default `%m-%d-%y %h:%M:%s %p`) | Use OS locale via `Intl.DateTimeFormat`; optional relative dates | P2 | done (Display → Dates: date, date and time, or relative; OS locale) |
 | DISP-12 | Display font | §8.1.3; ini `gui.font_*` | Font size setting plus system UI font; follow OS text scaling | P2 | todo |
 | DISP-13 | Header colours | §8.1.4; ini `colors.header_*` | Drop; light/dark theme follows OS | P3 | drop |
 | DISP-14 | Three-pane layout | Main list plus Macro pane plus Dictionary pane with splitters (§5.5.2, §5.8; ini `gui.splitter_0/1`, `macro_wnd_visible`, `dict_wnd_visible`) | Collapsible side panels (Saved searches, Keywords); persist sizes | P1 | done (Saved and keyword pane, list, properties; draggable splitters remembered per machine, double-click resets) |
@@ -100,7 +100,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | ADD-10 | Bookmark local files | Drag files from Explorer → file-path bookmark; opens with the associated app (§4.5) | Tauri drag-drop event → `file:///` URL; open via shell. `open_url` must allow `file:` for these (it currently rejects non-http) | P2 | todo |
 | ADD-11 | Add bookmark validation | Name and URL required (exe "Please enter a URL/name for this bookmark") | Same; also normalise URL (trim, add scheme) | P1 | done (URL required, https:// added, validated) |
 | EDIT-01 | Properties dialog | Tabs: General (Name, URL, Keywords, visit count, Tagged Keywords picker, sort-keywords A→Z button), Desc & Notes, User (user field, Rating slider), Status (enable checking and fetching, schedule, Added/Modified/Visited/Checked dates), Auth (username, password) (§5.2, screenshot, exe) | One edit panel or modal with sections; all fields above | P1 | done (side panel: title, URL, keywords, description, notes, user field, rating, link checking, check schedule) |
-| EDIT-02 | Prev/next in Properties | Alt+Left/Right (b326); Ctrl+PgUp/PgDn switch tabs (b286) | Same shortcuts in the edit panel | P2 | todo |
+| EDIT-02 | Prev/next in Properties | Alt+Left/Right (b326); Ctrl+PgUp/PgDn switch tabs (b286) | Same shortcuts in the edit panel | P2 | done (Alt+Left/Right, also while editing; edits are saved first) |
 | EDIT-03 | Notes field | Free text (§5.2) | Textarea; indexed by FTS (already in schema) | P1 | done |
 | EDIT-04 | User-defined field | Per-file label set in File > Information (b278, §10.1.1) | `user_field` column plus a label in settings | P2 | partial (stored) |
 | EDIT-05 | Delete bookmark(s) | Del key, toolbar; confirmations for single and multiple deletes are separate options (§4.7, §8.1.2; ini `gui.confirm_*_deletes`) | Del with undo toast rather than a confirm by default; options kept | P1 | done (with undo) |
@@ -127,7 +127,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | KW-11 | Copy keyword(s) | Copy selected words (§5.5.2) | Same | P3 | todo |
 | KW-12 | Copy whole dictionary to clipboard | Tools > Copy Keywords to Clipboard (§10.1.6) | Menu command (or via export) | P3 | todo |
 | KW-13 | Add Common Keywords | Add one or more keywords to all selected bookmarks; dialog shows the dictionary (§5.5.1) | Bulk "Add keywords…" on selection, with autocomplete | P1 | done (right-click → Add keywords… on the selection, with keyword autocomplete; one undo step) |
-| KW-14 | Remove keyword from selection | Not in original (only global delete) | Bulk "Remove keywords…" (cheap addition) | P2 | todo |
+| KW-14 | Remove keyword from selection | Not in original (only global delete) | Bulk "Remove keywords…" (cheap addition) | P2 | done (right-click → Remove keywords…, any case, one undo step) |
 | KW-15 | Dictionary Cleanup | Merge keywords with common roots; remove keywords with non-printable characters; remove numeric-only keywords (exe dialog "Dictionary Cleanup"; not in manual) | Cleanup wizard with a preview before applying | P2 | done (preview + backup + undo) |
 | KW-16 | Sort keywords A→Z | Button in Properties (screenshot) | Normalise order on save, or a button | P3 | done |
 | KW-17 | Auto keywords on import | Folder names become keywords (b297, ini `import.tag_folders`); keywords also from names (§7.1) | Import option: folder path → keywords (done in IMP-xx); title words optional, with the stop list | P1 | done (folder names always; "keywords from title words" import option, common words left out) |
@@ -175,11 +175,11 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | RATE-01 | Rating 1–10 (0 = not rated) | Slider on User tab; "Rating: NR" (b278, exe; mdata f11) | Stored; shown as stars (½-star per point). Needs an editor | P1 | done (editable 0–10) |
 | RATE-02 | Ctrl+Plus/Minus rating | §10.3 | Same keys on selection | P1 | done (one undo step for the whole selection) |
 | RATE-03 | Sort/filter by rating | Column sort (§5.3) | Column sort plus query filter (e.g. `rating>=7`) | P1 | done (column sort; `rating>=7`, `rating<3`, `rating=0` in searches, combinable with operators) |
-| RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | todo |
+| RATE-04 | Colour by rating | readme; ini `colors.ratings` | DISP-09 | P2 | done (see DISP-09) |
 | USE-01 | Visit count | Counts visits opened via Powermarks (b278; mdata f10); "Visited %d time%s" | Increment on open from the app or extension; column; sort by "most used" | P1 | done (opening from Keymarks; Visits column, sortable) |
 | USE-02 | Last visited timestamp | mdata f2 | Set on open | P1 | done (Last visited column, sortable) |
 | USE-03 | Disable usage tracking | Privacy option (§8.1.2; ini `gui.no_usage_count`) | Setting | P2 | todo |
-| USE-04 | Mark Visited | Bookmarks > Mark Visited (§10.1.4) | Command on selection | P2 | todo |
+| USE-04 | Mark Visited | Bookmarks > Mark Visited (§10.1.4) | Command on selection | P2 | done (right-click → Mark visited) |
 | USE-05 | Count visits made directly in the browser | Not in original. The "Access Cache" (`pm35.cache`, ini `misc.readonly_cache`) appears to store visit data for read-only files (unconfirmed) | Optional: extension `history.onVisited` for bookmarked URLs updates counts (off by default, for privacy) | P3 | todo |
 
 ### 2.7 Import and export
@@ -214,10 +214,10 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | BR-01 | Open bookmark in preferred browser | Double-click/Enter (§4.8) | Opens in OS default browser | P1 | done |
 | BR-02 | Open in a specific browser | Context menu lists installed browsers (§5.7) | Enumerate `HKLM/HKCU\SOFTWARE\Clients\StartMenuInternet`; launch exe with URL | P2 | todo |
 | BR-03 | Preferred browser setting | §8.1.12; ini `browser.preferred` | Default = OS default; optional override from BR-02 list | P2 | todo |
-| BR-04 | Always open in new window | Per-browser option; Shift+Enter (b326, §10.3) | Shift+Enter → `--new-window` (Chromium) / `-new-window` (Firefox) when the browser is known; else default | P2 | todo |
+| BR-04 | Always open in new window | Per-browser option; Shift+Enter (b326, §10.3) | Shift+Enter → `--new-window` (Chromium) / `-new-window` (Firefox) when the browser is known; else default | P2 | done (Settings → Always open in a new browser window; Shift+Enter does it once) |
 | BR-05 | Reuse running browser vs start preferred | ini `browser.always_use_preferred` (§8.1.12, b342) | Drop; the OS/browser handles it | P3 | drop |
 | BR-06 | Don't steal focus / bring to front | b342; ini `*.bring_to_forefront` | Drop (browser decides) | P3 | drop |
-| BR-07 | Minimise PM after opening | §8.1.2; ini `gui.minimize_on_open_url` | Setting (hide to tray after open) | P2 | todo |
+| BR-07 | Minimise PM after opening | §8.1.2; ini `gui.minimize_on_open_url` | Setting (hide to tray after open) | P2 | done (Settings → Hide Keymarks after opening a bookmark) |
 | BR-08 | Run browser maximised; launch browser at startup; Run IE/Netscape… (Alt+I etc.) | §8.1.13–17, §10.1.6 | Drop: browsers manage their own windows | P3 | drop |
 | BR-09 | DDE/COM/Direct methods, Bypass DDE, Use Netscape 4, profile dialog wait, Opera "clear saved windows", exec_wait/sleep_on_startup | §8.1.13–15; ini `[netscape]`, `[explorer]`, `[opera]` | Drop: replaced by the extension (gets the active tab URL/title directly) and the OS shell open | P3 | drop |
 | BR-10 | IE toolband / link-bar buttons (Show PM, Add, Fast Add) | §8.1.13; ini `explorer.show_toolband`, `integrate_linkbar`; b282 transparent toolbar | Extension toolbar button (Add), context-menu items (Add / Fast Add / Add link), and an "Open Powermarks" item that asks the host to focus the app | P1 | done (toolbar button = Add, right-click Add / Fast Add / Add link, "Open Keymarks" in the popup and on the button's menu; tried in Chrome and Firefox) |
@@ -248,7 +248,7 @@ Status: **done**, **partial**, **todo**, **drop** (deliberately not rebuilt).
 | TRAY-02 | Tray menu = top N of current results | Right-click shows the top bookmarks of the current list, N configurable; plus Add, Fast Add, Restore, Exit (§5.9, §8.1.5; ini `gui.systray_menu_count`) | Tray menu rebuilt on result change (cap about 20) | P2 | done (top 15) |
 | TRAY-03 | Separate Add / Fast Add tray icons | b340; ini `systray_add_icon`, `systray_fast_add_icon` | Drop: the extension button covers it. Tray menu could offer "Add from clipboard" | P3 | drop |
 | TRAY-04 | Close to tray | b326; ini `gui.close_to_systray` | Intercept close → hide | P1 | done (option) |
-| TRAY-05 | Hide from taskbar when minimised | §8.1.5; ini `gui.taskbar_hide` | `skip_taskbar` when hidden | P2 | todo |
+| TRAY-05 | Hide from taskbar when minimised | §8.1.5; ini `gui.taskbar_hide` | `skip_taskbar` when hidden | P2 | done (Settings → Minimising keeps Keymarks in the tray only) |
 | HOT-01 | Global hotkey: switch to Powermarks | §8.1.7; ini `hotkeys.app` | `tauri-plugin-global-shortcut`; show window, focus and select the search box. This is the main way in | P1 | done (default Ctrl+Alt+P) |
 | HOT-02 | Global hotkey: add / fast add from browser | ini `hotkeys.browser_add`, `fast_add` | Extension `commands` (Alt+Shift+P exists for the popup); add a fast-add command. Optionally `"global": true` in Chrome | P1 | done (extension commands) |
 | HOT-03 | Global hotkey: add from clipboard | ini `hotkeys.clipboard_add` | Global shortcut → ADD-07 | P2 | todo |

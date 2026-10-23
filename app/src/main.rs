@@ -125,6 +125,20 @@ fn with_title_words(mut items: Vec<store::NewBookmark>, on: bool) -> Vec<store::
     items
 }
 
+/// Remove keywords from the selection (one undo step).
+#[tauri::command]
+fn remove_keywords(db: State<Db>, ids: Vec<i64>, words: String) -> Result<usize, String> {
+    db.lock().unwrap().remove_keywords(&ids, &words).map_err(err)
+}
+
+/// Powermarks' Mark Visited: count a visit without opening the pages.
+#[tauri::command]
+fn mark_visited(db: State<Db>, ids: Vec<i64>) -> Result<usize, String> {
+    let store = db.lock().unwrap();
+    ids.iter().try_for_each(|&id| store.mark_visited(id)).map_err(err)?;
+    Ok(ids.len())
+}
+
 /// Powermarks' Add Common Keywords, on the selection.
 #[tauri::command]
 fn add_keywords(db: State<Db>, ids: Vec<i64>, words: String) -> Result<usize, String> {
@@ -242,13 +256,36 @@ async fn export_file(app: AppHandle, db: State<'_, Db>, format: String, ids: Opt
 /// Open a bookmark in the default browser and count the visit.
 #[tauri::command]
 fn open_bookmark(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
-    open_id(&app, &db.lock().unwrap(), id)
+    open_id(&app, &db.lock().unwrap(), id)?;
+    hide_after_open(&app);
+    Ok(())
 }
 
+/// Opens as the settings say (a new window or not).
 pub(crate) fn open_id<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64) -> Result<(), String> {
+    let new_window = app.state::<SettingsState>().current.lock().unwrap().open_new_window;
+    open_in(app, store, id, new_window)
+}
+
+/// Opens a bookmark, in a new window of the default browser when asked and the browser is
+/// one known to take `--new-window` (others open normally), and counts the visit.
+fn open_in<R: Runtime>(app: &AppHandle<R>, store: &Store, id: i64, new_window: bool) -> Result<(), String> {
     let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
-    open_checked(app, &url)?;
+    let web = ["http://", "https://"].iter().any(|p| url.to_ascii_lowercase().starts_with(p));
+    match default_browser().filter(|_| new_window && web) {
+        Some(exe) => drop(std::process::Command::new(exe).arg("--new-window").arg(&url).spawn().map_err(err)?),
+        None => open_checked(app, &url)?,
+    }
     store.mark_visited(id).map_err(err)
+}
+
+/// Powermarks' "minimise after opening a URL": out of the way once the page is up.
+fn hide_after_open(app: &AppHandle) {
+    if app.state::<SettingsState>().current.lock().unwrap().hide_after_open {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
+    }
 }
 
 /// Started by the browser extension's "Open Keymarks", this process may bring a window to
@@ -267,17 +304,11 @@ fn allow_foreground_handover() {
 }
 
 /// Powermarks' Shift+Enter: open in a new window of the default browser, counting the visit.
-/// Falls back to an ordinary open when the browser isn't one known to take `--new-window`.
 #[tauri::command]
 fn open_bookmark_new_window(app: AppHandle, db: State<Db>, id: i64) -> Result<(), String> {
-    let store = db.lock().unwrap();
-    let url = store.get(id).map_err(err)?.ok_or("bookmark not found")?.url;
-    let web = ["http://", "https://"].iter().any(|p| url.to_ascii_lowercase().starts_with(p));
-    match default_browser().filter(|_| web) {
-        Some(exe) => drop(std::process::Command::new(exe).arg("--new-window").arg(&url).spawn().map_err(err)?),
-        None => open_checked(&app, &url)?,
-    }
-    store.mark_visited(id).map_err(err)
+    open_in(&app, &db.lock().unwrap(), id, true)?;
+    hide_after_open(&app);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -700,12 +731,18 @@ fn main() {
             Some(vec!["--minimized"]),
         ))
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let settings = window.state::<SettingsState>();
-                if settings.current.lock().unwrap().close_to_tray {
+            let settings = window.state::<SettingsState>();
+            let settings = settings.current.lock().unwrap();
+            match event {
+                WindowEvent::CloseRequested { api, .. } if settings.close_to_tray => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+                // Minimised to the tray only: off the taskbar until shown again.
+                WindowEvent::Resized(_) if settings.hide_when_minimized && window.is_minimized().unwrap_or(false) => {
+                    let _ = window.hide();
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -775,6 +812,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             search_ids,
             save_ui_prefs,
+            remove_keywords,
+            mark_visited,
             get_bookmarks,
             count,
             import_pm35,

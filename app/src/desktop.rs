@@ -32,6 +32,12 @@ pub struct Settings {
     /// Check links on their schedules in the background. Off until the user turns it on:
     /// imported Powermarks schedules would otherwise start thousands of checks at once.
     pub scheduled_checks: bool,
+    /// Bookmarks always open in a new browser window (as Shift+Enter does).
+    pub open_new_window: bool,
+    /// Hide Keymarks to the tray after opening a bookmark.
+    pub hide_after_open: bool,
+    /// Minimising hides the window from the taskbar (it stays in the tray).
+    pub hide_when_minimized: bool,
     /// View and search preferences (view, columns, widths, panes, search options), kept by
     /// the page in localStorage and copied here so they travel with this file.
     pub ui: std::collections::BTreeMap<String, String>,
@@ -47,6 +53,9 @@ impl Default for Settings {
             fast_add_keywords: "new".into(),
             schedules: "Daily = 1d\nWeekly = 1w\nMonthly = 1mo".into(),
             scheduled_checks: false,
+            open_new_window: false,
+            hide_after_open: false,
+            hide_when_minimized: false,
             ui: Default::default(),
         }
     }

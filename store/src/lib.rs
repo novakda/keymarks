@@ -730,6 +730,31 @@ impl Store {
         })
     }
 
+    /// Remove `words` (any case) from every bookmark in `ids`, as one undoable step.
+    /// Returns how many changed.
+    pub fn remove_keywords(&mut self, ids: &[i64], words: &str) -> Result<usize> {
+        let gone: std::collections::HashSet<String> = normalize_keywords(words).split_whitespace().map(str::to_lowercase).collect();
+        if gone.is_empty() {
+            return Ok(0);
+        }
+        let name = format!("Remove keywords from {} bookmark{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        self.record(name, ids, false, |s| {
+            let tx = s.conn.unchecked_transaction()?;
+            let mut changed = 0;
+            for &id in ids {
+                let Some(b) = s.get(id)? else { continue };
+                let keywords = b.keywords.split_whitespace().filter(|k| !gone.contains(&k.to_lowercase())).collect::<Vec<_>>().join(" ");
+                if keywords != b.keywords {
+                    tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![id, keywords])?;
+                    index_keywords(&tx, id, &keywords)?;
+                    changed += 1;
+                }
+            }
+            tx.commit()?;
+            Ok(changed)
+        })
+    }
+
     /// Powermarks' Fetch (F7): the page's title and description replace the bookmark's (when
     /// the page has them) and its keywords are added, as one undoable step.
     /// Returns (bookmarks changed, keywords added).
@@ -1224,6 +1249,12 @@ mod tests {
         assert_eq!(s.get(a).unwrap().unwrap().keywords, "x common Extra");
         assert_eq!(s.get(b).unwrap().unwrap().keywords, "y common Extra");
         assert_eq!(s.search("extra", 5).unwrap().len(), 2, "indexed");
+        s.undo().unwrap();
+        assert_eq!(s.get(b).unwrap().unwrap().keywords, "y common");
+        assert_eq!(s.remove_keywords(&[a, b], "COMMON y").unwrap(), 1, "a has neither");
+        assert_eq!(s.get(a).unwrap().unwrap().keywords, "x");
+        assert_eq!(s.get(b).unwrap().unwrap().keywords, "");
+        assert_eq!(s.search("common", 5).unwrap().len(), 0, "unindexed");
         s.undo().unwrap();
         assert_eq!(s.get(b).unwrap().unwrap().keywords, "y common");
     }
