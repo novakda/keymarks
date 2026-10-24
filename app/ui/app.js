@@ -503,6 +503,10 @@ function onListKeys(e) {
     changeRating([...selected], e.key === '-' ? -1 : 1);
   } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && inList) {
     copyUrls(ids.filter((id) => selected.has(id)));
+  } else if (e.key === 'x' && (e.ctrlKey || e.metaKey) && inList) {
+    cut(ids.filter((id) => selected.has(id)));
+  } else if (e.key === 'v' && (e.ctrlKey || e.metaKey) && inList) {
+    addFromClipboard();
   } else if (e.key === 'Delete' && inList) {
     remove([...selected]);
   } else return;
@@ -614,11 +618,11 @@ const changeRating = busyAware(async (toRate, by) => {
   } catch (e) { fail('Rating')(e); }
 });
 
-async function remove(toDelete) {
+async function remove(toDelete, { ask = true } = {}) {
   if (!toDelete.length) return;
   const one = cache.get(toDelete[0]);
   const what = toDelete.length === 1 ? `"${one?.title || one?.url || 'this bookmark'}"` : `${toDelete.length} bookmarks`;
-  if (!confirm(`Delete ${what}? (Ctrl+Z undoes it.)`)) return;
+  if (ask && !confirm(`Delete ${what}? (Ctrl+Z undoes it.)`)) return;
   try {
     const n = await invoke('delete_bookmarks', { ids: toDelete });
     dirty = false;
@@ -629,11 +633,21 @@ async function remove(toDelete) {
   } catch (e) { fail('Delete')(e); }
 }
 
+// URLs as text and as HTML links (titles kept when pasted into a document or mail).
 async function copyUrls(chosen) {
-  if (!chosen.length) return;
-  await fetchRows(chosen);
-  await navigator.clipboard.writeText(chosen.map((id) => cache.get(id)?.url).filter(Boolean).join('\n'));
+  if (!chosen.length) return false;
+  try {
+    await invoke('copy_bookmarks', { ids: chosen });
+  } catch (e) { fail('Copy')(e); return false; }
   say(chosen.length === 1 ? 'URL copied.' : `${chosen.length} URLs copied.`);
+  return true;
+}
+
+// Powermarks' Cut: copy, then delete without asking (Ctrl+Z brings them back).
+async function cut(chosen) {
+  if (!confirmDiscard() || !(await copyUrls(chosen))) return;
+  await remove(chosen, { ask: false });
+  say(`Cut ${chosen.length} bookmark${chosen.length === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
 }
 
 // Right-click a bookmark: it joins the selection (or replaces it, like Explorer).
@@ -661,6 +675,7 @@ $('bctx').addEventListener('click', async (e) => {
   if (act === 'open') chosen.forEach((id) => open(id));
   else if (act === 'open-new') chosen.forEach((id) => open(id, { newWindow: true }));
   else if (act === 'copy') copyUrls(chosen);
+  else if (act === 'cut') cut(chosen);
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
@@ -846,7 +861,10 @@ document.addEventListener('keydown', (e) => {
 $('check-all').onclick = () => startCheck(null);
 function showKeys() {
   if ($('keys-dlg').open) return;
-  invoke('get_settings').then((st) => { $('keys-hotkey').textContent = st.hotkey || '(none)'; }, () => {});
+  invoke('get_settings').then((st) => {
+    $('keys-hotkey').textContent = st.hotkey || '(none)';
+    $('keys-cliphotkey').textContent = st.clipboard_hotkey || '(none)';
+  }, () => {});
   $('keys-dlg').showModal();
 }
 $('keys-open').onclick = showKeys;
@@ -864,6 +882,7 @@ $('settings-open').onclick = async () => {
     $('s-minimized').checked = s.start_minimized;
     $('s-close').checked = s.close_to_tray;
     $('s-hotkey').value = s.hotkey;
+    $('s-cliphotkey').value = s.clipboard_hotkey;
     $('s-repair').checked = s.repair_moved_urls;
     $('s-fast').value = s.fast_add_keywords;
     $('s-scheduled').checked = s.scheduled_checks;
@@ -877,7 +896,7 @@ $('settings-open').onclick = async () => {
 };
 
 // Record the pressed combination instead of free text, e.g. "Ctrl+Alt+P".
-$('s-hotkey').addEventListener('keydown', (e) => {
+const recordHotkey = (e) => {
   if (e.key === 'Tab') return;
   e.preventDefault();
   if ((e.key === 'Backspace' || e.key === 'Delete') && !e.ctrlKey && !e.altKey) { e.target.value = ''; return; }
@@ -885,13 +904,16 @@ $('s-hotkey').addEventListener('keydown', (e) => {
   const key = e.code.startsWith('Key') ? e.code.slice(3) : e.code.startsWith('Digit') ? e.code.slice(5) : e.key.length === 1 ? e.key.toUpperCase() : e.code;
   const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
   e.target.value = [...mods, key].join('+');
-});
+};
+$('s-hotkey').addEventListener('keydown', recordHotkey);
+$('s-cliphotkey').addEventListener('keydown', recordHotkey);
 
 $('s-save').onclick = busyAware(async () => {
   const settings = {
     close_to_tray: $('s-close').checked,
     start_minimized: $('s-minimized').checked,
     hotkey: $('s-hotkey').value.trim(),
+    clipboard_hotkey: $('s-cliphotkey').value.trim(),
     repair_moved_urls: $('s-repair').checked,
     fast_add_keywords: $('s-fast').value.trim(),
     scheduled_checks: $('s-scheduled').checked,
@@ -1539,6 +1561,16 @@ document.addEventListener('keydown', (e) => {
   else if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newBookmark(); }
   else if (e.altKey && e.key === 'Insert') { e.preventDefault(); addFromClipboard(); }
 });
+// Added without the page asking: files dropped on the window, or the clipboard hotkey.
+const addedBy = (what) => async ({ payload: r }) => {
+  const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
+  if (!dirty) { await refreshDictionary(); await refresh(); }
+  say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${dup}. (Ctrl+Z undoes)`);
+};
+window.__TAURI__.event.listen('files-added', addedBy('file'));
+window.__TAURI__.event.listen('clipboard-added', addedBy('link'));
+window.__TAURI__.event.listen('files-added-error', ({ payload }) => fail('Add files')(payload));
+window.__TAURI__.event.listen('clipboard-added-error', ({ payload }) => fail('Add from clipboard')(payload));
 // Background fetches (titles for new bookmarks) finished.
 window.__TAURI__.event.listen('bookmarks-changed', async () => {
   if (dirty) return;

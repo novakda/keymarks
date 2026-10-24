@@ -22,6 +22,8 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Global shortcut that brings the window up ("" = none), e.g. "Ctrl+Alt+P".
     pub hotkey: String,
+    /// Global shortcut that adds the links on the clipboard (Powermarks' clipboard hotkey).
+    pub clipboard_hotkey: String,
     /// Link checks update URLs of pages that moved permanently (undoable).
     pub repair_moved_urls: bool,
     /// Keywords given to bookmarks added without a dialog (fast add, clipboard), so they can
@@ -49,6 +51,7 @@ impl Default for Settings {
             close_to_tray: false,
             start_minimized: true,
             hotkey: "Ctrl+Alt+P".into(),
+            clipboard_hotkey: String::new(),
             repair_moved_urls: true,
             fast_add_keywords: "new".into(),
             schedules: "Daily = 1d\nWeekly = 1w\nMonthly = 1mo".into(),

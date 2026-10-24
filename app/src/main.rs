@@ -169,22 +169,63 @@ fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String) -> Re
 /// Add every link on the clipboard (Powermarks' Alt+Ins), tagged with the fast-add keywords;
 /// titles and descriptions are fetched in the background.
 #[tauri::command]
-fn add_from_clipboard(app: AppHandle, db: State<Db>, settings: State<SettingsState>) -> Result<ImportReport, String> {
+fn add_from_clipboard(app: AppHandle) -> Result<ImportReport, String> {
+    clipboard_add(&app)
+}
+
+/// Also run by the clipboard hotkey, from anywhere.
+pub fn clipboard_add(app: &AppHandle) -> Result<ImportReport, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
     let text = app.clipboard().read_text().unwrap_or_default();
     let urls = checker::extract_urls(&text);
     if urls.is_empty() {
         return Err("No web links found on the clipboard".into());
     }
-    let keywords = settings.current.lock().unwrap().fast_add_keywords.clone();
+    let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
     let items: Vec<_> = urls
         .into_iter()
         .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), added: None })
         .collect();
     let step = format!("Add {} link{} from the clipboard", items.len(), if items.len() == 1 { "" } else { "s" });
-    let report = db.lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
-    fetch_in_background(app, report.ids.clone());
+    let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
+    fetch_in_background(app.clone(), report.ids.clone());
     Ok(report)
+}
+
+/// Copy (and Cut, which then deletes): the URLs as text, one per line, and as HTML links so
+/// a paste into a document or mail keeps the titles.
+#[tauri::command]
+fn copy_bookmarks(app: AppHandle, db: State<Db>, ids: Vec<i64>) -> Result<usize, String> {
+    use html_escape::{encode_double_quoted_attribute as attr, encode_text as text};
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let rows = db.lock().unwrap().get_many(&ids).map_err(err)?;
+    let plain = rows.iter().map(|b| b.url.as_str()).collect::<Vec<_>>().join("\r\n");
+    let html: String = rows
+        .iter()
+        .map(|b| format!("<a href=\"{}\">{}</a><br>\r\n", attr(&b.url), text(if b.title.is_empty() { &b.url } else { &b.title })))
+        .collect();
+    app.clipboard().write_html(html, Some(plain)).map_err(err)?;
+    Ok(rows.len())
+}
+
+/// Files and folders dropped from Explorer become file:/// bookmarks, opened with their
+/// associated app. Titled by file name and given the fast-add keywords, like a clipboard add.
+fn add_files(app: &AppHandle, paths: &[PathBuf]) -> Result<ImportReport, String> {
+    let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
+    let items = file_bookmarks(paths, &keywords);
+    let step = format!("Add {} file{}", items.len(), if items.len() == 1 { "" } else { "s" });
+    app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)
+}
+
+fn file_bookmarks(paths: &[PathBuf], keywords: &str) -> Vec<store::NewBookmark> {
+    paths
+        .iter()
+        .filter_map(|p| {
+            let url = reqwest::Url::from_file_path(p).ok()?.to_string();
+            let title = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+            Some(store::NewBookmark { url, title, keywords: keywords.into(), description: String::new(), added: None })
+        })
+        .collect()
 }
 
 /// Fill titles/descriptions of just-added bookmarks from their pages, then tell the UI.
@@ -516,20 +557,27 @@ fn get_settings(app: AppHandle, settings: State<SettingsState>) -> SettingsView 
     }
 }
 
-/// Apply and persist settings. The hotkey is applied first so a bad one changes nothing.
+/// Apply and persist settings. The hotkeys are applied first so a bad one changes nothing.
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings, autostart: bool) -> Result<(), String> {
     let mut current = state.current.lock().unwrap();
     let hotkey = settings.hotkey.trim().to_string();
+    let clipboard_hotkey = settings.clipboard_hotkey.trim().to_string();
+    if !hotkey.is_empty() && hotkey.eq_ignore_ascii_case(&clipboard_hotkey) {
+        return Err("The two hotkeys must differ".into());
+    }
     if hotkey != current.hotkey {
         desktop::apply_hotkey(&app, &current.hotkey, &hotkey)?;
+    }
+    if clipboard_hotkey != current.clipboard_hotkey {
+        desktop::apply_hotkey(&app, &current.clipboard_hotkey, &clipboard_hotkey)?;
     }
     let al = app.autolaunch();
     if autostart != al.is_enabled().unwrap_or(false) {
         if autostart { al.enable() } else { al.disable() }.map_err(err)?;
     }
     desktop::parse_schedules(&settings.schedules)?;
-    let new = Settings { hotkey, ui: current.ui.clone(), ..settings };
+    let new = Settings { hotkey, clipboard_hotkey, ui: current.ui.clone(), ..settings };
     state.save(&new)?;
     *current = new;
     Ok(())
@@ -739,8 +787,18 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let clip = app.state::<SettingsState>().current.lock().unwrap().clipboard_hotkey.clone();
+                    if clip.parse::<tauri_plugin_global_shortcut::Shortcut>().is_ok_and(|c| &c == shortcut) {
+                        // Nothing is shown: the status bar says what happened next time it's open.
+                        let _ = match clipboard_add(app) {
+                            Ok(r) => app.emit("clipboard-added", r),
+                            Err(e) => app.emit("clipboard-added-error", e),
+                        };
+                    } else {
                         desktop::show_main(app);
                     }
                 })
@@ -751,6 +809,14 @@ fn main() {
             Some(vec!["--minimized"]),
         ))
         .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                let app = window.app_handle();
+                let _ = match add_files(app, paths) {
+                    Ok(r) => app.emit("files-added", r),
+                    Err(e) => app.emit("files-added-error", e),
+                };
+                return;
+            }
             let settings = window.state::<SettingsState>();
             let settings = settings.current.lock().unwrap();
             match event {
@@ -785,8 +851,10 @@ fn main() {
             let settings = SettingsState::load(dir.join("settings.json"));
             let current = settings.current.lock().unwrap().clone();
             app.manage(settings);
-            if let Err(e) = desktop::apply_hotkey(app.handle(), "", &current.hotkey) {
-                eprintln!("{e}");
+            for key in [&current.hotkey, &current.clipboard_hotkey] {
+                if let Err(e) = desktop::apply_hotkey(app.handle(), "", key) {
+                    eprintln!("{e}");
+                }
             }
             desktop::build_tray(app.handle())?;
             if !desktop::test_mode() {
@@ -867,6 +935,7 @@ fn main() {
             export_file,
             add_bookmark,
             add_from_clipboard,
+            copy_bookmarks,
             saved_items,
             save_item,
             delete_saved_item,
@@ -883,7 +952,16 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, normalize_url, reg_sz};
+    use super::{browser_exe, file_bookmarks, normalize_url, reg_sz};
+
+    #[test]
+    fn dropped_files_become_file_urls() {
+        let dir = std::env::temp_dir();
+        let b = file_bookmarks(&[dir.join("My Notes #1.txt"), "relative.txt".into()], "new");
+        assert_eq!(b.len(), 1, "a path that isn't absolute is skipped");
+        assert!(b[0].url.starts_with("file:///") && b[0].url.ends_with("/My%20Notes%20%231.txt"), "{}", b[0].url);
+        assert_eq!((b[0].title.as_str(), b[0].keywords.as_str()), ("My Notes #1.txt", "new"));
+    }
 
     #[test]
     fn default_browser_command_is_parsed() {

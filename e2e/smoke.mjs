@@ -390,6 +390,12 @@ try {
   await idle();
   check('a bad schedule is refused', /needs a number/.test(await page.textContent('#s-error')));
   await page.fill('#s-schedules', 'Daily = 1d\nWeekly = 1w\nMonthly = 1mo');
+  // Refused before anything is registered, so no global hotkey is taken during the test.
+  await page.fill('#s-cliphotkey', await page.inputValue('#s-hotkey'));
+  await page.click('#s-save');
+  await idle();
+  check('the clipboard hotkey must differ from the show hotkey', /must differ/.test(await page.textContent('#s-error')));
+  await page.fill('#s-cliphotkey', '');
   await page.check('#s-newwin');
   await page.click('#s-save');
   await idle();

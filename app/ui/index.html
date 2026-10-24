@@ -280,7 +280,8 @@
       <tr><td>Insert</td><td>New bookmark</td></tr>
       <tr><td>Alt+Insert</td><td>Add the links on the clipboard</td></tr>
       <tr><td>Ctrl+S</td><td>Save the edited bookmark</td></tr>
-      <tr><td>Ctrl+C</td><td>Copy the selected URLs</td></tr>
+      <tr><td>Ctrl+C / Ctrl+X</td><td>Copy / cut the selected bookmarks (URLs, and links with titles)</td></tr>
+      <tr><td>Ctrl+V</td><td>Add the links on the clipboard (as Alt+Insert)</td></tr>
       <tr><td>Ctrl+Plus / Ctrl+Minus</td><td>Raise / lower the rating</td></tr>
       <tr><td>Del</td><td>Delete</td></tr>
       <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
@@ -290,6 +291,7 @@
       <tr><td>F8</td><td>Check all links that have checking on</td></tr>
       <tr><th colspan="2">Anywhere</th></tr>
       <tr><td id="keys-hotkey">Ctrl+Alt+P</td><td>Show Keymarks (global; change it in Settings)</td></tr>
+      <tr><td id="keys-cliphotkey">(none)</td><td>Add the links on the clipboard (global; set it in Settings)</td></tr>
       <tr><td>F1</td><td>This list</td></tr>
     </table>
     <div class="row">
@@ -303,6 +305,7 @@
   <button role="menuitem" data-act="open">Open (Enter)</button>
   <button role="menuitem" data-act="open-new">Open in new window (Shift+Enter)</button>
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
+  <button role="menuitem" data-act="cut">Cut (Ctrl+X)</button>
   <button role="menuitem" data-act="visited">Mark visited</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
@@ -465,6 +468,8 @@
         <label for="s-hotkey">Hotkey to bring up Keymarks from anywhere</label>
         <input id="s-hotkey" placeholder="Press a key combination (empty = none)" aria-describedby="s-hotkey-help">
         <p id="s-hotkey-help" class="help">Click the box and press the keys, e.g. Ctrl+Alt+P. Backspace clears it. The tray icon's menu lists the top results of your current search.</p>
+        <label for="s-cliphotkey">Hotkey to add the links on the clipboard, from anywhere</label>
+        <input id="s-cliphotkey" placeholder="Press a key combination (empty = none)">
       </fieldset>
       <fieldset><legend>Adding</legend>
         <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
