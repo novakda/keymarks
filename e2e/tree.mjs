@@ -37,6 +37,7 @@ function fakeTauri() {
     bm(14, 3, 1, 'Client wiki', 'https://client.example/'),
   ];
   const calls = (window.__calls = []);
+  window.__addItem = (folderId, title, url) => items.push(bm(nextId++, folderId, 99, title, url));
   let nextId = 100;
   const byPos = (a, b) => a.position - b.position;
   // A one-stack undo like the store's: each filing command saves the whole fake state.
@@ -97,7 +98,11 @@ function fakeTauri() {
       const id = nextId++;
       if (newFolder) folders.push({ id, parent_id: 1, name: 'Chrome (Default)', position: 99, folded: true });
       items.push(bm(nextId++, newFolder ? id : 1, 1, 'Imported', 'https://imported.example/'));
-      return { added: 1, duplicates: 1, ids: [], folders: newFolder ? 1 : 0, folder: newFolder ? id : null };
+      const added = nextId - 1;
+      return { added: 1, updated: 1, skipped: 1, ids: [added], folders: newFolder ? 1 : 0, folder: newFolder ? id : null, items: [
+        { outcome: 'added', id: added, url: 'https://imported.example/', title: 'Imported' },
+        { outcome: 'updated', id: 11, url: 'http://wiki.example', title: 'Wiki' },
+        { outcome: 'skipped', id: 13, url: 'https://www.tracker.example/', title: 'Tracker' }] };
     },
     export_file: ({ format }) => [3, `keymarks-bookmarks.${format}`],
     // The New Item Folder (ITEM-04): one at most; inbox adds make a root "New" if it's gone.
@@ -105,14 +110,28 @@ function fakeTauri() {
     add_bookmark: ({ url, title, folder }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title || url, url));
-      return { added: 1, duplicates: 0, ids: [id], folders: 0, folder: null };
+      return { added: 1, updated: 0, skipped: 0, ids: [id], folders: 0, folder: null, items: [{ outcome: 'added', id, url, title }] };
     },
     add_from_clipboard: () => {
       let inbox = folders.find((f) => f.new_items);
       if (!inbox) folders.push(inbox = { id: nextId++, parent_id: 1, name: 'New', position: 99, folded: true, new_items: true });
       const id = nextId++;
       items.push(bm(id, inbox.id, 99, 'Clipped', 'https://clipped.example/'));
-      return { added: 1, duplicates: 0, ids: [id], folders: 0, folder: null };
+      return { added: 1, updated: 0, skipped: 0, ids: [id], folders: 0, folder: null, items: [{ outcome: 'added', id, url: 'https://clipped.example/', title: 'Clipped' }] };
+    },
+    // The Duplicates view (SAVD-10): a rough url_key; the store's own is unit-tested.
+    duplicate_groups: () => {
+      const key = (u) => u.trim().replace(/^[a-z]+:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '').toLowerCase();
+      const groups = new Map();
+      for (const b of items) if (b.kind === 'bookmark' && b.url) groups.set(key(b.url), [...(groups.get(key(b.url)) ?? []), b.id]);
+      return [...groups.values()].filter((g) => g.length > 1);
+    },
+    merge_duplicates: ({ keep }) => {
+      snap('Merge duplicates');
+      const group = handlers.duplicate_groups().find((g) => g.includes(keep)) ?? [];
+      const gone = group.filter((id) => id !== keep);
+      for (const id of gone) items.splice(items.findIndex((b) => b.id === id), 1);
+      return gone.length;
     },
     add_note: ({ folder, title }) => {
       const id = nextId++;
@@ -314,7 +333,13 @@ const imp = (await calls('import_browser')).at(-1);
 check('the import gets the choices made in the dialog', imp && imp.folderWords === false && imp.newFolder === true && imp.browser === 'Chrome', JSON.stringify(imp));
 check('after the import the new folder is in the tree and selected, its items listed',
   (await page.textContent('#tree li[aria-selected=true] .name')) === 'Chrome (Default)' && JSON.stringify(await titles()) === '["Imported"]', `${JSON.stringify(await tree())} ${JSON.stringify(await titles())}`);
-check('the status bar reports folders and skipped duplicates', /Imported 1 bookmark in 1 folder from Chrome, skipped 1 already here/.test(await status()), await status());
+check('the status bar reports added / updated / skipped (XFER-02)', /Merge from Chrome: 1 added in 1 folder \/ 1 updated \/ 1 skipped/.test(await status()), await status());
+const report = await page.evaluate(() => ({
+  open: document.getElementById('report-dlg').open,
+  lists: [...document.querySelectorAll('#report-lists details')].map((d) => [d.querySelector('summary').textContent, d.querySelectorAll('li').length]),
+}));
+check('the merge report opens with an expandable list per outcome', report.open && JSON.stringify(report.lists.map(([t, n]) => [t.split(':')[0].split(' (')[0], n])) === '[["Added",1],["Updated",1],["Skipped",1]]', JSON.stringify(report));
+await page.click('#report-dlg button[value=close]');
 await page.focus('#list');
 await page.keyboard.press('Control+z');
 await idle();
@@ -420,6 +445,26 @@ await page.focus('#list');
 await page.keyboard.press('Alt+Insert');
 await idle();
 check('a clipboard add after the inbox was deleted shows the recreated "New" folder, marked', JSON.stringify(await inboxMarked()) === '["New"]', JSON.stringify(await tree()));
+
+// ---- Duplicate URLs view (SAVD-10): Ctrl+D lists the groups; Merge resolves the focused one's ----
+await page.evaluate(() => window.__addItem(1, 'Wiki copy', 'http://www.Wiki.example'));
+await page.focus('#list');
+await page.keyboard.press('Control+d');
+await idle();
+check('Ctrl+D shows the duplicate group, the bar and "Duplicate URLs [1]"', JSON.stringify(await titles()) === '["Wiki","Wiki copy"]' && !(await page.isHidden('#dup-bar'))
+  && (await page.textContent('#dup-view')).includes('Duplicate URLs [1]'), `${JSON.stringify(await titles())} ${await page.textContent('#dup-view')}`);
+await page.click('#dup-merge');
+await idle();
+const merged = (await calls('merge_duplicates')).at(-1);
+check('Merge merges into the focused bookmark, one undo step', merged?.keep === 11 && merged.merge === true && (await titles()).length === 0
+  && (await page.getAttribute('#undo', 'title')).includes('Merge duplicates'), `${JSON.stringify(merged)} ${JSON.stringify(await titles())}`);
+await page.keyboard.press('Control+z');
+await idle();
+check('Ctrl+Z brings the copy back into the view', JSON.stringify(await titles()) === '["Wiki","Wiki copy"]', JSON.stringify(await titles()));
+await page.focus('#list');
+await page.keyboard.press('Control+d');
+await idle();
+check('Ctrl+D again leaves the view', await page.isHidden('#dup-bar') && !(await page.textContent('#status')).startsWith('Duplicate URLs'), await page.textContent('#status'));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

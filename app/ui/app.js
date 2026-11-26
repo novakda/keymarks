@@ -27,6 +27,9 @@ let dictionary = [];       // every keyword (autocomplete, tag state)
 const ROOT = 1;
 let folders = [];          // every folder, root first, then by parent and position
 let folder = ROOT;         // the selected folder
+// The Duplicate URLs view (SAVD-10, Ctrl+D): the list shows the store's duplicate groups instead.
+let dupView = false;
+let dupGroup = new Map();  // id -> its group's index, while dupView
 try { folder = Number(localStorage.getItem('folder')) || ROOT; } catch {}
 
 // View and search preferences: read from localStorage, copied to settings.json on every
@@ -143,7 +146,7 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   let n, found, v, kw, hist;
   try {
     [n, found, v, kw, hist] = await Promise.all([
-      invoke('count'), invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
+      invoke('count'), dupView ? invoke('duplicate_groups') : invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
       invoke('keywords', { query: q.value, opts: scoped() }), invoke('history'),
     ]);
   } catch (e) {
@@ -158,6 +161,10 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   showHistory(hist);
   const cursorId = ids[cursor];
   total = n;
+  if (dupView) {
+    dupGroup = new Map(found.flatMap((g, n) => g.map((id) => [id, n])));
+    found = found.flat();
+  }
   ids = found;
   version = v;
   narrowed = kw;
@@ -255,6 +262,13 @@ function windowRange() {
 function render() {
   renderRows();
   renderPanel();
+  $('dup-bar').hidden = !dupView;
+  renderSaved();
+  if (dupView) {
+    return say(dupGroup.size
+      ? `Duplicate URLs: ${new Set(dupGroup.values()).size} groups, ${ids.length} bookmarks · Merge or Keep resolves the focused one's group · Ctrl+D leaves`
+      : 'Duplicate URLs: none. (http/https, www., a trailing / and the host\'s case don\'t count as different.) Ctrl+D leaves.');
+  }
   say(total === 0
     ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
     : `${ids.length} matching${!searching() ? ` in “${folderName(folder)}”` : opts.in_folder ? ` in “${folderName(folder)}” and below` : ''} · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
@@ -399,6 +413,7 @@ function renderTable() {
     tr.className = 'vrow';
     tr.ariaSelected = String(selected.has(ids[i]));
     tr.classList.toggle('sel', selected.has(ids[i]));
+    tr.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     tr.classList.toggle('cursor', i === cursor);
     tr.classList.toggle('note', isNote(b));
     rate(tr, b);
@@ -445,6 +460,7 @@ function renderCards() {
     li.role = 'option';
     li.ariaSelected = String(selected.has(ids[i]));
     li.classList.toggle('sel', selected.has(ids[i]));
+    li.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     li.classList.toggle('cursor', i === cursor);
     li.classList.toggle('note', isNote(b));
     rate(li, b);
@@ -1049,13 +1065,20 @@ async function refreshSaved() {
 }
 
 function renderSaved() {
+  // Built in, always first (Compass's "Duplicate URLs [n]", SAVD-10).
+  const dups = Object.assign(document.createElement('li'), { id: 'dup-view', title: 'Bookmarks whose URLs are the same link · Ctrl+D' });
+  dups.classList.toggle('active', dupView);
+  dups.append(Object.assign(document.createElement('span'), { textContent: '⧉', ariaHidden: 'true' }),
+    Object.assign(document.createElement('span'), { textContent: dupView ? `Duplicate URLs [${new Set(dupGroup.values()).size}]` : 'Duplicate URLs' }),
+    Object.assign(document.createElement('span'), { className: 'n', textContent: 'Ctrl+D' }));
+  dups.onclick = () => toggleDupView();
   if (!savedItems.length) {
-    $('savedlist').replaceChildren(Object.assign(document.createElement('li'), {
+    $('savedlist').replaceChildren(dups, Object.assign(document.createElement('li'), {
       className: 'hint', textContent: 'Save searches with ☆ and pin links from a bookmark.',
     }));
     return;
   }
-  $('savedlist').replaceChildren(...savedItems.map((item, i) => {
+  $('savedlist').replaceChildren(dups, ...savedItems.map((item, i) => {
     const li = document.createElement('li');
     li.title = (item.kind === 'link' ? item.url : item.query) + ' · click to run, right-click for more';
     const icon = document.createElement('span');
@@ -1086,6 +1109,33 @@ async function runSaved(item) {
   await refresh({ keepSelection: false });
   say(`Saved search "${item.name}": ${ids.length} matching.`);
 }
+
+async function toggleDupView(on = !dupView) {
+  if (!(await confirmDiscard())) return;
+  dupView = on;
+  await refresh({ keepSelection: false });
+}
+
+// Merge: the focused bookmark takes the others' keywords and fills its empty fields from
+// them; Keep: the others are just deleted. Either way one undo step (Ctrl+Z).
+async function resolveDuplicates(merge) {
+  const keep = ids[cursor];
+  if (!dupView || keep === undefined) return;
+  try {
+    const n = await invoke('merge_duplicates', { keep, merge });
+    await refreshDictionary();
+    await refresh();
+    say(`${merge ? 'Merged' : 'Deleted'} ${n} duplicate${n === 1 ? '' : 's'} of “${cache.get(keep)?.title || 'the focused bookmark'}”. Ctrl+Z undoes it.`);
+  } catch (e) { fail('Duplicates')(e); }
+}
+$('dup-merge').onclick = busyAware(() => resolveDuplicates(true));
+$('dup-keep').onclick = busyAware(() => resolveDuplicates(false));
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'd') return;
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  toggleDupView();
+});
 
 // One dialog for saving/editing both kinds. `item.id` 0 means new.
 let savedDraft = null;
@@ -1223,7 +1273,8 @@ function renderTree() {
  *  scoped to the folder: then it searches the new one). */
 async function setFolder(id, { load = true } = {}) {
   if (load && !(await confirmDiscard())) return;
-  const changed = id !== folder;
+  const changed = id !== folder || dupView;
+  if (load) dupView = false;
   folder = id;
   try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
   renderTree();
@@ -1961,7 +2012,7 @@ document.addEventListener('click', (e) => {
 });
 applyOptsToUi();
 
-q.addEventListener('input', async () => { if (await confirmDiscard()) refresh({ keepSelection: false }); });
+q.addEventListener('input', async () => { if (await confirmDiscard()) { dupView = false; refresh({ keepSelection: false }); } });
 q.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && q.value) { e.preventDefault(); setSearch(''); return; }
   onListKeys(e);
@@ -2016,7 +2067,9 @@ async function addNewBookmark() {
       await reveal(report.ids[0]);
       say($('n-title').value.trim() ? 'Added.' : 'Added. Fetching its title…');
     } else {
-      say('That URL is already bookmarked.');
+      const same = report.items[0];
+      if (same) await reveal(same.id);
+      say(`That URL is already bookmarked${same?.outcome === 'updated' ? ' (its empty title was filled in)' : ''}: shown.`);
     }
   } catch (e) { $('n-error').textContent = String(e); }
 }
@@ -2029,6 +2082,8 @@ $('n-cancel').onclick = () => $('new-dlg').close();
 // Cancel buttons are type=button (so Enter never means Cancel) and close their dialog.
 document.addEventListener('click', (e) => { if (e.target.matches('dialog [data-close]')) e.target.closest('dialog').close(); });
 
+const alreadyHere = (r) => (r.updated + r.skipped ? `, ${r.updated + r.skipped} already here${r.updated ? ` (${r.updated} filled in)` : ''}` : '');
+
 async function addFromClipboard() {
   if (!(await confirmDiscard())) return;
   try {
@@ -2036,8 +2091,7 @@ async function addFromClipboard() {
     await refreshFolders(); // the New Item Folder may have just been made
     await refreshDictionary();
     await refresh();
-    const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
-    say(`Added ${r.added} link${r.added === 1 ? '' : 's'} from the clipboard${dup}. Fetching titles… (Ctrl+Z undoes)`);
+    say(`Added ${r.added} link${r.added === 1 ? '' : 's'} from the clipboard${alreadyHere(r)}. Fetching titles… (Ctrl+Z undoes)`);
   } catch (e) { fail('Add from clipboard')(e); }
 }
 
@@ -2054,9 +2108,8 @@ document.addEventListener('keydown', (e) => {
 });
 // Added without the page asking: files dropped on the window, or the clipboard hotkey.
 const addedBy = (what) => async ({ payload: r }) => {
-  const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
   if (!dirty) { await refreshFolders(); await refreshDictionary(); await refresh(); }
-  say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${dup}. (Ctrl+Z undoes)`);
+  say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${alreadyHere(r)}. (Ctrl+Z undoes)`);
 };
 window.__TAURI__.event.listen('files-added', addedBy('file'));
 window.__TAURI__.event.listen('clipboard-added', addedBy('link'));
@@ -2122,11 +2175,33 @@ $('ex-go').onclick = busyAware(async () => {
 
 // ---- import --------------------------------------------------------------------
 
+// The merge report (XFER-02): counts, and each link under what became of it.
+const REPORT_SHOWN = 500; // per list; the rest are counted
 function importDone(report, from) {
   if (!report) return; // file dialog cancelled
-  const dup = report.duplicates ? `, skipped ${report.duplicates} already here` : '';
   const fs = report.folders ? ` in ${report.folders} folder${report.folders === 1 ? '' : 's'}` : '';
-  say(`Imported ${report.added} bookmark${report.added === 1 ? '' : 's'}${fs} from ${from}${dup}. Ctrl+Z undoes it.`);
+  const sum = `Merge from ${from}: ${report.added} added${fs} / ${report.updated} updated / ${report.skipped} skipped.`;
+  say(`${sum} Ctrl+Z undoes it.`);
+  $('report-sum').textContent = sum;
+  $('report-lists').replaceChildren(...[
+    ['added', 'Added'], ['updated', 'Updated: already here, empty fields filled from the import'], ['skipped', 'Skipped: already here, nothing to fill'],
+  ].map(([outcome, label]) => {
+    const rows = report.items.filter((i) => i.outcome === outcome);
+    const d = Object.assign(document.createElement('details'), { className: `report-${outcome}` });
+    d.append(Object.assign(document.createElement('summary'), { textContent: `${label} (${rows.length})` }));
+    const ul = document.createElement('ul');
+    ul.append(...rows.slice(0, REPORT_SHOWN).map((i) => {
+      const li = document.createElement('li');
+      li.append(Object.assign(document.createElement('span'), { textContent: i.title || i.url }), ' ',
+        Object.assign(document.createElement('span'), { className: 'hint', textContent: i.url }));
+      li.ondblclick = () => { $('report-dlg').close(); reveal(i.id); };
+      return li;
+    }));
+    if (rows.length > REPORT_SHOWN) ul.append(Object.assign(document.createElement('li'), { className: 'hint', textContent: `…and ${rows.length - REPORT_SHOWN} more` }));
+    d.append(ul);
+    return d;
+  }));
+  $('report-dlg').showModal();
 }
 
 async function afterImport(report, from) {
@@ -2186,8 +2261,8 @@ $('import-html').onclick = busyAware(async () => {
 
 $('import-pm35').onclick = busyAware(async () => {
   try {
-    const n = await invoke('import_pm35');
-    if (n !== null) await afterImport({ added: n, duplicates: 0 }, 'Powermarks');
+    const report = await invoke('import_pm35');
+    if (report !== null) await afterImport(report, 'Powermarks');
   } catch (e) { fail('Import')(e); }
 });
 

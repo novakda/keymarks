@@ -104,6 +104,11 @@
   #savedlist li { display: flex; gap: 6px; padding: 3px 10px; cursor: default; user-select: none; }
   #savedlist li:hover, #savedlist li.active { background: var(--sel); }
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  /* Floats over the list: the body grid places its children automatically. */
+  #dup-bar:not([hidden]) { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+  .vrow.dupodd:not(.sel) { background: color-mix(in srgb, var(--sel) 45%, transparent); }
+  #report-lists ul { max-height: 40vh; overflow: auto; margin: 4px 0 8px; padding-left: 18px; }
+  #report-lists li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #savedlist .hint { color: var(--muted); font-size: 12px; padding: 0 10px 6px; cursor: default; }
   #kwlist li { display: flex; gap: 6px; padding: 2px 10px; cursor: default; user-select: none; content-visibility: auto; contain-intrinsic-size: auto 22px; }
   #kwlist li:hover, #kwlist li.active, #kwlist li:focus { background: var(--sel); outline: none; }
@@ -280,6 +285,11 @@
     <ul id="kwlist" aria-label="Keywords"></ul>
   </section>
 </nav>
+<div id="dup-bar" role="toolbar" aria-label="Duplicate URLs" hidden>
+  <span>Focused bookmark:</span>
+  <button id="dup-merge" type="button" title="Keep the focused bookmark; it takes the other copies' keywords and fills its empty fields from them; the copies are deleted">Merge group into it</button>
+  <button id="dup-keep" type="button" class="secondary" title="Keep the focused bookmark as it is; delete the other copies">Keep it, delete the others</button>
+</div>
 <ul id="list" role="listbox" aria-label="Bookmarks" aria-multiselectable="true" tabindex="0"></ul>
 <div id="tablewrap" tabindex="0" hidden>
   <table id="table" aria-label="Bookmarks" aria-multiselectable="true">
@@ -405,6 +415,16 @@
   <button role="menuitem" data-act="delete">Delete…</button>
 </div>
 
+<dialog id="report-dlg" aria-labelledby="report-title">
+  <form method="dialog">
+    <h2 id="report-title">Merge report</h2>
+    <p id="report-sum"></p>
+    <div id="report-lists"></div>
+    <p class="hint">Double-click a line to show the bookmark. Ctrl+Z undoes the whole import.</p>
+    <div class="row"><button value="close">Close</button></div>
+  </form>
+</dialog>
+
 <dialog id="saved-dlg" aria-labelledby="saved-title">
   <form method="dialog" id="saved-form">
     <h2 id="saved-title">Save search</h2>
@@ -438,7 +458,7 @@
 <dialog id="import-dlg" aria-labelledby="import-title">
   <form method="dialog">
     <h2 id="import-title">Import bookmarks</h2>
-    <p class="intro">Folders come in as folders, in their order. Links you already have are skipped (http/https, www. and a trailing / don't count as different). Each import can be undone with Ctrl+Z.</p>
+    <p class="intro">Folders come in as folders, in their order. Links you already have are not added again (http/https, www., a trailing / and the host's case don't count as different); one already here takes any field it has empty from the import. A report lists what was added, updated and skipped. Each import can be undone with Ctrl+Z.</p>
     <fieldset class="plain"><legend>Put it</legend>
       <label><input type="radio" name="import-into" value="new" checked> In a new folder named after the browser or file</label>
       <label><input type="radio" name="import-into" value="tree"> Straight into the tree (folders with the same name are merged)</label>
