@@ -87,6 +87,15 @@ function fakeTauri() {
       for (const b of items) if (b.folder_id === id) b.folder_id = f.parent_id;
       folders.splice(folders.indexOf(f), 1);
     },
+    get_settings: () => ({ folder_keywords: true, autostart: false }),
+    browser_sources: () => [{ browser: 'Chrome', profile: 'Default', count: 2 }],
+    import_browser: ({ newFolder }) => {
+      snap('Import from Chrome (Default)');
+      const id = nextId++;
+      if (newFolder) folders.push({ id, parent_id: 1, name: 'Chrome (Default)', position: 99, folded: true });
+      items.push(bm(nextId++, newFolder ? id : 1, 1, 'Imported', 'https://imported.example/'));
+      return { added: 1, duplicates: 1, ids: [], folders: newFolder ? 1 : 0, folder: newFolder ? id : null };
+    },
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -274,6 +283,24 @@ check('Ctrl+Shift+N creates a folder inside the selected one', JSON.stringify((a
 await page.keyboard.press('Control+z');
 await idle();
 check('undoing the new folder takes it out of the tree', !(await tree()).includes('Recipes') && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks', JSON.stringify(await tree()));
+
+// ---- import: the tree options are asked before the import runs (XFER-05, KEY-09, Q4) ----
+await page.evaluate(() => document.getElementById('import').click());
+await page.waitForSelector('#import-sources button');
+check('the import dialog pre-fills "folder names as keywords" from Options', await page.isChecked('#import-folder-words'));
+check('a new folder named after the source is the default destination', await page.isChecked('input[name=import-into][value=new]'));
+await page.uncheck('#import-folder-words');
+await page.click('#import-sources button');
+await idle();
+const imp = (await calls('import_browser')).at(-1);
+check('the import gets the choices made in the dialog', imp && imp.folderWords === false && imp.newFolder === true && imp.browser === 'Chrome', JSON.stringify(imp));
+check('after the import the new folder is in the tree and selected, its items listed',
+  (await page.textContent('#tree li[aria-selected=true] .name')) === 'Chrome (Default)' && JSON.stringify(await titles()) === '["Imported"]', `${JSON.stringify(await tree())} ${JSON.stringify(await titles())}`);
+check('the status bar reports folders and skipped duplicates', /Imported 1 bookmark in 1 folder from Chrome, skipped 1 already here/.test(await status()), await status());
+await page.focus('#list');
+await page.keyboard.press('Control+z');
+await idle();
+check('Ctrl+Z undoes the whole import', !(await tree()).includes('Chrome (Default)') && (await status()).startsWith('Undid: Import from Chrome'), `${JSON.stringify(await tree())} ${await status()}`);
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

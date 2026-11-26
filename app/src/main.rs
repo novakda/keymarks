@@ -100,29 +100,43 @@ struct SourceView {
 async fn browser_sources() -> Vec<SourceView> {
     browsers::detect()
         .into_iter()
-        .map(|s| SourceView { count: browsers::read(&s).ok().map(|b| b.len()), browser: s.browser, profile: s.profile })
+        .map(|s| SourceView { count: browsers::read(&s).ok().map(|b| store::bookmarks(&b).len()), browser: s.browser, profile: s.profile })
         .collect()
 }
 
-/// Merge-import one detected browser profile (looked up again here: the UI never passes paths).
+/// Import one detected browser profile (looked up again here: the UI never passes paths) with
+/// its folder tree: into a new folder named after it (`new_folder`) or straight into the tree.
 #[tauri::command]
-async fn import_browser(db: State<'_, Db>, browser: String, profile: String, title_words: bool) -> Result<ImportReport, String> {
+async fn import_browser(
+    db: State<'_, Db>,
+    browser: String,
+    profile: String,
+    title_words: bool,
+    folder_words: bool,
+    new_folder: bool,
+) -> Result<ImportReport, String> {
     let source = browsers::detect()
         .into_iter()
         .find(|s| s.browser == browser && s.profile == profile)
         .ok_or_else(|| format!("{browser} profile {profile} not found"))?;
-    let items = with_title_words(browsers::read(&source)?, title_words);
-    db.lock().unwrap().import_bookmarks(&format!("Import from {browser} ({profile})"), &items).map_err(err)
+    let entries = with_title_words(browsers::read(&source)?, title_words);
+    let name = format!("{browser} ({profile})");
+    db.lock()
+        .unwrap()
+        .import_tree(&format!("Import from {name}"), &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words)
+        .map_err(err)
 }
 
-/// The import option "keywords from titles": each title's words join its folder keywords.
-fn with_title_words(mut items: Vec<store::NewBookmark>, on: bool) -> Vec<store::NewBookmark> {
+/// The import option "keywords from titles": each title's words join its keywords.
+fn with_title_words(mut entries: Vec<store::Entry>, on: bool) -> Vec<store::Entry> {
     if on {
-        for b in &mut items {
-            b.keywords = format!("{} {}", b.keywords, store::title_keywords(&b.title));
+        for e in &mut entries {
+            if let store::Entry::Bookmark(b) = e {
+                b.keywords = format!("{} {}", b.keywords, store::title_keywords(&b.title));
+            }
         }
     }
-    items
+    entries
 }
 
 /// Remove keywords from the selection (one undo step).
@@ -160,7 +174,7 @@ fn normalize_url(input: &str) -> Result<String, String> {
 fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String) -> Result<ImportReport, String> {
     let url = normalize_url(&url)?;
     let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
-    let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), added: None };
+    let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), notes: String::new(), added: None };
     let report = db.lock().unwrap().import_bookmarks("Add bookmark", &[item]).map_err(err)?;
     fetch_in_background(app, report.ids.clone());
     Ok(report)
@@ -184,7 +198,7 @@ pub fn clipboard_add(app: &AppHandle) -> Result<ImportReport, String> {
     let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
     let items: Vec<_> = urls
         .into_iter()
-        .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), added: None })
+        .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), notes: String::new(), added: None })
         .collect();
     let step = format!("Add {} link{} from the clipboard", items.len(), if items.len() == 1 { "" } else { "s" });
     let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
@@ -223,7 +237,7 @@ fn file_bookmarks(paths: &[PathBuf], keywords: &str) -> Vec<store::NewBookmark> 
         .filter_map(|p| {
             let url = reqwest::Url::from_file_path(p).ok()?.to_string();
             let title = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
-            Some(store::NewBookmark { url, title, keywords: keywords.into(), description: String::new(), added: None })
+            Some(store::NewBookmark { url, title, keywords: keywords.into(), description: String::new(), notes: String::new(), added: None })
         })
         .collect()
 }
@@ -260,10 +274,17 @@ fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
     });
 }
 
-/// Pick a file and merge it in: bookmarks HTML (any browser), any web page (its links), or a
-/// Keymarks JSON export (every field kept).
+/// Pick a file and bring it in: bookmarks HTML (any browser, or Compass) with its folder tree,
+/// into a new folder named after the file (`new_folder`) or straight into the tree; any web
+/// page (its links); or a Keymarks JSON export (every field kept, into the root).
 #[tauri::command]
-async fn import_html_file(app: AppHandle, db: State<'_, Db>, title_words: bool) -> Result<Option<ImportReport>, String> {
+async fn import_html_file(
+    app: AppHandle,
+    db: State<'_, Db>,
+    title_words: bool,
+    folder_words: bool,
+    new_folder: bool,
+) -> Result<Option<ImportReport>, String> {
     let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
     let Some(path) = picked else { return Ok(None) };
     let path = path.into_path().map_err(err)?;
@@ -274,8 +295,9 @@ async fn import_html_file(app: AppHandle, db: State<'_, Db>, title_words: bool) 
         let rows = store::export::read_json(&text)?;
         return db.lock().unwrap().import_rows(&step, &rows).map(Some).map_err(err);
     }
-    let items = with_title_words(browsers::read_netscape_html(&text), title_words);
-    db.lock().unwrap().import_bookmarks(&step, &items).map(Some).map_err(err)
+    let entries = with_title_words(browsers::read_netscape_html(&text), title_words);
+    let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(label);
+    db.lock().unwrap().import_tree(&step, &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words).map(Some).map_err(err)
 }
 
 /// Export bookmarks (`ids` in that order, or all) to a file the user picks: "html" (any

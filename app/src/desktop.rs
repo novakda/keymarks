@@ -40,6 +40,9 @@ pub struct Settings {
     pub hide_after_open: bool,
     /// Minimising hides the window from the taskbar (it stays in the tray).
     pub hide_when_minimized: bool,
+    /// Imports that keep the folder tree also add every folder name as keywords (KEY-09, Q4).
+    /// The Import dialog starts from this and can change it for one import.
+    pub folder_keywords: bool,
     /// View and search preferences (view, columns, widths, panes, search options), kept by
     /// the page in localStorage and copied here so they travel with this file.
     pub ui: std::collections::BTreeMap<String, String>,
@@ -59,6 +62,7 @@ impl Default for Settings {
             open_new_window: false,
             hide_after_open: false,
             hide_when_minimized: false,
+            folder_keywords: false,
             ui: Default::default(),
         }
     }

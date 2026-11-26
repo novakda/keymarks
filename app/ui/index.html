@@ -429,8 +429,13 @@
 <dialog id="import-dlg" aria-labelledby="import-title">
   <form method="dialog">
     <h2 id="import-title">Import bookmarks</h2>
-    <p class="intro">Bookmarks are merged in: folder names become keywords, and links you already have are skipped. Each import can be undone with Ctrl+Z.</p>
+    <p class="intro">Folders come in as folders, in their order. Links you already have are skipped (http/https, www. and a trailing / don't count as different). Each import can be undone with Ctrl+Z.</p>
+    <fieldset class="plain"><legend>Put it</legend>
+      <label><input type="radio" name="import-into" value="new" checked> In a new folder named after the browser or file</label>
+      <label><input type="radio" name="import-into" value="tree"> Straight into the tree (folders with the same name are merged)</label>
+    </fieldset>
     <div id="import-sources"></div>
+    <label class="check"><input id="import-folder-words" type="checkbox"> Also add folder names as keywords</label>
     <label class="check"><input id="import-title-words" type="checkbox"> Also make keywords from title words (common words left out)</label>
     <div class="row">
       <button id="import-html" type="button" class="secondary" title="Browser bookmarks HTML, any web page (its links) or a Keymarks JSON export">Bookmarks, web page or JSON file…</button>
@@ -536,9 +541,10 @@
         <label for="s-cliphotkey">Hotkey to add the links on the clipboard, from anywhere</label>
         <input id="s-cliphotkey" placeholder="Press a key combination (empty = none)">
       </fieldset>
-      <fieldset><legend>Adding</legend>
+      <fieldset><legend>Adding and importing</legend>
         <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
         <input id="s-fast" placeholder="e.g. new">
+        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
       </fieldset>
       <fieldset><legend>Link checking</legend>
         <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>

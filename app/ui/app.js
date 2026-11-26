@@ -913,6 +913,7 @@ $('settings-open').onclick = async () => {
     $('s-newwin').checked = s.open_new_window;
     $('s-hideopen').checked = s.hide_after_open;
     $('s-hidemin').checked = s.hide_when_minimized;
+    $('s-folderkw').checked = s.folder_keywords;
     $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
     $('settings').showModal();
@@ -944,6 +945,7 @@ $('s-save').onclick = busyAware(async () => {
     open_new_window: $('s-newwin').checked,
     hide_after_open: $('s-hideopen').checked,
     hide_when_minimized: $('s-hidemin').checked,
+    folder_keywords: $('s-folderkw').checked,
     schedules: $('s-schedules').value,
   };
   try {
@@ -2055,20 +2057,33 @@ $('ex-go').onclick = busyAware(async () => {
 function importDone(report, from) {
   if (!report) return; // file dialog cancelled
   const dup = report.duplicates ? `, skipped ${report.duplicates} already here` : '';
-  say(`Imported ${report.added} bookmark${report.added === 1 ? '' : 's'} from ${from}${dup}. Ctrl+Z undoes it.`);
+  const fs = report.folders ? ` in ${report.folders} folder${report.folders === 1 ? '' : 's'}` : '';
+  say(`Imported ${report.added} bookmark${report.added === 1 ? '' : 's'}${fs} from ${from}${dup}. Ctrl+Z undoes it.`);
 }
 
 async function afterImport(report, from) {
   $('import-dlg').close();
   await refreshDictionary();
+  await refreshFolders();
+  // Show what came in: the new folder if there is one.
+  if (report.folder) setFolder(report.folder, { load: false });
   await refresh({ keepSelection: false });
   importDone(report, from);
 }
+
+// The tree options every tree-keeping import passes, as chosen in the dialog.
+const importChoices = () => ({
+  titleWords: $('import-title-words').checked,
+  folderWords: $('import-folder-words').checked,
+  newFolder: document.querySelector('input[name=import-into]:checked').value === 'new',
+});
 
 importBtn.onclick = busyAware(async () => {
   if (!confirmDiscard()) return;
   $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'Looking for browsers…' }));
   $('import-dlg').showModal();
+  // Folder names as keywords: the Options setting, changeable here for this import (Q4).
+  try { $('import-folder-words').checked = !!(await invoke('get_settings')).folder_keywords; } catch { $('import-folder-words').checked = false; }
   try {
     const sources = await invoke('browser_sources');
     if (!sources.length) {
@@ -2082,7 +2097,7 @@ importBtn.onclick = busyAware(async () => {
       Object.assign(tr.insertCell(), { className: 'num', textContent: src.count === null ? "can't read" : `${src.count.toLocaleString()} bookmarks` });
       const btn = Object.assign(document.createElement('button'), { type: 'button', className: 'secondary', textContent: 'Import', disabled: !src.count });
       btn.onclick = busyAware(async () => {
-        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile, titleWords: $('import-title-words').checked }), `${src.browser}`); }
+        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile, ...importChoices() }), `${src.browser}`); }
         catch (e) { fail('Import')(e); }
       });
       tr.insertCell().append(btn);
@@ -2096,7 +2111,7 @@ $('import-title-words').onchange = (e) => { try { localStorage.setItem('import-t
 
 $('import-html').onclick = busyAware(async () => {
   try {
-    const report = await invoke('import_html_file', { titleWords: $('import-title-words').checked });
+    const report = await invoke('import_html_file', importChoices());
     if (report) await afterImport(report, 'the file');
   } catch (e) { fail('Import')(e); }
 });
