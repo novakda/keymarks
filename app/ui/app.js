@@ -30,6 +30,9 @@ let folder = ROOT;         // the selected folder
 // The Duplicate URLs view (SAVD-10, Ctrl+D): the list shows the store's duplicate groups instead.
 let dupView = false;
 let dupGroup = new Map();  // id -> its group's index, while dupView
+// The properties panel shows the selected folder (title and note, NOTE-02) while the tree has
+// focus, and the selected bookmark once the list does.
+let folderPanel = false;
 try { folder = Number(localStorage.getItem('folder')) || ROOT; } catch {}
 
 // View and search preferences: read from localStorage, copied to settings.json on every
@@ -177,6 +180,7 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
     selected = new Set([pendingReveal]);
     cursor = anchor = ids.indexOf(pendingReveal);
     pendingReveal = null;
+    folderPanel = false; // a new or revealed item: show it, not the folder
     revealCursor();
   }
   if (selected.size === 0 && ids.length) selected.add(ids[cursor]);
@@ -545,6 +549,7 @@ async function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } 
     anchor = i;
   }
   cursor = i;
+  folderPanel = false;
   revealCursor();
   await fetchRows([id]); // the properties panel needs it
   render();
@@ -1278,6 +1283,7 @@ async function setFolder(id, { load = true } = {}) {
   folder = id;
   try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
   renderTree();
+  if (folderPanel) renderPanel();
   $('tree').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
   if (!load) return;
   if (opts.in_folder && searching()) { if (!changed) return; }
@@ -1826,6 +1832,7 @@ $('cleanup-apply').addEventListener('click', busyAware(async () => {
 function renderPanel() {
   const one = selected.size === 1 ? cache.get([...selected][0]) : null;
   if (dirty && editing && one?.id === editing.id) return; // keep unsaved edits on screen
+  if (folderPanel) return renderFolderPanel();
   dirty = false;
   editing = one ? { ...one } : null;
   if (selected.size > 1) {
@@ -1894,6 +1901,34 @@ function renderPanel() {
   };
   input.onblur = () => { if (input.value.trim()) commitChip(); };
 }
+
+// A folder's title and note (NOTE-02, ITEM-11). The note saves when the box loses focus, as
+// one undo step; it is searched with the folder path (a word in it finds what's filed below).
+function renderFolderPanel() {
+  const f = folders.find((x) => x.id === folder);
+  const box = $('fn-note');
+  if (box && document.activeElement === box && Number(box.dataset.folder) === f?.id) return; // typing
+  editing = null;
+  if (!f) return panel.replaceChildren();
+  const head = Object.assign(document.createElement('h2'), { id: 'fn-title', textContent: f.name });
+  const where = Object.assign(document.createElement('div'), { className: 'info', textContent: `Folder · ${childFolders(f.id).length} subfolders` + (!searching() && !dupView ? ` · ${ids.length} items` : '') });
+  const label = Object.assign(document.createElement('label'), { htmlFor: 'fn-note', textContent: 'Folder notes' });
+  const note = Object.assign(document.createElement('textarea'), { id: 'fn-note', value: f.note ?? '', rows: 10, placeholder: 'What this folder is for…' });
+  note.dataset.folder = f.id;
+  note.onblur = async () => {
+    if (note.value.trim() === (f.note ?? '')) return;
+    try {
+      await invoke('set_folder_note', { id: f.id, note: note.value });
+      await refreshFolders();
+      await refresh(); // undo label, and a search may now match through the note
+      say(`Saved the note on “${f.name}”. Ctrl+Z undoes it.`);
+    } catch (e) { fail('Folder note')(e); }
+  };
+  const hint = Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Saves when you leave the box. Words in it find this folder\'s bookmarks.' });
+  panel.replaceChildren(head, where, label, note, hint);
+}
+$('tree').addEventListener('focusin', () => { if (!folderPanel) { folderPanel = true; renderPanel(); } });
+for (const el of [list, tablewrap]) el.addEventListener('focusin', () => { if (folderPanel) { folderPanel = false; renderPanel(); } });
 
 function commitChip() {
   const input = $('f-kw');

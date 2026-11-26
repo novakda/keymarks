@@ -61,24 +61,31 @@ pub(crate) fn resolve(tx: &Connection, folder: i64, created: &mut Vec<i64>) -> R
     Ok(id)
 }
 
-/// v8 migration step: folder names in their own full-text index (external content, kept by
-/// triggers, so undo, restore and every write path stay in step). Idempotent.
+/// v8 migration step (v10: the note too): folder names and notes in their own full-text
+/// index (external content, kept by triggers, so undo, restore and every write path stay in
+/// step). Idempotent.
 pub(crate) fn migrate_search(tx: &Connection) -> Result<()> {
     tx.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS folder_fts USING fts5(
-            name, content='folder', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+            name, note, content='folder', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
         CREATE TRIGGER IF NOT EXISTS folder_ai AFTER INSERT ON folder BEGIN
-            INSERT INTO folder_fts(rowid, name) VALUES (new.id, new.name);
+            INSERT INTO folder_fts(rowid, name, note) VALUES (new.id, new.name, new.note);
         END;
         CREATE TRIGGER IF NOT EXISTS folder_ad AFTER DELETE ON folder BEGIN
-            INSERT INTO folder_fts(folder_fts, rowid, name) VALUES ('delete', old.id, old.name);
+            INSERT INTO folder_fts(folder_fts, rowid, name, note) VALUES ('delete', old.id, old.name, old.note);
         END;
-        CREATE TRIGGER IF NOT EXISTS folder_au AFTER UPDATE OF name ON folder BEGIN
-            INSERT INTO folder_fts(folder_fts, rowid, name) VALUES ('delete', old.id, old.name);
-            INSERT INTO folder_fts(rowid, name) VALUES (new.id, new.name);
+        CREATE TRIGGER IF NOT EXISTS folder_au AFTER UPDATE OF name, note ON folder BEGIN
+            INSERT INTO folder_fts(folder_fts, rowid, name, note) VALUES ('delete', old.id, old.name, old.note);
+            INSERT INTO folder_fts(rowid, name, note) VALUES (new.id, new.name, new.note);
         END;
         INSERT INTO folder_fts(folder_fts) VALUES ('rebuild');",
     )
+}
+
+/// v10 migration step: rebuild the folder index with notes (NOTE-02).
+pub(crate) fn migrate_note_search(tx: &Connection) -> Result<()> {
+    tx.execute_batch("DROP TABLE IF EXISTS folder_fts; DROP TRIGGER IF EXISTS folder_ai; DROP TRIGGER IF EXISTS folder_ad; DROP TRIGGER IF EXISTS folder_au;")?;
+    migrate_search(tx)
 }
 
 /// One child of a folder, in display order.
@@ -318,6 +325,16 @@ impl Store {
             &[id],
             |s| Ok(s.conn.execute("UPDATE folder SET name = ?2, modified = unixepoch() WHERE id = ?1", params![id, name])? == 1),
             |_, _| format!("Rename folder \u{201c}{name}\u{201d}"),
+        )
+    }
+
+    /// Set a folder's note (NOTE-02), one undo step. False if it doesn't exist.
+    pub fn set_folder_note(&mut self, id: i64, note: &str) -> Result<bool> {
+        let note = note.trim().to_string();
+        self.record_tree(
+            &[id],
+            |s| Ok(s.conn.execute("UPDATE folder SET note = ?2, modified = CASE WHEN note IS ?2 THEN modified ELSE unixepoch() END WHERE id = ?1", params![id, note])? == 1),
+            |s, _| format!("Note on \u{201c}{}\u{201d}", s.folder(id).ok().flatten().map(|f| f.name).unwrap_or_default()),
         )
     }
 
@@ -1039,5 +1056,25 @@ mod tests {
         let s = Store::open(&db.0).unwrap();
         assert_eq!(version(&db.0), crate::SCHEMA_VERSION);
         assert_eq!(s.new_item_folder().unwrap(), None);
+    }
+
+    #[test]
+    fn folder_notes_are_edited_undone_and_searched() {
+        let mut s = Store::open(":memory:").unwrap();
+        let f = s.create_folder(ROOT, "Reading", None).unwrap().unwrap();
+        let sub = s.create_folder(f, "Later", None).unwrap().unwrap();
+        let (b, _) = s.add("https://a.example/", "A", "", "").unwrap();
+        s.move_bookmark(b, sub, None).unwrap();
+        assert!(s.set_folder_note(f, "  articles about gardening ").unwrap());
+        assert_eq!(s.folder(f).unwrap().unwrap().note, "articles about gardening");
+        assert_eq!(s.history_labels().0.as_deref(), Some("Note on \u{201c}Reading\u{201d}"));
+        assert_eq!(s.search_ids("garden", &Default::default()).unwrap(), [b], "a folder's note searches with its path");
+        assert!(s.set_folder_note(f, "articles about gardening").unwrap(), "unchanged: still there");
+        s.undo().unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().note, "");
+        assert!(s.search_ids("garden", &Default::default()).unwrap().is_empty(), "undo re-indexes");
+        s.redo().unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().note, "articles about gardening");
+        assert!(!s.set_folder_note(9999, "x").unwrap(), "missing folder");
     }
 }

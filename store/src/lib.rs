@@ -49,7 +49,7 @@ fn compile(query: &str, opts: &SearchOptions) -> std::result::Result<Option<quer
 }
 
 /// The `user_version` `migrate` brings a database to.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -529,6 +529,13 @@ impl Store {
             let tx = store.conn.transaction()?;
             folders::migrate_roles(&tx)?;
             tx.pragma_update(None, "user_version", 9)?;
+            tx.commit()?;
+        }
+        // v10: folder notes searchable with the folder path (NOTE-02).
+        if version < 10 {
+            let tx = store.conn.transaction()?;
+            folders::migrate_note_search(&tx)?;
+            tx.pragma_update(None, "user_version", 10)?;
             tx.commit()?;
         }
         Ok(())

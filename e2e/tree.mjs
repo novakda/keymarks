@@ -133,6 +133,7 @@ function fakeTauri() {
       for (const id of gone) items.splice(items.findIndex((b) => b.id === id), 1);
       return gone.length;
     },
+    set_folder_note: ({ id, note }) => { snap('Note on folder'); folders.find((f) => f.id === id).note = note.trim(); },
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -465,6 +466,25 @@ await page.focus('#list');
 await page.keyboard.press('Control+d');
 await idle();
 check('Ctrl+D again leaves the view', await page.isHidden('#dup-bar') && !(await page.textContent('#status')).startsWith('Duplicate URLs'), await page.textContent('#status'));
+
+// ---- Folder notes (NOTE-02): the tree's folder in the panel, saved on blur, undoable ----
+await page.click('#tree li:has-text("Work") .name');
+await idle();
+check('a folder chosen in the tree shows its title and notes box in the panel', (await page.textContent('#fn-title')) === 'Work' && (await page.inputValue('#fn-note')) === '',
+  await page.textContent('#panel'));
+await page.fill('#fn-note', 'Client work and the wiki ');
+await page.focus('#list');
+await idle();
+const noted = (await calls('set_folder_note')).at(-1);
+check('leaving the notes box saves the folder note, one undo step', noted?.id === 2 && noted.note === 'Client work and the wiki '
+  && (await page.getAttribute('#undo', 'title')).includes('Note on folder'), JSON.stringify(noted));
+check('focusing the list shows the bookmark again', (await page.$('#form')) !== null && (await page.$('#fn-note')) === null);
+await page.click('#tree li:has-text("Work") .name');
+await idle();
+check('the saved note shows when the folder is chosen again', (await page.inputValue('#fn-note')) === 'Client work and the wiki', await page.inputValue('#fn-note'));
+await page.keyboard.press('Control+z');
+await idle();
+check('Ctrl+Z takes the note back', (await page.inputValue('#fn-note')) === '', await page.inputValue('#fn-note'));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

@@ -574,6 +574,12 @@ fn rename_folder(db: State<Db>, id: i64, name: String) -> Result<(), String> {
     rename(&mut db.lock().unwrap(), id, &name)
 }
 
+/// A folder's note (NOTE-02), one undo step.
+#[tauri::command]
+fn set_folder_note(db: State<Db>, id: i64, note: String) -> Result<(), String> {
+    db.lock().unwrap().set_folder_note(id, &note).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
 /// Move to folder, drag and drop, reorder: one undo step (ITEM-16, FLD-07). Returns how
 /// many items moved.
 fn file_items(store: &mut Store, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
@@ -1106,6 +1112,7 @@ fn main() {
             folders,
             create_folder,
             rename_folder,
+            set_folder_note,
             delete_folder,
             set_new_item_folder,
             move_items,

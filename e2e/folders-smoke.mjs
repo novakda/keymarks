@@ -1,4 +1,4 @@
-// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8), driven through the
+// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8, 25 for step 9, 26-27 for step 10), driven through the
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
@@ -567,6 +567,31 @@ try {
   await key('Control+z');
   check('24b Ctrl+Z brings the merged copy back', dupRows().length === 2, JSON.stringify(dupRows()));
   await key('Control+d');
+
+  // 25. Folder notes (NOTE-02): a folder chosen in the tree shows its notes in the panel; the
+  // note saves on blur, is found by search with the folder path, and Ctrl+Z takes it back.
+  {
+    await openFolder(ROOT);
+    await newFolderHere('Kmzq noted');
+    const [noted] = sql("SELECT id FROM folder WHERE name = 'Kmzq noted'");
+    await page.click(treeLi(noted.id));
+    await idle();
+    const titleOk = (await page.textContent('#fn-title').catch(() => '')) === 'Kmzq noted';
+    await page.click('#fn-note');
+    await page.keyboard.type('kmzqnotetext about this folder');
+    await page.focus('#tablewrap'); // blur saves
+    await idle();
+    const saved = sql('SELECT note FROM folder WHERE id = ?', noted.id)[0]?.note;
+    const [seed2] = sql("SELECT id FROM bookmark WHERE url LIKE '%kmzq-e2e-dup.example/%' ORDER BY id");
+    await page.evaluate(async ([id, to]) => { await invoke('move_items', { folders: [], bookmarks: [id], to, beside: null }); }, [seed2.id, noted.id]);
+    await search('kmzqnotetext');
+    const found = (await shown()).ids;
+    await search('');
+    check('25 folder note saves on blur and searches with the folder path', titleOk && saved === 'kmzqnotetext about this folder' && found.includes(seed2.id), `${saved} ${JSON.stringify(found)}`);
+    await key('Control+z'); // the move
+    await key('Control+z'); // the note
+    check('25b Ctrl+Z takes the folder note back', sql('SELECT note FROM folder WHERE id = ?', noted.id)[0]?.note === '', JSON.stringify(sql('SELECT note FROM folder WHERE id = ?', noted.id)));
+  }
 } catch (e) {
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);
 } finally {
