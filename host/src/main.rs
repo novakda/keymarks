@@ -66,6 +66,10 @@ fn main() -> ExitCode {
 }
 
 fn db_path() -> Result<PathBuf, String> {
+    // Like the app: tests point both at a copy (e2e/folders-smoke.mjs).
+    if let Some(dir) = std::env::var_os("KEYMARKS_DATA_DIR") {
+        return Ok(PathBuf::from(dir).join("bookmarks.db"));
+    }
     let appdata = std::env::var_os("APPDATA").ok_or("APPDATA not set")?;
     Ok(PathBuf::from(appdata).join("com.pattern158.keymarks").join("bookmarks.db"))
 }

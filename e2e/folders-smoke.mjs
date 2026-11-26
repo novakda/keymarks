@@ -1,4 +1,4 @@
-// The folder features in the real app (the folders test plan, 19 checks), driven through the
+// The folder features in the real app (the folders test plan, 21 checks), driven through the
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { connect, debugEnv, exe, freePort, log, sleep, startApp, stopApp } from './launch.mjs';
 import { restoreKeymarks, runningKeymarks } from './running.mjs';
@@ -177,6 +178,23 @@ async function drag(fromSel, toSel, dy = 0) {
   await page.mouse.up();
   await idle();
 }
+
+// The browser extension's side: native-messaging requests to keymarks-host.exe (beside the
+// app) on the test's copy, framed as the browser frames them. Returns the replies.
+function hostSend(...msgs) {
+  const frame = (m) => { const b = Buffer.from(JSON.stringify(m)); const n = Buffer.alloc(4); n.writeUInt32LE(b.length); return Buffer.concat([n, b]); };
+  const r = spawnSync(path.join(path.dirname(exe), 'keymarks-host.exe'), [], {
+    input: Buffer.concat(msgs.map(frame)), env: { ...process.env, KEYMARKS_DATA_DIR: work }, windowsHide: true, timeout: 20000,
+  });
+  if (r.error) throw r.error;
+  const out = [];
+  for (let at = 0; at + 4 <= r.stdout.length;) { const n = r.stdout.readUInt32LE(at); out.push(JSON.parse(r.stdout.subarray(at + 4, at + 4 + n))); at += 4 + n; }
+  return out;
+}
+const inboxRows = () => sql("SELECT id, name, parent_id FROM folder WHERE role = 'new_items' ORDER BY id");
+const inboxMarked = () => page.$$eval('#tree li.inbox', (lis) => lis.map((li) => Number(li.dataset.id)));
+// The app notices the host's writes by polling (1.5 s).
+const waitInboxShown = (id) => page.waitForFunction((x) => !!document.querySelector(`#tree li.inbox[data-id="${x}"]`), id, { timeout: 10000 }).then(() => true, () => false);
 
 // Netscape bookmark file → { links, folders: [{ name, links, folders }] }; throws if malformed.
 function parseNetscape(text) {
@@ -450,6 +468,33 @@ try {
   const unticked = !(await page.isChecked('#import-folder-words'));
   await page.click('#import-dlg button[value=close]');
   check('14 Options "folder names as keywords" on: Import opens with it ticked', ticked && unticked);
+
+  // 20. Extension adds land in the New Item Folder (ITEM-01, ITEM-03, ITEM-04): the popup
+  // with no folder picked, and Fast Add (adds the fast-add keywords). The first makes "New".
+  const replies = hostSend(
+    { type: 'add', url: 'https://kmzq-e2e-inbox.example/popup', title: 'Kmzq popup' },
+    { type: 'add', url: 'https://kmzq-e2e-inbox.example/fast', title: 'Kmzq fast', fast: true },
+    { type: 'folders' },
+  );
+  const [inbox] = inboxRows();
+  const inInbox = inbox ? sql("SELECT url, keywords FROM bookmark WHERE folder_id = ? AND url LIKE 'https://kmzq-e2e-inbox.example/%' ORDER BY url", inbox.id) : [];
+  check('20 extension adds land in the New Item Folder, made as a root "New" and marked in the tree',
+    replies.length === 3 && replies.every((r) => r.ok) && inboxRows().length === 1 && inbox.name === 'New' && inbox.parent_id === ROOT
+    && inInbox.length === 2 && inInbox[0].keywords.split(' ').includes('new') && replies[2].new_items === inbox.id && (await waitInboxShown(inbox.id)),
+    `${replies.length} replies, ${inboxRows().length} inbox folders, ${inInbox.length} in it`);
+
+  // 21. The inbox deleted (contents move up, nothing lost), then the next Fast Add makes it again.
+  await openFolder(inbox.id);
+  await expectConfirm(true);
+  await key('Delete', '#tree');
+  const goneOk = !sql('SELECT 1 FROM folder WHERE id = ?', inbox.id).length && inboxRows().length === 0
+    && sql("SELECT count(*) AS n FROM bookmark WHERE folder_id = ? AND url LIKE 'https://kmzq-e2e-inbox.example/%'", ROOT)[0].n === 2;
+  const [again] = hostSend({ type: 'add', url: 'https://kmzq-e2e-inbox.example/again', title: 'Kmzq again', fast: true });
+  const [made] = inboxRows();
+  check('21 the inbox deleted: its items move up; the next extension add recreates "New"',
+    goneOk && again?.ok && made?.name === 'New' && made.parent_id === ROOT
+    && sql('SELECT folder_id FROM bookmark WHERE id = ?', again.id)[0]?.folder_id === made.id && (await waitInboxShown(made.id))
+    && JSON.stringify(await inboxMarked()) === JSON.stringify([made.id]), `deleted ${goneOk}, remade ${!!made}`);
 } catch (e) {
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);
 } finally {
