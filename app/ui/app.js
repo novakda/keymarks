@@ -468,7 +468,7 @@ tablewrap.addEventListener('scroll', onScroll);
 addEventListener('resize', onScroll);
 
 async function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } = {}) {
-  if (ids[i] === undefined || !confirmDiscard()) return;
+  if (ids[i] === undefined || !(await confirmDiscard())) return;
   const id = ids[i];
   if (shiftKey) {
     const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
@@ -542,8 +542,8 @@ const setSchedule = busyAware(async (toSet, schedule) => {
   } catch (e) { fail('Schedule')(e); }
 });
 let schedIds = [];
-function openScheduleDialog(chosen) {
-  if (!chosen.length || !confirmDiscard()) return;
+async function openScheduleDialog(chosen) {
+  if (!chosen.length || !(await confirmDiscard())) return;
   schedIds = chosen;
   $('sd-label').textContent = `Schedule for ${chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`}`;
   fillScheduleSelect($('sd-schedule'), cache.get(chosen[0])?.schedule);
@@ -559,8 +559,8 @@ $('sched-form').addEventListener('submit', (e) => {
 // step. The same dialog removes keywords from them.
 let addKwIds = [];
 let kwRemove = false;
-function openAddKeywords(chosen, remove = false) {
-  if (!chosen.length || !confirmDiscard()) return;
+async function openAddKeywords(chosen, remove = false) {
+  if (!chosen.length || !(await confirmDiscard())) return;
   addKwIds = chosen;
   kwRemove = remove;
   const which = chosen.length === 1 ? 'this bookmark' : `${chosen.length} bookmarks`;
@@ -596,7 +596,7 @@ const markVisited = busyAware(async (chosen) => {
 // keywords are added. One undo step.
 const fetchNow = busyAware(async (toFetch) => {
   if (!toFetch.length) return say('Select the bookmarks to fetch first.');
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   say(`Fetching ${toFetch.length} page${toFetch.length === 1 ? '' : 's'}…`);
   try {
     const [changed, added] = await invoke('fetch_now', { ids: toFetch });
@@ -609,7 +609,7 @@ const fetchNow = busyAware(async (toFetch) => {
 
 // Ctrl+Plus / Ctrl+Minus: one step up or down the 0-10 scale, one undo step for all.
 const changeRating = busyAware(async (toRate, by) => {
-  if (!toRate.length || !confirmDiscard()) return;
+  if (!toRate.length || !(await confirmDiscard())) return;
   try {
     await invoke('change_rating', { ids: toRate, by });
     dirty = false;
@@ -618,11 +618,11 @@ const changeRating = busyAware(async (toRate, by) => {
   } catch (e) { fail('Rating')(e); }
 });
 
-async function remove(toDelete, { ask = true } = {}) {
+async function remove(toDelete, { ask: asking = true } = {}) {
   if (!toDelete.length) return;
   const one = cache.get(toDelete[0]);
   const what = toDelete.length === 1 ? `"${one?.title || one?.url || 'this bookmark'}"` : `${toDelete.length} bookmarks`;
-  if (ask && !confirm(`Delete ${what}? (Ctrl+Z undoes it.)`)) return;
+  if (asking && !(await ask(`Delete ${what}? (Ctrl+Z undoes it.)`))) return;
   try {
     const n = await invoke('delete_bookmarks', { ids: toDelete });
     dirty = false;
@@ -645,7 +645,7 @@ async function copyUrls(chosen) {
 
 // Powermarks' Cut: copy, then delete without asking (Ctrl+Z brings them back).
 async function cut(chosen) {
-  if (!confirmDiscard() || !(await copyUrls(chosen))) return;
+  if (!(await confirmDiscard()) || !(await copyUrls(chosen))) return;
   await remove(chosen, { ask: false });
   say(`Cut ${chosen.length} bookmark${chosen.length === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
 }
@@ -742,7 +742,7 @@ function showHistory({ undo, redo }) {
 }
 
 async function runHistory(which) {
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   try {
     const name = await invoke(which);
     await refreshDictionary();
@@ -778,8 +778,8 @@ document.body.dataset.checking = 'false';
 // `toCheck` null means every bookmark with link checking on (Powermarks' Force Status Check, F8).
 async function startCheck(toCheck) {
   if (toCheck && !toCheck.length) return say('Select the bookmarks to check first (or use Check shown).');
-  const ask = !toCheck ? 'Check the links of every bookmark that has link checking on?' : toCheck.length > 200 ? `Check ${toCheck.length.toLocaleString()} links?` : '';
-  if (ask && !confirm(`${ask}\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`)) return;
+  const question = !toCheck ? 'Check the links of every bookmark that has link checking on?' : toCheck.length > 200 ? `Check ${toCheck.length.toLocaleString()} links?` : '';
+  if (question && !(await ask(`${question}\n\nThis contacts every one of those websites, a few at a time; it can take a while. You can cancel at any point.`))) return;
   document.body.dataset.checking = 'true'; // before any await, so watchers never see a gap
   checkEnded = false;
   try {
@@ -960,8 +960,8 @@ async function showBackups() {
 }
 
 async function restoreBackup(name, when) {
-  if (!confirmDiscard()) return;
-  if (!confirm(`Replace all bookmarks with the backup taken ${when}?\n\nYour current bookmarks are backed up first, so this can be reversed from this list.`)) return;
+  if (!(await confirmDiscard())) return;
+  if (!(await ask(`Replace all bookmarks with the backup taken ${when}?\n\nYour current bookmarks are backed up first, so this can be reversed from this list.`))) return;
   try {
     const safety = await invoke('restore_backup', { name });
     $('backups').close();
@@ -1018,7 +1018,7 @@ async function runSaved(item) {
     try { await invoke('open_link', { url: item.url }); say(`Opened ${item.name}.`); } catch (e) { fail('Open')(e); }
     return;
   }
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   let o = {};
   try { o = JSON.parse(item.options || '{}'); } catch {}
   opts = { ...opts, mode: o.mode ?? 'all', fields: o.fields ?? DEFAULT_OPTS.fields, match_case: !!o.match_case, partial: o.partial ?? true };
@@ -1092,7 +1092,7 @@ $('sctx').addEventListener('click', busyAware(async (e) => {
     if (act === 'run') await runSaved(item);
     else if (act === 'edit') openSavedDialog(item);
     else if (act === 'up' || act === 'down') { await invoke('move_saved_item', { id: item.id, by: act === 'up' ? -1 : 1 }); await refreshSaved(); }
-    else if (act === 'delete' && confirm(`Delete the saved ${item.kind} "${item.name}"?`)) { await invoke('delete_saved_item', { id: item.id }); await refreshSaved(); say(`Deleted "${item.name}".`); }
+    else if (act === 'delete' && (await ask(`Delete the saved ${item.kind} "${item.name}"?`))) { await invoke('delete_saved_item', { id: item.id }); await refreshSaved(); say(`Deleted "${item.name}".`); }
   } catch (err) { fail('Saved item')(err); }
 }));
 document.addEventListener('click', (e) => { if (!$('sctx').contains(e.target)) hideSavedMenu(); });
@@ -1135,8 +1135,8 @@ function renderKeywords() {
   }));
 }
 
-function setSearch(text) {
-  if (!confirmDiscard()) return;
+async function setSearch(text) {
+  if (!(await confirmDiscard())) return;
   q.value = text;
   refresh({ keepSelection: false });
 }
@@ -1176,11 +1176,11 @@ $('ctx').addEventListener('click', async (e) => {
     else if (act === 'tag') await keywordChanged(invoke('set_tagged', { keyword: k.keyword, tagged: !k.tagged }), '');
     else if (act === 'rename') {
       const to = prompt(`Rename "${k.keyword}" on ${k.count} bookmark(s) to:\n(an existing keyword merges them)`, k.keyword);
-      if (to && to.trim() && to.trim() !== k.keyword && confirmDiscard()) {
+      if (to && to.trim() && to.trim() !== k.keyword && (await confirmDiscard())) {
         await keywordChanged(invoke('rename_keyword', { old: k.keyword, new: to.trim() }), `Renamed on # bookmark(s).`);
       }
     } else if (act === 'delete') {
-      if (confirm(`Remove "${k.keyword}" from all bookmarks that use it?`) && confirmDiscard()) {
+      if ((await ask(`Remove "${k.keyword}" from all bookmarks that use it?`)) && (await confirmDiscard())) {
         await keywordChanged(invoke('rename_keyword', { old: k.keyword, new: '' }), `Removed from # bookmark(s).`);
       }
     }
@@ -1225,7 +1225,7 @@ let cleanupItems = [];
 let openGroups = new Set(); // which preview groups are expanded
 
 $('cleanup-open').addEventListener('click', async () => {
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   try {
     const plan = await invoke('cleanup_plan');
     cleanupItems = plan.map((i) => ({ ...i, on: CLEANUP_GROUPS.find((g) => g[0] === i.reason)?.[2] ?? false }));
@@ -1440,9 +1440,15 @@ document.addEventListener('keydown', async (e) => {
   if (field) $(field)?.focus();
 });
 
-function confirmDiscard() {
+/** Yes/no question. Always await it: tauri-plugin-dialog makes window.confirm async (a
+ *  native message box), so an un-awaited answer is a Promise and reads as yes. */
+async function ask(message) {
+  return (await confirm(message)) === true;
+}
+
+async function confirmDiscard() {
   if (!dirty) return true;
-  if (!confirm('Discard unsaved changes?')) return false;
+  if (!(await ask('Discard unsaved changes?'))) return false;
   dirty = false;
   return true;
 }
@@ -1486,7 +1492,7 @@ document.addEventListener('click', (e) => {
 });
 applyOptsToUi();
 
-q.addEventListener('input', () => { if (confirmDiscard()) refresh({ keepSelection: false }); });
+q.addEventListener('input', async () => { if (await confirmDiscard()) refresh({ keepSelection: false }); });
 q.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && q.value) { e.preventDefault(); setSearch(''); return; }
   onListKeys(e);
@@ -1508,8 +1514,8 @@ async function reveal(id) {
   await refresh({ keepSelection: false });
 }
 
-function newBookmark() {
-  if (!confirmDiscard()) return;
+async function newBookmark() {
+  if (!(await confirmDiscard())) return;
   $('n-url').value = '';
   $('n-title').value = '';
   $('n-error').textContent = '';
@@ -1541,7 +1547,7 @@ $('n-cancel').onclick = () => $('new-dlg').close();
 document.addEventListener('click', (e) => { if (e.target.matches('dialog [data-close]')) e.target.closest('dialog').close(); });
 
 async function addFromClipboard() {
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   try {
     const r = await invoke('add_from_clipboard');
     await refreshDictionary();
@@ -1643,7 +1649,7 @@ async function afterImport(report, from) {
 }
 
 importBtn.onclick = busyAware(async () => {
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'Looking for browsers…' }));
   $('import-dlg').showModal();
   try {

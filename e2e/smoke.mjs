@@ -18,6 +18,15 @@ import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
+// KEYMARKS_EXE: a build with an identifier of its own (TAURI_CONFIG at build time), so its own
+// single-instance lock. It runs beside the user's copy: only that exe is stopped, the user's
+// copy is never closed or reopened (running.mjs).
+const isolated = !!process.env.KEYMARKS_EXE;
+const ps = (cmd) => execSync(`powershell -NoProfile -Command "${cmd}"`, { windowsHide: true }).toString().trim();
+const ours = `Get-Process keymarks -ErrorAction SilentlyContinue | ? Path -eq '${exe.replace(/'/g, "''")}'`;
+/** How many copies of the app under test run (only `exe` when isolated, else any keymarks.exe). */
+const instances = () => (isolated ? Number(ps(`@(${ours}).Count`))
+  : execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => process.stderr.write(`· ${new Date().toTimeString().slice(0, 8)} ${msg}\n`);
 
@@ -31,10 +40,10 @@ const PORT = await new Promise((resolve) => {
 
 // Waits until the app has really exited, so its files can be deleted.
 function stopApp() {
-  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
+  if (isolated) ps(`${ours} | Stop-Process -Force`);
+  else try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
   for (let i = 0; i < 50; i++) {
-    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString();
-    if (!out.includes('keymarks.exe')) return;
+    if (!instances()) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
   }
 }
@@ -109,7 +118,9 @@ log(`connected to ${page.url()}`);
 
 // WebView2 shows confirm()/prompt() as real Windows dialogs, which take focus from whatever
 // the user is doing. So the page's dialogs are replaced by answers the test queues up front;
-// no dialog window ever opens. Unexpected dialogs are refused and logged.
+// no dialog window ever opens. Unexpected dialogs are refused and logged. confirm() is async,
+// as tauri-plugin-dialog makes it in the real app: code that doesn't await it goes ahead
+// before the answer, which the Cancel checks catch.
 const fakeDialogs = () => {
   window.__e2eAnswers = [];
   const next = (kind, fallback) => {
@@ -117,7 +128,7 @@ const fakeDialogs = () => {
     console.warn(`E2E unexpected ${kind} dialog`);
     return fallback;
   };
-  window.confirm = () => next('confirm', false) === true;
+  window.confirm = async () => next('confirm', false) === true;
   window.prompt = () => { const a = next('prompt', null); return a === true ? '' : a; };
   window.alert = () => { next('alert', undefined); };
 };
@@ -328,6 +339,13 @@ try {
   await search('');
   await page.click('#table-body tr.vrow');
   await page.focus('#tablewrap');
+  await expectDialog(false);
+  await page.keyboard.press('Delete');
+  await idle();
+  check('Delete, Cancel keeps the bookmark', (await everything()) === all);
+  await search('');
+  await page.click('#table-body tr.vrow');
+  await page.focus('#tablewrap');
   await expectDialog();
   await page.keyboard.press('Delete');
   await idle();
@@ -378,6 +396,11 @@ try {
   await page.waitForSelector('#backup-list tbody tr', { timeout: 10000 }).catch(() => {});
   const backupRows = await page.locator('#backup-list tbody tr').count();
   check('Backups lists the startup backup', backupRows >= 1, `${backupRows} backups`);
+  await expectDialog(false);
+  await page.click('#backup-list tbody tr button');
+  await page.waitForTimeout(1500); // a restore that went ahead would close the dialog by now
+  check('Restore, Cancel keeps the bookmarks', (await page.evaluate(() => window.__e2eAnswers.length)) === 0
+    && (await page.isVisible('#backups')) && (await page.locator('#backup-list tbody tr').count()) === backupRows);
   await page.click('#backups button[value=close]');
 
   // 9. Desktop: settings dialog, single instance (a second launch hands over and exits)
@@ -408,10 +431,9 @@ try {
   await page.click('#s-save');
   await idle();
   check('opening settings save and show again, keeping view preferences', opening.open_new_window === true && shown && savedSettings().open_new_window === false && 'ui' in opening);
-  const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1;
   startApp({ KEYMARKS_NO_FOCUS: '1' });
   await sleep(3000);
-  check('second launch reuses the running app', running() === 1, `${running()} running`);
+  check('second launch reuses the running app', instances() === 1, `${instances()} running`);
   check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));
 
   // 10. Link checking against a local server only (no real site is contacted)
