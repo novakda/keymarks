@@ -232,7 +232,11 @@ async function refreshDictionary() {
 setInterval(async () => {
   if (dirty || document.hidden) return;
   const v = await invoke('data_version').catch(() => version);
-  if (v !== version) { await refreshDictionary(); refresh(); }
+  if (v === version) return;
+  // An extension add may have made the New Item Folder; don't redraw under an inline rename.
+  if (!$('tree').querySelector('.naming')) await refreshFolders();
+  await refreshDictionary();
+  refresh();
 }, 1500);
 
 // ---- bookmark list ----------------------------------------------------------
@@ -1202,7 +1206,8 @@ function renderTree() {
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = f.name;
-    li.title = f.name;
+    li.title = f.new_items ? `${f.name}: the New Item Folder (browser and clipboard adds land here)` : f.name;
+    li.classList.toggle('inbox', !!f.new_items);
     li.append(twisty, name);
     if (f.id !== ROOT) li.onpointerdown = (e) => startDrag(e, { folders: [f.id] }, f.parent_id, f.name);
     li.onclick = () => { setFolder(f.id); tree.focus(); };
@@ -1489,7 +1494,8 @@ const renameFolder = busyAware(async (f) => {
 const deleteFolder = busyAware(async (f) => {
   if (f.id === ROOT) { say('The top folder can’t be deleted.'); return; }
   const parent = folderName(f.parent_id);
-  if (!(await ask(`Delete the folder “${f.name}”?\n\nNothing in it is deleted: its bookmarks, notes and folders move up into “${parent}”.`))) return;
+  const inbox = f.new_items ? '\n\nIt is the New Item Folder: the next add from the browser or clipboard makes a new “New” folder.' : '';
+  if (!(await ask(`Delete the folder “${f.name}”?\n\nNothing in it is deleted: its bookmarks, notes and folders move up into “${parent}”.${inbox}`))) return;
   try {
     await invoke('delete_folder', { id: f.id });
     folder = f.parent_id;
@@ -1516,6 +1522,7 @@ function showFolderMenu(e, f) {
   const ctx = $('fctx');
   $('fctx-title').textContent = f.name;
   for (const act of ['rename', 'move', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  ctx.querySelector('[data-act=inbox]').disabled = !!f.new_items;
   ctx.hidden = false;
   ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
   ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
@@ -1531,6 +1538,16 @@ $('fctx').addEventListener('click', (e) => {
   else if (act === 'rename') renameFolder(f);
   else if (act === 'move') openMovePicker({ folders: [f.id] });
   else if (act === 'delete') deleteFolder(f);
+  else if (act === 'inbox') setInbox(f);
+});
+
+const setInbox = busyAware(async (f) => {
+  try {
+    await invoke('set_new_item_folder', { id: f.id });
+    await refreshFolders();
+    await refresh();
+    say(`New Item Folder: “${f.name}”. Browser and clipboard adds land here. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Set New Item Folder')(e); }
 });
 document.addEventListener('click', (e) => { if (!$('fctx').contains(e.target)) $('fctx').hidden = true; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('fctx').hidden = true; });
@@ -1992,7 +2009,7 @@ async function newBookmark() {
 async function addNewBookmark() {
   $('n-error').textContent = '';
   try {
-    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value });
+    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value, folder });
     $('new-dlg').close();
     await refreshDictionary();
     if (report.added) {
@@ -2016,6 +2033,7 @@ async function addFromClipboard() {
   if (!(await confirmDiscard())) return;
   try {
     const r = await invoke('add_from_clipboard');
+    await refreshFolders(); // the New Item Folder may have just been made
     await refreshDictionary();
     await refresh();
     const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
@@ -2025,8 +2043,9 @@ async function addFromClipboard() {
 
 $('new-bookmark').onclick = () => newBookmark();
 $('add-clipboard').onclick = () => addFromClipboard();
-// Powermarks' keys: Insert adds a bookmark, Alt+Insert adds links from the clipboard.
-// (Ctrl+N works too where WebView2 doesn't keep it for itself.)
+// Powermarks' keys: Insert adds a bookmark (to the selected folder), Alt+Insert adds links
+// from the clipboard (to the New Item Folder). Ctrl+N adds a bookmark too: WebView2 passes it
+// to the page (e2e/os-keys.mjs presses it for real).
 document.addEventListener('keydown', (e) => {
   const typing = e.target.closest('input, textarea, select');
   if (e.key === 'Insert' && !e.ctrlKey && !e.altKey && !e.shiftKey && !typing) { e.preventDefault(); newBookmark(); }
@@ -2036,7 +2055,7 @@ document.addEventListener('keydown', (e) => {
 // Added without the page asking: files dropped on the window, or the clipboard hotkey.
 const addedBy = (what) => async ({ payload: r }) => {
   const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
-  if (!dirty) { await refreshDictionary(); await refresh(); }
+  if (!dirty) { await refreshFolders(); await refreshDictionary(); await refresh(); }
   say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${dup}. (Ctrl+Z undoes)`);
 };
 window.__TAURI__.event.listen('files-added', addedBy('file'));

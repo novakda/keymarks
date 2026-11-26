@@ -90,6 +90,7 @@
   #tree:focus-visible li[aria-selected=true] { outline: 2px solid var(--accent); outline-offset: -2px; }
   #tree .twisty { width: 1.1em; flex: none; text-align: center; color: var(--muted); }
   #tree .name { overflow: hidden; text-overflow: ellipsis; }
+  #tree li.inbox .name::after { content: " \2193 new"; color: var(--muted); font-size: 11px; }
   .vrow.note .title { font-style: italic; }
   /* Drag and drop (FLD-07): into a folder, or between rows. */
   #tree li.drop-in { background: var(--sel); outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -389,6 +390,7 @@
   <button role="menuitem" data-act="note">New note…</button>
   <button role="menuitem" data-act="rename">Rename… (F2)</button>
   <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
+  <button role="menuitem" data-act="inbox" title="Bookmarks added from the browser and the clipboard land here">Set as New Item Folder</button>
   <hr>
   <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
 </div>

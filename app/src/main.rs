@@ -169,19 +169,20 @@ fn normalize_url(input: &str) -> Result<String, String> {
     reqwest::Url::parse(&s).map(|u| u.to_string()).map_err(|e| format!("Not a valid URL: {e}"))
 }
 
-/// Add one bookmark by URL (Ctrl+N). Without a title, the page's own is fetched.
+/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree.
+/// Without a title, the page's own is fetched.
 #[tauri::command]
-fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String) -> Result<ImportReport, String> {
+fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64) -> Result<ImportReport, String> {
     let url = normalize_url(&url)?;
     let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
     let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), notes: String::new(), added: None };
-    let report = db.lock().unwrap().import_bookmarks("Add bookmark", &[item]).map_err(err)?;
+    let report = db.lock().unwrap().import_bookmarks("Add bookmark", folder, &[item]).map_err(err)?;
     fetch_in_background(app, report.ids.clone());
     Ok(report)
 }
 
-/// Add every link on the clipboard (Powermarks' Alt+Ins), tagged with the fast-add keywords;
-/// titles and descriptions are fetched in the background.
+/// Add every link on the clipboard (Powermarks' Alt+Ins) to the New Item Folder (ITEM-06),
+/// tagged with the fast-add keywords; titles and descriptions are fetched in the background.
 #[tauri::command]
 fn add_from_clipboard(app: AppHandle) -> Result<ImportReport, String> {
     clipboard_add(&app)
@@ -201,7 +202,7 @@ pub fn clipboard_add(app: &AppHandle) -> Result<ImportReport, String> {
         .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), notes: String::new(), added: None })
         .collect();
     let step = format!("Add {} link{} from the clipboard", items.len(), if items.len() == 1 { "" } else { "s" });
-    let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
+    let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, store::NEW_ITEMS, &items).map_err(err)?;
     fetch_in_background(app.clone(), report.ids.clone());
     Ok(report)
 }
@@ -223,12 +224,13 @@ fn copy_bookmarks(app: AppHandle, db: State<Db>, ids: Vec<i64>) -> Result<usize,
 }
 
 /// Files and folders dropped from Explorer become file:/// bookmarks, opened with their
-/// associated app. Titled by file name and given the fast-add keywords, like a clipboard add.
+/// associated app. Titled by file name and given the fast-add keywords, and put in the New
+/// Item Folder, like a clipboard add.
 fn add_files(app: &AppHandle, paths: &[PathBuf]) -> Result<ImportReport, String> {
     let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
     let items = file_bookmarks(paths, &keywords);
     let step = format!("Add {} file{}", items.len(), if items.len() == 1 { "" } else { "s" });
-    app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)
+    app.state::<Db>().lock().unwrap().import_bookmarks(&step, store::NEW_ITEMS, &items).map_err(err)
 }
 
 fn file_bookmarks(paths: &[PathBuf], keywords: &str) -> Vec<store::NewBookmark> {
@@ -579,6 +581,12 @@ fn file_items(store: &mut Store, folders: &[i64], bookmarks: &[i64], to: i64, be
 #[tauri::command]
 fn move_items(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>, to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
     file_items(&mut db.lock().unwrap(), &folders, &bookmarks, to, beside)
+}
+
+/// Folder context menu: Set as New Item Folder (ITEM-04), one undo step.
+#[tauri::command]
+fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
+    db.lock().unwrap().set_new_item_folder(id).map_err(err)
 }
 
 #[tauri::command]
@@ -1085,6 +1093,7 @@ fn main() {
             create_folder,
             rename_folder,
             delete_folder,
+            set_new_item_folder,
             move_items,
             set_folder_folded,
             add_note

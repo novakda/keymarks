@@ -100,6 +100,20 @@ function fakeTauri() {
       return { added: 1, duplicates: 1, ids: [], folders: newFolder ? 1 : 0, folder: newFolder ? id : null };
     },
     export_file: ({ format }) => [3, `keymarks-bookmarks.${format}`],
+    // The New Item Folder (ITEM-04): one at most; inbox adds make a root "New" if it's gone.
+    set_new_item_folder: ({ id }) => { snap('Set New Item Folder'); for (const f of folders) f.new_items = f.id === id; return true; },
+    add_bookmark: ({ url, title, folder }) => {
+      const id = nextId++;
+      items.push(bm(id, folder, 99, title || url, url));
+      return { added: 1, duplicates: 0, ids: [id], folders: 0, folder: null };
+    },
+    add_from_clipboard: () => {
+      let inbox = folders.find((f) => f.new_items);
+      if (!inbox) folders.push(inbox = { id: nextId++, parent_id: 1, name: 'New', position: 99, folded: true, new_items: true });
+      const id = nextId++;
+      items.push(bm(id, inbox.id, 99, 'Clipped', 'https://clipped.example/'));
+      return { added: 1, duplicates: 0, ids: [id], folders: 0, folder: null };
+    },
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -372,6 +386,40 @@ await page.focus('#list');
 await page.keyboard.press('Control+Shift+L');
 await idle();
 check('Ctrl+Shift+L shows the selected result in its folder', (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks' && (await page.inputValue('#q')) === '');
+
+// ---- New Item Folder (ITEM-04, ITEM-01, ITEM-06) ----
+const inboxMarked = () => page.$$eval('#tree li.inbox .name', (els) => els.map((e) => e.textContent));
+check('no folder is marked as the New Item Folder before one is set', (await inboxMarked()).length === 0);
+await item('Home').click({ button: 'right' });
+check('the folder menu offers Set as New Item Folder', !(await page.isDisabled('#fctx [data-act=inbox]')));
+await page.click('#fctx [data-act=inbox]');
+await idle();
+check('Set as New Item Folder asks the store for it', JSON.stringify((await calls('set_new_item_folder')).at(-1)) === '{"id":4}');
+check('the tree marks the New Item Folder', JSON.stringify(await inboxMarked()) === '["Home"]', JSON.stringify(await inboxMarked()));
+check('it is one undo step', (await page.getAttribute('#undo', 'title')).includes('Set New Item Folder'), await page.getAttribute('#undo', 'title'));
+await item('Home').click({ button: 'right' });
+check('the menu item is off for the folder that already is it', await page.isDisabled('#fctx [data-act=inbox]'));
+await page.keyboard.press('Escape');
+await item('Work').click();
+await idle();
+await page.focus('#list');
+await page.keyboard.press('Insert');
+await page.fill('#n-url', 'https://here.example/');
+await page.click('#new-form button[type=submit]');
+await idle();
+check('a bookmark added in the app goes to the selected folder, not the inbox', (await calls('add_bookmark')).at(-1)?.folder === 2, JSON.stringify((await calls('add_bookmark')).at(-1)));
+// The inbox deleted: the next clipboard add recreates it as "New" and the tree shows it.
+await item('Home').click();
+await idle();
+answer();
+await page.focus('#tree');
+await page.keyboard.press('Delete');
+await idle();
+check('the inbox folder can be deleted', !(await tree()).includes('Home'), JSON.stringify(await tree()));
+await page.focus('#list');
+await page.keyboard.press('Alt+Insert');
+await idle();
+check('a clipboard add after the inbox was deleted shows the recreated "New" folder, marked', JSON.stringify(await inboxMarked()) === '["New"]', JSON.stringify(await tree()));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');
