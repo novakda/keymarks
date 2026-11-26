@@ -2008,6 +2008,8 @@ window.__TAURI__.event.listen('bookmarks-changed', async () => {
 $('export-open').onclick = () => {
   const n = (k) => k.toLocaleString();
   $('ex-all').textContent = `All ${n(total)} bookmarks`;
+  $('ex-folder').textContent = `Folder “${folderName(folder)}” and its subfolders`;
+  document.querySelector('input[name=ex-scope][value=folder]').disabled = folder === ROOT;
   $('ex-matching').textContent = `The ${n(ids.length)} matching the current search`;
   $('ex-selected').textContent = `The ${n(selected.size)} selected`;
   document.querySelector('input[name=ex-scope][value=selected]').disabled = selected.size === 0;
@@ -2043,9 +2045,9 @@ document.querySelectorAll('input[name=ex-format]').forEach((r) => { r.onchange =
 $('ex-go').onclick = busyAware(async () => {
   const format = document.querySelector('input[name=ex-format]:checked').value;
   const scope = document.querySelector('input[name=ex-scope]:checked').value;
-  const chosen = scope === 'all' ? null : scope === 'matching' ? ids : [...selected];
+  const chosen = scope === 'all' || scope === 'folder' ? null : scope === 'matching' ? ids : [...selected];
   try {
-    const done = await invoke('export_file', { format, ids: chosen, fields: exportFields, title: $('ex-title').value });
+    const done = await invoke('export_file', { format, ids: chosen, folder: scope === 'folder' ? folder : null, fields: exportFields, title: $('ex-title').value });
     if (!done) return; // save dialog cancelled
     $('export-dlg').close();
     say(`Exported ${done[0].toLocaleString()} bookmark${done[0] === 1 ? '' : 's'} to ${done[1]}.`);

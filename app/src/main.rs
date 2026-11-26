@@ -292,23 +292,26 @@ async fn import_html_file(
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     let step = format!("Import from {label}");
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
-        let rows = store::export::read_json(&text)?;
-        return db.lock().unwrap().import_rows(&step, &rows).map(Some).map_err(err);
+        let entries = store::export::read_json(&text)?.entries();
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(label);
+        return db.lock().unwrap().import_tree(&step, &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words).map(Some).map_err(err);
     }
     let entries = with_title_words(browsers::read_netscape_html(&text), title_words);
     let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(label);
     db.lock().unwrap().import_tree(&step, &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words).map(Some).map_err(err)
 }
 
-/// Export bookmarks (`ids` in that order, or all) to a file the user picks: "html" (any
-/// browser), "pm35" (Powermarks 3.5), "csv" or "print" (the chosen `fields`; `title` heads
-/// the printable page) or "json" (everything). Returns (count, file name), or None if cancelled.
+/// Export bookmarks (`ids` in that order, else `folder`'s subtree, else everything) to a file
+/// the user picks: "html" (any browser; the folder tree), "pm35" (Powermarks 3.5), "csv" or
+/// "print" (the chosen `fields`; `title` heads the printable page) or "json" (everything,
+/// folders too). Returns (count, file name), or None if cancelled.
 #[tauri::command]
 async fn export_file(
     app: AppHandle,
     db: State<'_, Db>,
     format: String,
     ids: Option<Vec<i64>>,
+    folder: Option<i64>,
     fields: Vec<String>,
     title: String,
 ) -> Result<Option<(usize, String)>, String> {
@@ -320,16 +323,23 @@ async fn export_file(
         "json" => ("keymarks-bookmarks.json", "Keymarks JSON", "json"),
         other => return Err(format!("unknown export format {other}")),
     };
-    let rows = db.lock().unwrap().export_rows(ids.as_deref()).map_err(err)?;
+    let tree = {
+        let s = db.lock().unwrap();
+        match ids {
+            Some(ids) => store::export::Tree::flat(s.export_rows(Some(&ids)).map_err(err)?),
+            None => s.export_tree(folder.unwrap_or(store::ROOT)).map_err(err)?,
+        }
+    };
+    let rows = tree.rows_in_order();
     let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
     let Some(path) = picked else { return Ok(None) };
     let path = path.into_path().map_err(err)?;
     let bytes = match format.as_str() {
-        "html" => store::export::to_netscape(&rows).into_bytes(),
+        "html" => store::export::to_netscape(&tree).into_bytes(),
         "csv" => store::export::to_csv(&rows, &fields).into_bytes(),
         "print" => store::export::to_printable(&rows, &fields, &title).into_bytes(),
-        "json" => store::export::to_json(&rows).into_bytes(),
-        _ => db.lock().unwrap().export_pm35(ids.as_deref()).map_err(err)?,
+        "json" => store::export::to_json(&tree).into_bytes(),
+        _ => db.lock().unwrap().export_pm35(&rows).map_err(err)?,
     };
     std::fs::write(&path, bytes).map_err(err)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

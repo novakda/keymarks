@@ -96,6 +96,7 @@ function fakeTauri() {
       items.push(bm(nextId++, newFolder ? id : 1, 1, 'Imported', 'https://imported.example/'));
       return { added: 1, duplicates: 1, ids: [], folders: newFolder ? 1 : 0, folder: newFolder ? id : null };
     },
+    export_file: ({ format }) => [3, `keymarks-bookmarks.${format}`],
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -301,6 +302,24 @@ await page.focus('#list');
 await page.keyboard.press('Control+z');
 await idle();
 check('Ctrl+Z undoes the whole import', !(await tree()).includes('Chrome (Default)') && (await status()).startsWith('Undid: Import from Chrome'), `${JSON.stringify(await tree())} ${await status()}`);
+
+// ---- export: range "this folder" sends the folder, not ids (XFER-16, XFER-21) ----
+await item('Work').click();
+await idle();
+await page.evaluate(() => document.getElementById('export-open').click());
+await page.waitForSelector('#export-dlg[open]');
+check('the export dialog offers the selected folder', (await page.textContent('#ex-folder')).includes('“Work”') && !(await page.isDisabled('input[name=ex-scope][value=folder]')));
+await page.check('input[name=ex-scope][value=folder]');
+await page.click('#ex-go');
+await idle();
+const ex = (await calls('export_file')).at(-1);
+check('a folder export asks for that folder\'s tree', ex && ex.folder === 2 && ex.ids === null && ex.format === 'html', JSON.stringify(ex));
+check('the status bar reports the export', /Exported 3 bookmarks to keymarks-bookmarks.html/.test(await status()), await status());
+await item('Bookmarks').click();
+await idle();
+await page.evaluate(() => document.getElementById('export-open').click());
+check('at the root "this folder" is off (it would be All)', await page.isDisabled('input[name=ex-scope][value=folder]'));
+await page.click('#export-dlg button[data-close]');
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

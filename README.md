@@ -70,6 +70,10 @@ So this project is two things:
   cleanup or restore, and you can restore from inside the app.
 - **Import from Chrome, Edge and Firefox** (every profile), or any exported bookmarks
   file. Folders come in as folders (folder names as keywords only if you ask), duplicates are skipped, and each import can be undone.
+- **Export keeps the folders.** Bookmarks HTML (for any browser, or back into Keymarks)
+  writes the tree in your order, empty folders, folder notes, notes and descriptions
+  included; export everything, one folder and its subfolders, a search or the selection.
+  Keymarks JSON carries every field and the tree.
 - **Lossless Powermarks import, and export back.** It reads `pm35.htm` byte for byte and
   repairs text the original had stored double- or triple-encoded, even when one field mixes
   encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks

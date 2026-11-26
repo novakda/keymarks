@@ -496,7 +496,7 @@
     <h2 id="export-title">Export bookmarks</h2>
     <div class="settings-body">
       <fieldset class="plain"><legend>Format</legend>
-        <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (keywords become tags)</label>
+        <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (folders kept, keywords become tags)</label>
         <label><input type="radio" name="ex-format" value="pm35"> Powermarks 3.5 (pm35.htm): open in the original Powermarks</label>
         <label><input type="radio" name="ex-format" value="csv"> CSV: open in Excel or any spreadsheet</label>
         <label><input type="radio" name="ex-format" value="print"> Printable list: a web page with a table, to read or print</label>
@@ -509,6 +509,7 @@
       </fieldset>
       <fieldset class="plain"><legend>Which bookmarks</legend>
         <label><input type="radio" name="ex-scope" value="all" checked> <span id="ex-all">All</span></label>
+        <label><input type="radio" name="ex-scope" value="folder"> <span id="ex-folder">This folder</span></label>
         <label><input type="radio" name="ex-scope" value="matching"> <span id="ex-matching">Matching the search</span></label>
         <label><input type="radio" name="ex-scope" value="selected"> <span id="ex-selected">Selected</span></label>
       </fieldset>
