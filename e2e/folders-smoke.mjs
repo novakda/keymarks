@@ -2,8 +2,9 @@
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
-// prompt()/confirm() are answered through CDP (Page.javascriptDialogOpening), which also
-// proves they open. The native open/save file dialogs are the OS's: KEYMARKS_E2E_OPEN_FILE /
+// prompt() is answered through CDP (Page.javascriptDialogOpening), which also proves it opens.
+// confirm() is tauri-plugin-dialog's async native message box, which CDP can't answer: it is
+// replaced by an async fake the test answers, so a caller that doesn't await it is caught. The native open/save file dialogs are the OS's: KEYMARKS_E2E_OPEN_FILE /
 // KEYMARKS_E2E_SAVE_FILE stand in for them. The database is read (read-only) to check what
 // the store did. Output is counts and the test's own folder names only.
 //
@@ -85,7 +86,18 @@ fs.writeFileSync(importFile, `<!DOCTYPE NETSCAPE-Bookmark-file-1>
 
 const env = { ...debugEnv(PORT, webviewData), KEYMARKS_DATA_DIR: work, KEYMARKS_E2E_OPEN_FILE: importFile, KEYMARKS_E2E_SAVE_FILE: exportFile };
 
-// prompt()/confirm() answers queued by the test; anything else is dismissed and logged.
+// confirm() answers queued by the test (true/false, or 'hold': answer later through
+// window.__e2eAnswer). Async like the plugin's, so `!confirm()` never waits for it.
+const fakeConfirm = () => {
+  window.__e2eConfirms = [];
+  window.confirm = () => new Promise((resolve) => {
+    const a = window.__e2eConfirms.shift();
+    if (a === 'hold') window.__e2eAnswer = resolve;
+    else { if (a === undefined) console.warn('E2E unexpected confirm'); resolve(a === true); }
+  });
+};
+const expectConfirm = (a) => page.evaluate((x) => window.__e2eConfirms.push(x), a);
+// prompt() answers queued by the test; anything else is dismissed and logged.
 const answers = [];
 const dialogsSeen = [];
 let browser;
@@ -93,6 +105,9 @@ let page;
 async function launch() {
   startApp(env);
   ({ browser, page } = await connect(PORT));
+  await page.context().addInitScript(fakeConfirm); // survives reloads
+  await page.evaluate(fakeConfirm);
+  page.on('console', (m) => { if (m.text().startsWith('E2E unexpected')) log(m.text()); });
   page.on('dialog', async (d) => {
     dialogsSeen.push({ type: d.type(), message: d.message(), value: d.defaultValue() });
     const a = answers.shift();
@@ -356,16 +371,23 @@ try {
     && s19.selected.join() === String(target) && s19.ids[s19.cursor] === target && curRow === s19.cursor,
     `tree ${await treeSelected()} (want ${alpha.id}), ${s19.selected.length} selected, cursor ${s19.cursor}, row ${curRow}`);
 
-  // 4. Del on a folder with items: they move up. tauri-plugin-dialog replaces window.confirm
-  // with an async one (a native message box, answered through IPC, not CDP): `!confirm()` is
-  // then always false, so the page goes ahead without waiting for the answer. 4b reports that.
+  // 4. Del on a folder with items: it asks, and nothing happens until the answer (4b);
+  // Cancel keeps the folder, OK moves its items up.
   const contents = itemsIn(alpha.id);
-  const confirmKind = await page.evaluate(() => window.confirm.constructor.name);
   await openFolder(alpha.id);
+  await expectConfirm('hold');
+  await page.focus('#tree');
+  await page.keyboard.press('Delete');
+  await sleep(700);
+  const waited = !!folderRow('Kmzqalpha') && (await page.evaluate(() => typeof window.__e2eAnswer === 'function'));
+  await page.evaluate(() => window.__e2eAnswer(false));
+  await idle();
+  check('4b Del asks and waits for the answer; Cancel keeps the folder', waited && !!folderRow('Kmzqalpha') && contents.every((id) => itemsIn(alpha.id).includes(id)),
+    waited ? 'deleted after Cancel' : 'deleted before any answer');
+  await expectConfirm(true);
   await key('Delete', '#tree');
   check('4 Del on a folder with items moves them up', !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
     && contents.every((id) => itemsIn(ROOT).includes(id)) && (await treeSelected()) === ROOT, `${contents.length} items moved up`);
-  check('4b Del asks first and waits for the answer', confirmKind !== 'AsyncFunction', `window.confirm is ${confirmKind}: deleted before any answer`);
 
   // 12. Import a Netscape file with nested folders: under a new folder named after the file.
   await menu('import');

@@ -67,7 +67,9 @@ log(`connected to ${page.url()}`);
 
 // WebView2 shows confirm()/prompt() as real Windows dialogs, which take focus from whatever
 // the user is doing. So the page's dialogs are replaced by answers the test queues up front;
-// no dialog window ever opens. Unexpected dialogs are refused and logged.
+// no dialog window ever opens. Unexpected dialogs are refused and logged. confirm() is async,
+// as tauri-plugin-dialog makes it in the real app: code that doesn't await it goes ahead
+// before the answer, which the Cancel checks catch.
 const fakeDialogs = () => {
   window.__e2eAnswers = [];
   const next = (kind, fallback) => {
@@ -75,7 +77,7 @@ const fakeDialogs = () => {
     console.warn(`E2E unexpected ${kind} dialog`);
     return fallback;
   };
-  window.confirm = () => next('confirm', false) === true;
+  window.confirm = async () => next('confirm', false) === true;
   window.prompt = () => { const a = next('prompt', null); return a === true ? '' : a; };
   window.alert = () => { next('alert', undefined); };
 };
@@ -286,6 +288,13 @@ try {
   await search('');
   await page.click('#table-body tr.vrow');
   await page.focus('#tablewrap');
+  await expectDialog(false);
+  await page.keyboard.press('Delete');
+  await idle();
+  check('Delete, Cancel keeps the bookmark', (await everything()) === all);
+  await search('');
+  await page.click('#table-body tr.vrow');
+  await page.focus('#tablewrap');
   await expectDialog();
   await page.keyboard.press('Delete');
   await idle();
@@ -336,6 +345,11 @@ try {
   await page.waitForSelector('#backup-list tbody tr', { timeout: 10000 }).catch(() => {});
   const backupRows = await page.locator('#backup-list tbody tr').count();
   check('Backups lists the startup backup', backupRows >= 1, `${backupRows} backups`);
+  await expectDialog(false);
+  await page.click('#backup-list tbody tr button');
+  await page.waitForTimeout(1500); // a restore that went ahead would close the dialog by now
+  check('Restore, Cancel keeps the bookmarks', (await page.evaluate(() => window.__e2eAnswers.length)) === 0
+    && (await page.isVisible('#backups')) && (await page.locator('#backup-list tbody tr').count()) === backupRows);
   await page.click('#backups button[value=close]');
 
   // 9. Desktop: settings dialog, single instance (a second launch hands over and exits)
