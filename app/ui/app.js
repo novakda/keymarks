@@ -383,6 +383,8 @@ function renderTable() {
       if (c.num) td.className = 'num';
       return td;
     }));
+    tr.dataset.i = i;
+    tr.onpointerdown = (e) => startRowDrag(e, i);
     tr.onclick = (e) => select(i, e);
     tr.ondblclick = () => open(ids[i]);
     tr.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
@@ -427,6 +429,8 @@ function renderCards() {
     meta.className = 'meta';
     meta.textContent = b ? [b.keywords, isNote(b) ? (b.notes.split('\n')[0] || 'Note') : b.url].filter(Boolean).join(' · ') : '';
     li.append(title, meta);
+    li.dataset.i = i;
+    li.onpointerdown = (e) => startRowDrag(e, i);
     li.onclick = (e) => select(i, e);
     li.ondblclick = () => open(ids[i]);
     li.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
@@ -516,6 +520,8 @@ function onListKeys(e) {
     render();
   } else if ((e.ctrlKey || e.metaKey) && ['+', '=', '-'].includes(e.key)) {
     changeRating([...selected], e.key === '-' ? -1 : 1);
+  } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey && inList) {
+    openMovePicker({ bookmarks: ids.filter((id) => selected.has(id)) });
   } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && inList) {
     copyUrls(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'x' && (e.ctrlKey || e.metaKey) && inList) {
@@ -692,6 +698,7 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'open-new') chosen.forEach((id) => open(id, { newWindow: true }));
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'cut') cut(chosen);
+  else if (act === 'move') openMovePicker({ bookmarks: chosen });
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
@@ -761,6 +768,7 @@ async function runHistory(which) {
   if (!confirmDiscard()) return;
   try {
     const name = await invoke(which);
+    await refreshFolders(); // filing steps change the tree
     await refreshDictionary();
     await refresh();
     say(name ? `${which === 'undo' ? 'Undid' : 'Redid'}: ${name}` : `Nothing to ${which}.`);
@@ -1134,11 +1142,11 @@ async function refreshFolders() {
 
 /** The folders the tree shows, in order, with their depth: the root is always open. */
 // ponytail: renders every visible folder (no virtual scrolling); fine for hundreds, virtualise if trees get huge.
-function visibleFolders() {
+function visibleFolders(all = false) {
   const out = [];
   const walk = (f, depth) => {
     out.push([f, depth]);
-    if (f.id === ROOT || !f.folded) childFolders(f.id).forEach((c) => walk(c, depth + 1));
+    if (all || f.id === ROOT || !f.folded) childFolders(f.id).forEach((c) => walk(c, depth + 1));
   };
   const root = folders.find((f) => f.id === ROOT);
   if (root) walk(root, 0);
@@ -1166,6 +1174,7 @@ function renderTree() {
     name.textContent = f.name;
     li.title = f.name;
     li.append(twisty, name);
+    if (f.id !== ROOT) li.onpointerdown = (e) => startDrag(e, { folders: [f.id] }, f.parent_id, f.name);
     li.onclick = () => { setFolder(f.id); tree.focus(); };
     li.ondblclick = () => { if (hasKids && f.id !== ROOT) setFolded(f, !f.folded); };
     li.oncontextmenu = (e) => { e.preventDefault(); setFolder(f.id); showFolderMenu(e, f); };
@@ -1214,6 +1223,9 @@ $('tree').addEventListener('keydown', (e) => {
     setFolder(shown[e.key === 'Home' ? 0 : shown.length - 1].id);
   } else if (e.key === 'F2') {
     renameFolder(f);
+  } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (f.id === ROOT) say('The top folder can’t move.');
+    else openMovePicker({ folders: [f.id] });
   } else if (e.key === 'Delete') {
     deleteFolder(f);
   } else if (e.key === 'Enter') {
@@ -1222,19 +1234,213 @@ $('tree').addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
-// Minimal filing actions for now (FLD-16 and friends: undo, drag and drop come later).
-const newFolder = busyAware(async (parent) => {
-  const name = prompt(`New folder in “${folderName(parent)}”:`);
-  if (!name?.trim()) return;
+// ---- filing: New folder, Move to folder, drag and drop (FLD-16, ITEM-16, FLD-07) --------
+// Each is one undo step in the store (DATA-04); Ctrl+Z goes through runHistory.
+
+/** New folder inside `parent`, named in place in the tree (Enter keeps, Esc cancels). */
+function newFolder(parent) {
+  const p = folders.find((x) => x.id === parent);
+  if (!p || $('tree').querySelector('li.naming')) return;
+  if (parent !== ROOT && p.folded) setFolded(p, false); // show where it goes
+  const row = $('tree').querySelector(`li[data-id="${parent}"]`);
+  const li = document.createElement('li');
+  li.className = 'naming';
+  li.style.setProperty('--depth', Number(row.style.getPropertyValue('--depth')) + 1);
+  const input = document.createElement('input');
+  input.value = 'New folder';
+  input.ariaLabel = `Name of the new folder in “${p.name}”`;
+  li.append(input);
+  row.after(li);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = busyAware(async (keep) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    li.remove();
+    $('tree').focus();
+    if (!keep || !name) return;
+    try {
+      const id = await invoke('create_folder', { parent, name });
+      await refreshFolders();
+      setFolder(id);
+      say(`Folder “${name}” created. (Ctrl+Z undoes)`);
+    } catch (e) { fail('New folder')(e); }
+  });
+  input.onkeydown = (e) => {
+    e.stopPropagation(); // not the tree's keys
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+
+const folderPath = (id) => {
+  const parts = [];
+  for (let f = folders.find((x) => x.id === id); f; f = folders.find((x) => x.id === f.parent_id)) parts.unshift(f.name);
+  return parts.join(' › ');
+};
+/** Is folder `id` the folder `of` or inside it? */
+const inSubtree = (id, of) => {
+  for (let f = folders.find((x) => x.id === id); f; f = folders.find((x) => x.id === f.parent_id)) if (f.id === of) return true;
+  return false;
+};
+const describe = ({ folders: fs = [], bookmarks = [] }) => (fs.length
+  ? `folder “${folderName(fs[0])}”`
+  : bookmarks.length === 1 ? `“${cache.get(bookmarks[0])?.title || cache.get(bookmarks[0])?.url || 'the bookmark'}”` : `${bookmarks.length} bookmarks`);
+
+/** Move folders or bookmarks into `to` (at the end, or beside a child of it). */
+const moveItems = busyAware(async (what, to, beside = null) => {
   try {
-    const id = await invoke('create_folder', { parent, name });
-    const p = folders.find((x) => x.id === parent);
-    if (p) p.folded = false; // show the new folder
-    if (parent !== ROOT) await invoke('set_folder_folded', { id: parent, folded: false });
+    await invoke('move_items', { folders: what.folders ?? [], bookmarks: what.bookmarks ?? [], to, beside });
+    const dest = folders.find((x) => x.id === to);
+    if (what.folders?.length && dest && to !== ROOT && dest.folded) await invoke('set_folder_folded', { id: to, folded: false }); // show it arrive
     await refreshFolders();
-    setFolder(id);
-    say(`Folder “${name.trim()}” created.`);
-  } catch (e) { fail('New folder')(e); }
+    await refresh();
+    say(`Moved ${describe(what)} to “${folderName(to)}”. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Move')(e); }
+});
+
+// Move to folder (Ctrl+M): a folder picker with type-ahead.
+let moving = null;
+let pick = 0;
+function pickerChoices() {
+  const t = $('mv-filter').value.trim().toLowerCase();
+  return visibleFolders(true).map(([f]) => f)
+    .filter((f) => !(moving.folders ?? []).some((m) => inSubtree(f.id, m)))
+    .map((f) => [f.id, folderPath(f.id)])
+    .filter(([, path]) => !t || path.toLowerCase().includes(t));
+}
+function renderPicker() {
+  const choices = pickerChoices();
+  pick = Math.max(0, Math.min(pick, choices.length - 1));
+  $('mv-list').replaceChildren(...choices.map(([id, path], i) => {
+    const li = document.createElement('li');
+    li.role = 'option';
+    li.textContent = path;
+    li.dataset.id = id;
+    li.ariaSelected = String(i === pick);
+    li.onclick = () => { pick = i; renderPicker(); };
+    li.ondblclick = () => $('move-form').requestSubmit();
+    return li;
+  }));
+  $('mv-list').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
+  $('mv-submit').disabled = !choices.length;
+}
+function openMovePicker(what) {
+  if (!(what.folders?.length || what.bookmarks?.length) || !confirmDiscard()) return;
+  moving = what;
+  $('move-title').textContent = `Move ${describe(what)} to`;
+  $('mv-filter').value = '';
+  pick = 0;
+  renderPicker();
+  $('move-dlg').showModal();
+  $('mv-filter').focus();
+}
+$('mv-filter').addEventListener('input', () => { pick = 0; renderPicker(); });
+$('mv-filter').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  pick += e.key === 'ArrowDown' ? 1 : -1;
+  renderPicker();
+});
+$('move-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const choice = pickerChoices()[pick];
+  if (!choice) return;
+  $('move-dlg').close();
+  moveItems(moving, choice[0]);
+});
+
+// Drag and drop: pointer events, as for the columns (the webview keeps HTML drag and drop
+// for files dropped from Explorer). Onto a tree folder = into it; a folder near a tree
+// row's top or bottom edge = before or after it; a bookmark between list rows = reorder,
+// only while the list shows the folder's own order (no search, no header sort).
+function startRowDrag(e, i) {
+  const id = ids[i];
+  // The selection if the row is in it, else just this row; in list order.
+  const what = () => ({ bookmarks: selected.has(id) ? ids.filter((x) => selected.has(x)) : [id] });
+  startDrag(e, what, q.value.trim() ? null : folder, null);
+}
+
+function dropTarget(m, what, from) {
+  const el = document.elementFromPoint(m.clientX, m.clientY);
+  const li = el?.closest('#tree li[data-id]');
+  if (li) {
+    const id = Number(li.dataset.id);
+    const f = folders.find((x) => x.id === id);
+    if (what.folders?.some((x) => inSubtree(id, x))) return null; // not into itself
+    const r = li.getBoundingClientRect();
+    const y = (m.clientY - r.top) / r.height;
+    if (what.folders && id !== ROOT && y < 0.25) return { el: li, cls: 'drop-before', to: f.parent_id, beside: { folder: true, id, after: false } };
+    // After an open folder with children would look like "into its first child": not offered.
+    if (what.folders && id !== ROOT && y > 0.75 && (f.folded || !childFolders(id).length)) return { el: li, cls: 'drop-after', to: f.parent_id, beside: { folder: true, id, after: true } };
+    if (id === from) return null; // already there
+    return { el: li, cls: 'drop-in', to: id, beside: null };
+  }
+  const row = el?.closest('.vrow');
+  if (row && what.bookmarks && from === folder && !q.value.trim() && !opts.sort.length) {
+    const id = ids[Number(row.dataset.i)];
+    if (id === undefined || what.bookmarks.includes(id)) return null;
+    const r = row.getBoundingClientRect();
+    const after = m.clientY > r.top + r.height / 2;
+    return { el: row, cls: after ? 'drop-after' : 'drop-before', to: folder, beside: { folder: false, id, after } };
+  }
+  return null;
+}
+
+function startDrag(e, whatFn, from, label) {
+  if (e.button !== 0 || e.target.closest('input, button')) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let what = null;
+  let drop = null;
+  let ghost = null;
+  const clear = () => document.querySelectorAll('.drop-in, .drop-before, .drop-after').forEach((x) => x.classList.remove('drop-in', 'drop-before', 'drop-after'));
+  const end = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    removeEventListener('keydown', esc, true);
+    clear();
+    ghost?.remove();
+  };
+  const move = (m) => {
+    if (!what) {
+      if (Math.hypot(m.clientX - x0, m.clientY - y0) < 6) return;
+      what = typeof whatFn === 'function' ? whatFn() : whatFn;
+      ghost = document.createElement('div');
+      ghost.id = 'drag-ghost';
+      ghost.textContent = label ?? describe(what);
+      document.body.append(ghost);
+    }
+    ghost.style.left = `${m.clientX + 12}px`;
+    ghost.style.top = `${m.clientY + 12}px`;
+    clear();
+    drop = dropTarget(m, what, from);
+    drop?.el.classList.add(drop.cls);
+  };
+  const up = () => {
+    end();
+    if (!what) return; // a plain click
+    // The click that ends a drag is not a select. None fires if it ends on another element,
+    // so the guard lasts only for this event, never eating a later real click.
+    const stop = (k) => k.stopPropagation();
+    addEventListener('click', stop, { capture: true, once: true });
+    setTimeout(() => removeEventListener('click', stop, { capture: true }));
+    if (drop) moveItems(what, drop.to, drop.beside);
+  };
+  const esc = (k) => { if (k.key === 'Escape') { k.stopPropagation(); what = null; end(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+  addEventListener('keydown', esc, true);
+}
+
+// Ctrl+Shift+N anywhere but a text field: a new folder in the selected one.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'n') return;
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  newFolder(folder);
 });
 
 const renameFolder = busyAware(async (f) => {
@@ -1257,7 +1463,7 @@ const deleteFolder = busyAware(async (f) => {
     await refreshFolders();
     setFolder(f.parent_id, { load: false });
     await refresh({ keepSelection: false });
-    say(`Folder “${f.name}” deleted; its contents are now in “${parent}”.`);
+    say(`Folder “${f.name}” deleted; its contents are now in “${parent}”. (Ctrl+Z undoes)`);
   } catch (e) { fail('Delete folder')(e); }
 });
 
@@ -1276,7 +1482,7 @@ function showFolderMenu(e, f) {
   menuFolder = f;
   const ctx = $('fctx');
   $('fctx-title').textContent = f.name;
-  for (const act of ['rename', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  for (const act of ['rename', 'move', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
   ctx.hidden = false;
   ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
   ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
@@ -1290,6 +1496,7 @@ $('fctx').addEventListener('click', (e) => {
   if (act === 'new') newFolder(f.id);
   else if (act === 'note') newNote(f.id);
   else if (act === 'rename') renameFolder(f);
+  else if (act === 'move') openMovePicker({ folders: [f.id] });
   else if (act === 'delete') deleteFolder(f);
 });
 document.addEventListener('click', (e) => { if (!$('fctx').contains(e.target)) $('fctx').hidden = true; });

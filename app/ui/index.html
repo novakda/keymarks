@@ -89,6 +89,15 @@
   #tree .twisty { width: 1.1em; flex: none; text-align: center; color: var(--muted); }
   #tree .name { overflow: hidden; text-overflow: ellipsis; }
   .vrow.note .title { font-style: italic; }
+  /* Drag and drop (FLD-07): into a folder, or between rows. */
+  #tree li.drop-in { background: var(--sel); outline: 2px solid var(--accent); outline-offset: -2px; }
+  .drop-before { box-shadow: inset 0 2px var(--accent) !important; }
+  .drop-after { box-shadow: inset 0 -2px var(--accent) !important; }
+  #drag-ghost { position: fixed; z-index: 20; pointer-events: none; padding: 2px 8px; border-radius: 6px; background: var(--accent); color: #fff; font-size: 12px; white-space: nowrap; }
+  #tree li.naming input { flex: 1; min-width: 0; font: inherit; padding: 0 4px; }
+  #mv-list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; max-height: 50vh; border-top: 1px solid var(--line); }
+  #mv-list li { padding: 3px 16px; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #mv-list li[aria-selected=true] { background: var(--sel); }
   #savedlist li { display: flex; gap: 6px; padding: 3px 10px; cursor: default; user-select: none; }
   #savedlist li:hover, #savedlist li.active { background: var(--sel); }
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
@@ -235,7 +244,7 @@
     <summary class="secondary" aria-label="More">⋯</summary>
     <div class="menu" role="menu">
       <button id="new-bookmark" type="button" role="menuitem" title="Insert">New bookmark…</button>
-      <button id="new-folder" type="button" role="menuitem">New folder…</button>
+      <button id="new-folder" type="button" role="menuitem" title="Ctrl+Shift+N">New folder</button>
       <button id="add-clipboard" type="button" role="menuitem" title="Alt+Insert">Add links from clipboard</button>
       <button id="import" type="button" role="menuitem">Import…</button>
       <button id="export-open" type="button" role="menuitem">Export…</button>
@@ -301,6 +310,9 @@
       <tr><td>Alt+1…9</td><td>Run a saved search or link</td></tr>
       <tr><td>Enter / Ctrl+Enter</td><td>In the keyword list: search for it / add it to the search</td></tr>
       <tr><th colspan="2">Folders</th></tr>
+      <tr><td>Ctrl+Shift+N</td><td>New folder inside the selected one (type its name, Enter)</td></tr>
+      <tr><td>Ctrl+M</td><td>Move the selected bookmarks (in the list) or folder (in the tree) to a folder</td></tr>
+      <tr><td>Drag</td><td>Bookmarks onto a folder to move them; folders onto or between folders; within a folder's list to reorder (when the list isn't sorted)</td></tr>
       <tr><td>↑ ↓ ← →</td><td>In the folder tree: move, collapse, expand</td></tr>
       <tr><td>F2 / Del</td><td>In the folder tree: rename / delete the folder (its contents move up)</td></tr>
       <tr><th colspan="2">Bookmarks</th></tr>
@@ -335,6 +347,7 @@
   <button role="menuitem" data-act="open-new">Open in new window (Shift+Enter)</button>
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
   <button role="menuitem" data-act="cut">Cut (Ctrl+X)</button>
+  <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
   <button role="menuitem" data-act="visited">Mark visited</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
@@ -349,11 +362,26 @@
   <button role="menuitem" data-act="delete">Delete… (Del)</button>
 </div>
 
+<dialog id="move-dlg" aria-labelledby="move-title">
+  <form method="dialog" id="move-form">
+    <h2 id="move-title">Move to folder</h2>
+    <div class="settings-body">
+      <input id="mv-filter" autocomplete="off" placeholder="Type to find a folder" aria-label="Find a folder" aria-controls="mv-list">
+    </div>
+    <ul id="mv-list" role="listbox" aria-label="Folders"></ul>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit" id="mv-submit">Move</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="fctx" role="menu" hidden>
   <strong id="fctx-title"></strong>
-  <button role="menuitem" data-act="new">New folder…</button>
+  <button role="menuitem" data-act="new">New folder (Ctrl+Shift+N)</button>
   <button role="menuitem" data-act="note">New note…</button>
   <button role="menuitem" data-act="rename">Rename… (F2)</button>
+  <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
   <hr>
   <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
 </div>

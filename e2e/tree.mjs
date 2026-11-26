@@ -39,6 +39,9 @@ function fakeTauri() {
   const calls = (window.__calls = []);
   let nextId = 100;
   const byPos = (a, b) => a.position - b.position;
+  // A one-stack undo like the store's: each filing command saves the whole fake state.
+  const steps = [];
+  const snap = (name) => steps.push([name, JSON.stringify({ folders, items })]);
   const handlers = {
     folders: () => [...folders].sort((a, b) => (a.parent_id ?? 0) - (b.parent_id ?? 0) || byPos(a, b)).map((f) => ({ ...f })),
     search_ids: ({ query, opts }) => (query.trim()
@@ -48,17 +51,37 @@ function fakeTauri() {
     count: () => items.length,
     keywords: () => [],
     data_version: () => 1,
-    history: () => ({ undo: null, redo: null }),
+    history: () => ({ undo: steps.at(-1)?.[0] ?? null, redo: null }),
+    undo: () => {
+      const step = steps.pop();
+      if (!step) return null;
+      const old = JSON.parse(step[1]);
+      folders.splice(0, folders.length, ...old.folders);
+      items.splice(0, items.length, ...old.items);
+      return step[0];
+    },
+    move_items: ({ folders: fs, bookmarks: bs, to, beside }) => {
+      snap('Move');
+      const moved = [...fs.map((id) => folders.find((x) => x.id === id)), ...bs.map((id) => items.find((x) => x.id === id))];
+      const kids = [...folders.filter((f) => f.parent_id === to), ...items.filter((b) => b.folder_id === to)].sort(byPos).filter((k) => !moved.includes(k));
+      const anchor = beside ? kids.findIndex((k) => k.id === beside.id && ('folded' in k) === beside.folder) : -1;
+      const at = anchor >= 0 ? anchor + (beside.after ? 1 : 0) : kids.length;
+      kids.splice(at, 0, ...moved);
+      kids.forEach((k, i) => { k.position = i + 1; if ('folded' in k) k.parent_id = to; else k.folder_id = to; });
+      return moved.length;
+    },
     saved_items: () => [],
     schedule_names: () => [],
     set_folder_folded: ({ id, folded }) => { folders.find((f) => f.id === id).folded = folded; },
     create_folder: ({ parent, name }) => {
+      snap(`New folder “${name.trim()}”`);
       const id = nextId++;
       folders.push({ id, parent_id: parent, name: name.trim(), position: 99, folded: true });
       return id;
     },
-    rename_folder: ({ id, name }) => { folders.find((f) => f.id === id).name = name.trim(); },
+    rename_folder: ({ id, name }) => { snap('Rename'); folders.find((f) => f.id === id).name = name.trim(); },
     delete_folder: ({ id }) => {
+      snap('Delete');
       const f = folders.find((x) => x.id === id);
       for (const c of folders) if (c.parent_id === id) c.parent_id = f.parent_id;
       for (const b of items) if (b.folder_id === id) b.folder_id = f.parent_id;
@@ -137,9 +160,11 @@ await page.locator('#list li.vrow').nth(1).click();
 await idle();
 check('a note in the properties panel has no URL or link-check fields', !(await page.isVisible('#f-url')) && !(await page.isVisible('#f-check')) && (await page.isVisible('#f-notes')));
 
-answer('Projects');
 await item('Work').click({ button: 'right' });
 await page.click('#fctx [data-act=new]');
+check('New folder asks for the name in place, in the tree', await page.isVisible('#tree li.naming input:focus'));
+await page.keyboard.type('Projects');
+await page.keyboard.press('Enter');
 await idle();
 check('New folder creates it inside the folder and selects it', JSON.stringify((await calls('create_folder')).at(-1)) === '{"parent":2,"name":"Projects"}' && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Projects');
 check('its parent opens to show it', (await tree()).includes('Projects'));
@@ -174,6 +199,81 @@ check('the selected folder is remembered', (await page.textContent('#tree li[ari
 
 await page.click('#kw-head');
 check('the Keywords pane collapses', !(await page.isVisible('#kwlist')) && (await page.getAttribute('#kw-head', 'aria-expanded')) === 'false');
+
+// ---- filing: Move to folder, drag and drop, undo (the reload reset the fake) ----
+const box = async (loc) => loc.boundingBox();
+const drag = async (from, to, dy = 0.5) => {
+  const a = await box(from);
+  const b = await box(to);
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height * dy, { steps: 6 });
+  await page.mouse.up();
+  await idle();
+};
+const row = (n) => page.locator('#list li.vrow').nth(n);
+const lastMove = async () => JSON.stringify((await calls('move_items')).at(-1));
+const moves = async () => (await calls('move_items')).length;
+
+await item('Work').click();
+await idle();
+await drag(row(2), row(0), 0.25);
+check('dragging a row above another reorders the folder', await lastMove() === '{"folders":[],"bookmarks":[13],"to":2,"beside":{"folder":false,"id":11,"after":false}}'
+  && JSON.stringify(await titles()) === '["Tracker","Wiki","✎ Standup notes"]', `${await lastMove()} ${JSON.stringify(await titles())}`);
+await page.focus('#list');
+await page.keyboard.press('Control+z');
+await idle();
+check('Ctrl+Z undoes the move and the list shows the old order', JSON.stringify(await titles()) === '["Wiki","✎ Standup notes","Tracker"]' && (await status()).startsWith('Undid: Move'), `${JSON.stringify(await titles())} ${await status()}`);
+
+await drag(row(0), item('Home'));
+check('dragging a row onto a tree folder moves it there', await lastMove() === '{"folders":[],"bookmarks":[11],"to":4,"beside":null}'
+  && JSON.stringify(await titles()) === '["✎ Standup notes","Tracker"]', `${await lastMove()} ${JSON.stringify(await titles())}`);
+
+await row(0).click();
+await row(1).click({ modifiers: ['Control'] });
+await idle();
+await page.focus('#list');
+await page.keyboard.press('Control+m');
+check('Ctrl+M opens the folder picker for the selection', await page.isVisible('#move-dlg') && (await page.textContent('#move-title')) === 'Move 2 bookmarks to', await page.textContent('#move-title'));
+await page.keyboard.type('cli');
+const offered = await page.$$eval('#mv-list li', (lis) => lis.map((li) => li.textContent));
+check('the picker filters folders as you type', JSON.stringify(offered) === '["Bookmarks › Work › Clients"]', JSON.stringify(offered));
+await page.keyboard.press('Enter');
+await idle();
+check('Enter moves both in one call', await lastMove() === '{"folders":[],"bookmarks":[12,13],"to":3,"beside":null}' && (await titles()).length === 0, await lastMove());
+
+await page.reload();
+await idle();
+const before = await moves();
+await drag(item('Home'), item('Work'));
+check('dragging a folder onto another moves it inside, and shows it there', await lastMove() === '{"folders":[4],"bookmarks":[],"to":2,"beside":null}'
+  && JSON.stringify(await tree()) === '["Bookmarks","Work","Clients","Home"]', `${await lastMove()} ${JSON.stringify(await tree())}`);
+await drag(item('Work'), item('Clients'));
+check('a folder can’t be dropped into its own subtree', (await moves()) === before + 1);
+await drag(item('Home'), item('Work'), 0.1);
+check('dropping near a folder’s top edge puts the folder before it', await lastMove() === '{"folders":[4],"bookmarks":[],"to":1,"beside":{"folder":true,"id":2,"after":false}}'
+  && JSON.stringify(await tree()) === '["Bookmarks","Home","Work","Clients"]', `${await lastMove()} ${JSON.stringify(await tree())}`);
+
+await item('Home').click();
+await page.keyboard.press('Control+m');
+const forFolder = await page.$$eval('#mv-list li', (lis) => lis.map((li) => li.textContent));
+check('the picker leaves out the folder itself for a folder move', !forFolder.some((p) => p.includes('Home')), JSON.stringify(forFolder));
+await page.keyboard.press('Escape');
+
+await page.focus('#tree');
+const creates = (await calls('create_folder')).length;
+await page.keyboard.press('Control+Shift+N');
+await page.keyboard.press('Escape');
+await idle();
+check('Esc while naming cancels the new folder', (await calls('create_folder')).length === creates && !(await page.isVisible('#tree li.naming')));
+await page.keyboard.press('Control+Shift+N');
+await page.keyboard.type('Recipes');
+await page.keyboard.press('Enter');
+await idle();
+check('Ctrl+Shift+N creates a folder inside the selected one', JSON.stringify((await calls('create_folder')).at(-1)) === '{"parent":4,"name":"Recipes"}' && (await tree()).includes('Recipes'), JSON.stringify(await tree()));
+await page.keyboard.press('Control+z');
+await idle();
+check('undoing the new folder takes it out of the tree', !(await tree()).includes('Recipes') && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks', JSON.stringify(await tree()));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');
