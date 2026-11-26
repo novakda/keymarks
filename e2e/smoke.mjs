@@ -170,7 +170,7 @@ async function setOptions(fn) {
   await page.click('#status'); // outside click closes the menu
 }
 const fields = (wanted) => setOptions(async () => {
-  for (const f of ['title', 'url', 'keywords', 'description', 'notes']) {
+  for (const f of ['title', 'url', 'keywords', 'description', 'notes', 'folder']) {
     await page.setChecked(`input[name=field][value=${f}]`, wanted.includes(f));
     await idle();
   }

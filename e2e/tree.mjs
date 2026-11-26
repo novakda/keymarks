@@ -44,9 +44,12 @@ function fakeTauri() {
   const snap = (name) => steps.push([name, JSON.stringify({ folders, items })]);
   const handlers = {
     folders: () => [...folders].sort((a, b) => (a.parent_id ?? 0) - (b.parent_id ?? 0) || byPos(a, b)).map((f) => ({ ...f })),
-    search_ids: ({ query, opts }) => (query.trim()
-      ? items.filter((b) => b.title.toLowerCase().includes(query.trim().toLowerCase())).map((b) => b.id)
-      : items.filter((b) => b.folder_id === opts.folder).sort(byPos).map((b) => b.id)),
+    search_ids: ({ query, opts }) => {
+      if (!query.trim()) return items.filter((b) => b.folder_id === opts.folder).sort(byPos).map((b) => b.id);
+      // Scoped (FIND-08): the folder and everything below it.
+      const below = (id) => id === opts.folder || (id !== 1 && below(folders.find((f) => f.id === id).parent_id));
+      return items.filter((b) => b.title.toLowerCase().includes(query.trim().toLowerCase()) && (!opts.in_folder || below(b.folder_id))).map((b) => b.id);
+    },
     get_bookmarks: ({ ids }) => ids.map((id) => items.find((b) => b.id === id)).filter(Boolean),
     count: () => items.length,
     keywords: () => [],
@@ -320,6 +323,55 @@ await idle();
 await page.evaluate(() => document.getElementById('export-open').click());
 check('at the root "this folder" is off (it would be All)', await page.isDisabled('input[name=ex-scope][value=folder]'));
 await page.click('#export-dlg button[data-close]');
+
+// ---- search meets the tree: scope, Folder column, reveal (FIND-07, FIND-08, VIEW-02, FLD-14) ----
+check('exact mode offers the Folder field, on by default', await page.isChecked('input[name=field][value=folder]'));
+await item('Clients').click();
+await idle();
+const scope = () => page.evaluate(() => ({ pressed: document.getElementById('scope').ariaPressed, text: document.getElementById('scope').textContent }));
+check('the scope starts as the whole collection', (await scope()).pressed === 'false' && /everywhere/i.test((await scope()).text), JSON.stringify(await scope()));
+await page.fill('#q', 'wiki');
+await idle();
+check('an unscoped search finds both wikis', (await titles()).length === 2);
+await page.focus('#q');
+await page.keyboard.press('Control+Shift+F');
+await idle();
+check('Ctrl+Shift+F scopes the search to the folder, and says so', (await scope()).pressed === 'true' && (await scope()).text.includes('Clients'), JSON.stringify(await scope()));
+check('the scoped search asks for the folder and below', (await calls('search_ids')).at(-1).opts.in_folder === true && (await calls('search_ids')).at(-1).opts.folder === 3);
+check('the scoped search lists only what is in the folder', JSON.stringify(await titles()) === '["Client wiki"]', JSON.stringify(await titles()));
+check('the status bar names the scope', /^1 matching in “Clients” and below/.test(await status()), await status());
+check('the scope is kept with the search options', await page.evaluate(() => JSON.parse(localStorage.getItem('searchOptions')).in_folder === true));
+await item('Work').click();
+await idle();
+check('while scoped, choosing a folder keeps the search and searches there', (await page.inputValue('#q')) === 'wiki' && (await titles()).length === 2 && (await scope()).text.includes('Work'), `${await page.inputValue('#q')} ${JSON.stringify(await titles())}`);
+await page.click('#scope');
+await idle();
+check('clicking the scope goes back to everywhere', (await scope()).pressed === 'false' && (await calls('search_ids')).at(-1).opts.in_folder === false);
+
+await page.click('#view-table');
+await page.click('#cols summary');
+await page.check('#cols-menu input[value=folder]');
+await idle();
+const folderCells = await page.$$eval('#table-body tr.vrow', (trs) => trs.map((tr) => tr.lastElementChild.textContent));
+check('the Folder column shows each result\'s folder path', folderCells.includes('Bookmarks › Work › Clients') && folderCells.includes('Bookmarks › Work'), JSON.stringify(folderCells));
+await page.click('#view-cards');
+
+await item('Work').locator('.twisty').click();
+check('(Work collapsed again)', !(await tree()).includes('Clients'));
+await page.fill('#q', 'client');
+await idle();
+await page.locator('#list li.vrow').first().click({ button: 'right' });
+await page.click('#bctx [data-act=reveal]');
+await idle();
+check('Show in folder opens the folders above it and selects its folder', (await tree()).includes('Clients') && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Clients', JSON.stringify(await tree()));
+check('Show in folder clears the search and highlights the item in its folder',
+  (await page.inputValue('#q')) === '' && (await page.textContent('#list li.vrow[aria-selected=true] .title')) === 'Client wiki', await page.inputValue('#q'));
+await page.fill('#q', 'root');
+await idle();
+await page.focus('#list');
+await page.keyboard.press('Control+Shift+L');
+await idle();
+check('Ctrl+Shift+L shows the selected result in its folder', (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks' && (await page.inputValue('#q')) === '');
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

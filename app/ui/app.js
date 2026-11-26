@@ -34,7 +34,7 @@ try { folder = Number(localStorage.getItem('folder')) || ROOT; } catch {}
 // Storage may be unavailable, so never depend on it.
 const savePrefs = () => { try { invoke('save_ui_prefs', { prefs: { ...localStorage } }).catch(() => {}); } catch {} };
 savePrefs(); // also carries over preferences kept by versions before 0.8
-const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false, sort: [] };
+const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes', 'folder'], match_case: false, sort: [], in_folder: false };
 let opts = { ...DEFAULT_OPTS };
 try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
 
@@ -97,6 +97,8 @@ const COLUMNS = [
   { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
   { id: 'check_status', label: 'Status', width: '9em', cell: checkLabel },
   { id: 'schedule', label: 'Schedule', width: '7em', cell: (b) => b.schedule ?? 'Manual' },
+  // ponytail: not sortable (the store has no path to sort by); add a SortKey when asked for.
+  { id: 'folder', label: 'Folder', width: '14%', cell: (b) => folderPath(b.folder_id), nosort: true },
 ];
 let view = 'cards';
 let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
@@ -189,9 +191,29 @@ function updateTray() {
   invoke('set_tray_results', { items }).catch(() => {});
 }
 
-// The search options plus the selected folder. The store uses the folder only while the
-// search is empty; a search covers the whole collection (folder scope is FIND-08, later).
+// The search options plus the selected folder. The store lists the folder while the search
+// is empty; a search covers the whole collection, or the folder and below when scoped (FIND-08).
 const scoped = () => ({ ...opts, folder });
+const searching = () => !!q.value.trim();
+
+function renderScope() {
+  const b = $('scope');
+  b.ariaPressed = String(!!opts.in_folder);
+  b.textContent = opts.in_folder ? `In “${folderName(folder)}”` : 'Everywhere';
+}
+
+function toggleScope() {
+  opts = { ...opts, in_folder: !opts.in_folder };
+  saveOpts();
+  renderScope();
+  if (searching()) refresh({ keepSelection: false }); else render();
+}
+$('scope').onclick = toggleScope;
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'f') return;
+  e.preventDefault();
+  toggleScope();
+});
 
 async function fetchRows(wanted) {
   const missing = [...new Set(wanted)].filter((id) => id !== undefined && !cache.has(id));
@@ -231,7 +253,7 @@ function render() {
   renderPanel();
   say(total === 0
     ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
-    : `${ids.length} matching${q.value.trim() ? '' : ` in “${folderName(folder)}”`} · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+    : `${ids.length} matching${!searching() ? ` in “${folderName(folder)}”` : opts.in_folder ? ` in “${folderName(folder)}” and below` : ''} · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
 }
 
 function renderRows() {
@@ -349,8 +371,8 @@ function renderTable() {
       mark.textContent = (opts.sort[level].desc ? ' ▼' : ' ▲') + (level ? '2' : '');
       btn.append(mark);
     }
-    btn.title = 'Click to sort (again to reverse, a third time to clear) · Drag to move the column';
-    btn.onclick = () => sortBy(c);
+    btn.title = c.nosort ? 'Drag to move the column' : 'Click to sort (again to reverse, a third time to clear) · Drag to move the column';
+    if (!c.nosort) btn.onclick = () => sortBy(c);
     const grip = document.createElement('span');
     grip.className = 'grip';
     grip.title = 'Drag to resize; double-click to reset all columns';
@@ -427,7 +449,8 @@ function renderCards() {
     title.textContent = b ? noteMark(b) + checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = b ? [b.keywords, isNote(b) ? (b.notes.split('\n')[0] || 'Note') : b.url].filter(Boolean).join(' · ') : '';
+    // A search result also says where it is.
+    meta.textContent = b ? [searching() && folderPath(b.folder_id), b.keywords, isNote(b) ? (b.notes.split('\n')[0] || 'Note') : b.url].filter(Boolean).join(' · ') : '';
     li.append(title, meta);
     li.dataset.i = i;
     li.onpointerdown = (e) => startRowDrag(e, i);
@@ -470,6 +493,7 @@ $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
   const label = document.createElement('label');
   const box = document.createElement('input');
   box.type = 'checkbox';
+  box.value = c.id;
   box.checked = shownCols.includes(c.id);
   box.disabled = c.id === 'title';
   box.onchange = () => {
@@ -528,6 +552,8 @@ function onListKeys(e) {
     cut(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'v' && (e.ctrlKey || e.metaKey) && inList) {
     addFromClipboard();
+  } else if (e.key.toLowerCase() === 'l' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+    if (ids[cursor] !== undefined) reveal(ids[cursor], { inFolder: true });
   } else if (e.key === 'Delete' && inList) {
     remove([...selected]);
   } else return;
@@ -682,6 +708,7 @@ async function showBookmarkMenu(e, i) {
   const on = [...selected].every((id) => cache.get(id)?.check_enabled);
   m.querySelector('[data-act=checking]').textContent = on ? 'Turn link checking off' : 'Turn link checking on';
   m.querySelector('[data-act=pin]').hidden = many;
+  m.querySelector('[data-act=reveal]').hidden = many;
   m.querySelector('[data-act=copy]').textContent = many ? 'Copy URLs (Ctrl+C)' : 'Copy URL (Ctrl+C)';
   m.hidden = false;
   m.style.left = `${Math.min(e.clientX, innerWidth - m.offsetWidth - 4)}px`;
@@ -699,6 +726,7 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'cut') cut(chosen);
   else if (act === 'move') openMovePicker({ bookmarks: chosen });
+  else if (act === 'reveal') reveal(chosen[0], { inFolder: true });
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
@@ -1183,9 +1211,11 @@ function renderTree() {
     return li;
   }));
   $('tree-head').textContent = `Folders [${folders.length - 1}]`;
+  renderScope();
 }
 
-/** Select a folder; the list then shows it (a search in progress is cleared). */
+/** Select a folder; the list then shows it (a search in progress is cleared, unless it is
+ *  scoped to the folder: then it searches the new one). */
 function setFolder(id, { load = true } = {}) {
   if (load && !confirmDiscard()) return;
   const changed = id !== folder;
@@ -1194,7 +1224,8 @@ function setFolder(id, { load = true } = {}) {
   renderTree();
   $('tree').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
   if (!load) return;
-  if (q.value) q.value = '';
+  if (opts.in_folder && searching()) { if (!changed) return; }
+  else if (q.value) q.value = '';
   else if (!changed) return;
   refresh({ keepSelection: false });
 }
@@ -1923,14 +1954,24 @@ document.addEventListener('keydown', (e) => {
 /** Show one bookmark: clear the search if needed, then select and scroll to it. Whichever
  *  refresh first lists it does the selecting (a background fetch may refresh concurrently). */
 let pendingReveal = null;
-async function reveal(id) {
+/** `inFolder`: show it in its folder even when the list already shows it (Show in folder,
+ *  FLD-14): the folders above it open, the tree selects its folder. */
+async function reveal(id, { inFolder = false } = {}) {
+  if (inFolder && !confirmDiscard()) return;
   pendingReveal = id;
-  if (!ids.includes(id)) {
+  if (inFolder || !ids.includes(id)) {
     q.value = '';
     const [b] = await invoke('get_bookmarks', { ids: [id] }).catch(() => []);
-    if (b && b.folder_id !== folder) setFolder(b.folder_id, { load: false });
+    if (b && inFolder) {
+      for (let f = folders.find((x) => x.id === b.folder_id); f?.parent_id; f = folders.find((x) => x.id === f.parent_id)) {
+        const p = folders.find((x) => x.id === f.parent_id);
+        if (p.id !== ROOT && p.folded) setFolded(p, false);
+      }
+    }
+    if (b && (inFolder || b.folder_id !== folder)) setFolder(b.folder_id, { load: false });
   }
   await refresh({ keepSelection: false });
+  if (inFolder) scroller().focus();
 }
 
 function newBookmark() {

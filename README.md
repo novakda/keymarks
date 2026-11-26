@@ -74,6 +74,10 @@ So this project is two things:
   writes the tree in your order, empty folders, folder notes, notes and descriptions
   included; export everything, one folder and its subfolders, a search or the selection.
   Keymarks JSON carries every field and the tree.
+- **Search knows the folders.** Folder names count as words (`sea eng` finds what sits in
+  "Search engines"); the Folder field and column show the path. Search everywhere or only
+  in the selected folder and below (Ctrl+Shift+F); Show in folder (Ctrl+Shift+L) finds a
+  result in the tree.
 - **Lossless Powermarks import, and export back.** It reads `pm35.htm` byte for byte and
   repairs text the original had stored double- or triple-encoded, even when one field mixes
   encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks

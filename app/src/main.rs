@@ -1128,6 +1128,28 @@ mod tests {
     }
 
     #[test]
+    fn the_page_search_options_scope_to_a_folder_and_search_its_path() {
+        let mut s = Store::open(":memory:").unwrap();
+        let f = new_folder(&mut s, ROOT, "Search engines").unwrap();
+        let (g, _) = s.add("https://g.example/", "G", "red", "").unwrap();
+        let (r, _) = s.add("https://r.example/", "R", "red", "").unwrap();
+        file_items(&mut s, &[], &[g], f, None).unwrap();
+        // What app.js sends (DEFAULT_OPTS plus the folder), as JSON.
+        let page = |in_folder: bool| -> store::SearchOptions {
+            serde_json::from_value(serde_json::json!({
+                "mode": "all", "partial": true, "fields": ["title", "url", "keywords", "description", "notes", "folder"],
+                "match_case": false, "sort": [], "in_folder": in_folder, "folder": f,
+            }))
+            .unwrap()
+        };
+        let mut all = s.search_ids("red", &page(false)).unwrap();
+        all.sort();
+        assert_eq!(all, [g, r]);
+        assert_eq!(s.search_ids("red", &page(true)).unwrap(), [g]);
+        assert_eq!(s.search_ids("sea eng", &page(false)).unwrap(), [g]);
+    }
+
+    #[test]
     fn dropped_files_become_file_urls() {
         let dir = std::env::temp_dir();
         let b = file_bookmarks(&[dir.join("My Notes #1.txt"), "relative.txt".into()], "new");

@@ -16,6 +16,8 @@
   input, textarea, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; }
   #q { flex: 1; font-size: 16px; padding: 8px 10px; }
   #q[aria-invalid=true] { border-color: var(--danger); }
+  #scope { max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #scope[aria-pressed=true] { background: var(--sel); }
   #mode { width: auto; }
   .seg { display: flex; }
   .seg button { border-radius: 0; border-color: var(--line); }
@@ -194,6 +196,7 @@
 <body>
 <header>
   <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks" aria-describedby="q-help">
+  <button id="scope" type="button" class="secondary" aria-pressed="false" title="Search everywhere, or only the selected folder and its subfolders (Ctrl+Shift+F)">Everywhere</button>
   <button id="save-search" type="button" class="secondary icon" title="Save this search" aria-label="Save this search">☆</button>
   <select id="mode" aria-label="Search mode">
     <option value="all">All fields</option>
@@ -211,9 +214,10 @@
         <label><input type="checkbox" name="field" value="keywords"> Keywords</label>
         <label><input type="checkbox" name="field" value="description"> Description</label>
         <label><input type="checkbox" name="field" value="notes"> Notes</label>
+        <label><input type="checkbox" name="field" value="folder"> Folder</label>
         <label><input type="checkbox" id="opt-case"> Match case</label>
       </fieldset>
-      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · <code>rating>=7</code> by rating · Esc clears</p>
+      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · <code>rating>=7</code> by rating · folder names count too · Esc clears</p>
     </div>
   </details>
   <div class="seg" role="group" aria-label="View">
@@ -304,6 +308,8 @@
       <tr><th colspan="2">Finding</th></tr>
       <tr><td>Type</td><td>Search as you type (see the Options menu for syntax)</td></tr>
       <tr><td>Esc</td><td>Clear the search</td></tr>
+      <tr><td>Ctrl+Shift+F</td><td>Search everywhere / only in the selected folder and its subfolders</td></tr>
+      <tr><td>Ctrl+Shift+L</td><td>Show the selected bookmark in its folder</td></tr>
       <tr><td>↑ ↓ PgUp PgDn Home End</td><td>Move through the list (Shift extends the selection)</td></tr>
       <tr><td>Ctrl+A</td><td>Select all shown</td></tr>
       <tr><td>Alt+← →</td><td>Previous / next bookmark, also while editing (saves the edits)</td></tr>
@@ -348,6 +354,7 @@
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
   <button role="menuitem" data-act="cut">Cut (Ctrl+X)</button>
   <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
+  <button role="menuitem" data-act="reveal">Show in folder (Ctrl+Shift+L)</button>
   <button role="menuitem" data-act="visited">Mark visited</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
