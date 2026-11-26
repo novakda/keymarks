@@ -201,11 +201,13 @@ pub struct NewBookmark {
 
 /// One step through an imported tree, in the source's order: a folder opens (what follows
 /// is inside it, up to its `Close`), or a bookmark sits in the innermost open folder.
+/// A `Row` is a Keymarks export row: every field kept, URL-less notes too.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     Folder { name: String, note: String, added: Option<i64> },
     Close,
     Bookmark(NewBookmark),
+    Row(Box<export::ExportRow>),
 }
 
 /// The bookmarks among `entries`.
@@ -521,43 +523,34 @@ impl Store {
                         report.ids.push(id);
                         report.added += 1;
                     }
+                    Entry::Row(r) => {
+                        // A Keymarks JSON row: URL-less notes are kept, links checked for duplicates.
+                        let note = r.kind == "note";
+                        if !note && (r.url.trim().is_empty() || !seen.insert(url_key(&r.url))) {
+                            report.duplicates += 1;
+                            continue;
+                        }
+                        let keywords =
+                            if folder_words { browsers::folder_keywords(&path, &r.keywords) } else { normalize_keywords(&r.keywords) };
+                        tx.execute(
+                            "INSERT INTO bookmark (url, title, keywords, description, notes, user_field, added, last_visited,
+                                last_modified, last_checked, visits, rating, check_enabled, pm_mdata, schedule, kind, folder_id)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, coalesce(?7, unixepoch()), ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                            params![if note { "" } else { r.url.as_str() }, r.title, keywords, r.description, r.notes, r.user_field, r.added,
+                                r.last_visited, r.last_modified, r.last_checked, r.visits.max(0), r.rating.clamp(0, 10), r.check_enabled,
+                                r.pm_mdata, r.schedule, if note { "note" } else { "bookmark" }, parent],
+                        )?;
+                        let id = tx.last_insert_rowid();
+                        index_keywords(&tx, id, &keywords)?;
+                        report.ids.push(id);
+                        report.added += 1;
+                    }
                 }
             }
             tx.commit()?;
             report.folders = created.len();
             let ids = report.ids.clone();
             Ok((report, ids, created))
-        })
-    }
-
-    /// Merge rows from a Keymarks JSON export, every field kept, skipping URLs already here
-    /// (one undoable step).
-    pub fn import_rows(&mut self, step: &str, rows: &[export::ExportRow]) -> Result<ImportReport> {
-        self.record_created(step.to_string(), |s| {
-            let tx = s.conn.transaction()?;
-            let mut report = ImportReport::default();
-            for r in rows {
-                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE url = ?1)", [&r.url], |q| q.get(0))?;
-                if exists || r.url.trim().is_empty() {
-                    report.duplicates += 1;
-                    continue;
-                }
-                let keywords = normalize_keywords(&r.keywords);
-                tx.execute(
-                    "INSERT INTO bookmark (url, title, keywords, description, notes, user_field, added, last_visited,
-                        last_modified, last_checked, visits, rating, check_enabled, pm_mdata, schedule)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, coalesce(?7, unixepoch()), ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                    params![r.url, r.title, keywords, r.description, r.notes, r.user_field, r.added, r.last_visited,
-                        r.last_modified, r.last_checked, r.visits.max(0), r.rating.clamp(0, 10), r.check_enabled, r.pm_mdata, r.schedule],
-                )?;
-                let id = tx.last_insert_rowid();
-                index_keywords(&tx, id, &keywords)?;
-                report.ids.push(id);
-                report.added += 1;
-            }
-            tx.commit()?;
-            let ids = report.ids.clone();
-            Ok((report, ids, Vec::new()))
         })
     }
 
@@ -1946,7 +1939,7 @@ mod tests {
             let t = std::time::Instant::now();
             let rows = export::export_rows_all(&s);
             let pm = export::to_pm35(&rows);
-            let html = export::to_netscape(&rows);
+            let html = export::to_netscape(&export::Tree::flat(rows.clone()));
             eprintln!("exported {} rows ({} KB pm35, {} KB html) in {:?}", rows.len(), pm.len() / 1024, html.len() / 1024, t.elapsed());
             let mut a = Store::open(":memory:").unwrap();
             a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses")).unwrap();

@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// The root folder's id. The schema allows exactly one folder without a parent: this one.
 pub const ROOT: i64 = 1;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Folder {
     pub id: i64,
     /// None only for the root.
@@ -142,9 +142,9 @@ fn place(tx: &Connection, item: Item, folder: i64, at: Option<i64>) -> Result<()
     set_order(tx, folder, &order)
 }
 
-const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded";
+pub(crate) const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded";
 
-fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
+pub(crate) fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
     Ok(Folder {
         id: r.get(0)?,
         parent_id: r.get(1)?,
@@ -551,7 +551,7 @@ mod tests {
         assert!(s.due_for_check(&[("Weekly".into(), 1)], i64::MAX / 2, 10).unwrap().iter().all(|t| t.id != n));
         let rows = s.export_rows(None).unwrap();
         assert_eq!(rows.len(), 2, "lossless exports keep the note");
-        assert!(!crate::export::to_netscape(&rows).contains("Shopping"));
+        assert!(!crate::export::to_netscape(&crate::export::Tree::flat(rows.clone())).contains("Shopping"));
         let pm = String::from_utf8_lossy(&crate::export::to_pm35(&rows)).to_string();
         assert!(pm.contains("a.example") && !pm.contains("Shopping"));
         drop(s);

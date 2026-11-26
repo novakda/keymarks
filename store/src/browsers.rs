@@ -333,6 +333,7 @@ mod tests {
                 Entry::Folder { name, .. } => format!("[{name}"),
                 Entry::Close => "]".into(),
                 Entry::Bookmark(b) => b.title.clone(),
+                Entry::Row(r) => r.title.clone(),
             })
             .collect::<Vec<_>>()
             .join(" ")
