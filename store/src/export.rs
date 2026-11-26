@@ -217,7 +217,8 @@ pub fn to_netscape(rows: &[ExportRow]) -> String {
          <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n\
          <TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n",
     );
-    for r in rows {
+    for r in rows.iter().filter(|r| !r.url.is_empty()) {
+        // URL-less notes aren't links.
         let mut attrs = format!("HREF=\"{}\"", html(&r.url));
         if let Some(t) = r.added {
             attrs += &format!(" ADD_DATE=\"{t}\"");
@@ -284,6 +285,7 @@ pub fn to_pm35_with(rows: &[ExportRow], saved: &[SavedItem], tagged: &[String]) 
     let hex = |t: Option<i64>| format!("{:X}", t.unwrap_or(0).clamp(0, u32::MAX as i64));
     let entries = rows
         .iter()
+        .filter(|r| !r.url.is_empty() || r.pm_mdata.is_some()) // notes, but not Powermarks' own records
         .map(|r| {
             let mut m: Vec<String> = r
                 .pm_mdata

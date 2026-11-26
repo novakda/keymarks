@@ -60,7 +60,7 @@ pub fn read(source: &Source) -> Result<Vec<NewBookmark>, String> {
 }
 
 /// Folder path → keywords: every word of every folder name.
-fn folder_keywords(path: &[String], extra: &str) -> String {
+pub(crate) fn folder_keywords(path: &[String], extra: &str) -> String {
     let words: Vec<&str> = path
         .iter()
         .flat_map(|f| f.split(|c: char| c.is_whitespace() || "&|!(),:;/\\".contains(c)))

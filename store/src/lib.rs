@@ -3,12 +3,14 @@
 
 pub mod browsers;
 pub mod export;
+mod folders;
 mod history;
 mod query;
 
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
+pub use folders::{Folder, Node, ROOT};
 pub use query::{FIELDS, Mode, PM_FIELD_BITS, SearchOptions, SortKey};
 pub use rusqlite::Result;
 
@@ -35,6 +37,9 @@ impl std::fmt::Display for SearchError {
 }
 
 impl std::error::Error for SearchError {}
+
+/// The `user_version` `migrate` brings a database to.
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -89,7 +94,7 @@ CREATE TRIGGER IF NOT EXISTS bookmark_ad AFTER DELETE ON bookmark BEGIN
     INSERT INTO bookmark_fts(bookmark_fts, rowid, title, keywords, description, notes, url)
     VALUES ('delete', old.id, old.title, old.keywords, old.description, old.notes, old.url);
 END;
-CREATE TRIGGER IF NOT EXISTS bookmark_au AFTER UPDATE ON bookmark BEGIN
+CREATE TRIGGER IF NOT EXISTS bookmark_au AFTER UPDATE OF title, keywords, description, notes, url ON bookmark BEGIN
     INSERT INTO bookmark_fts(bookmark_fts, rowid, title, keywords, description, notes, url)
     VALUES ('delete', old.id, old.title, old.keywords, old.description, old.notes, old.url);
     INSERT INTO bookmark_fts(rowid, title, keywords, description, notes, url)
@@ -102,7 +107,8 @@ END;
 const RANK: &str = "bm25(bookmark_fts, 2.0, 10.0, 1.0, 1.0, 0.5)";
 const COLS: &str = "b.id, b.url, b.title, b.keywords, b.description, b.notes, b.rating, b.added, \
                     b.last_visited, b.visits, b.last_modified, b.last_checked, b.status, \
-                    b.check_enabled, b.check_status, b.http_status, b.changed, b.schedule, b.user_field";
+                    b.check_enabled, b.check_status, b.http_status, b.changed, b.schedule, b.user_field, \
+                    b.kind, b.folder_id, b.position";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -138,10 +144,26 @@ pub struct Bookmark {
     /// Powermarks' free "user field".
     #[serde(default)]
     pub user_field: String,
+    /// "bookmark", or "note": an item without a URL (url is "").
+    #[serde(default = "bookmark_kind")]
+    pub kind: String,
+    #[serde(default = "root")]
+    pub folder_id: i64,
+    /// Order among the folder's children (subfolders and bookmarks share it).
+    #[serde(default)]
+    pub position: i64,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn bookmark_kind() -> String {
+    "bookmark".into()
+}
+
+fn root() -> i64 {
+    ROOT
 }
 
 /// A saved search or link (what Powermarks called a macro).
@@ -234,6 +256,9 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
         changed: r.get(16)?,
         schedule: r.get(17)?,
         user_field: r.get(18)?,
+        kind: r.get(19)?,
+        folder_id: r.get(20)?,
+        position: r.get(21)?,
     })
 }
 
@@ -249,6 +274,12 @@ impl Store {
         // The app and the browser's native-messaging host share this file.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Copy the file alongside before upgrading it (once per old version).
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let backup = format!("{path}.v{version}.bak");
+        if version > 0 && version < SCHEMA_VERSION && path != ":memory:" && !std::path::Path::new(&backup).exists() {
+            conn.execute("VACUUM INTO ?1", [&backup])?;
+        }
         let mut store = Store { conn, history: Default::default() };
         store.migrate()?;
         Ok(store)
@@ -339,6 +370,14 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        // v6: folders (one per bookmark, a single root; the collection starts in the root,
+        // oldest first) and URL-less note items. See `folders::migrate`.
+        if version < 6 {
+            let tx = store.conn.transaction()?;
+            folders::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -350,7 +389,7 @@ impl Store {
     pub fn add(&self, url: &str, title: &str, keywords: &str, description: &str) -> Result<(i64, bool)> {
         let existing = self
             .conn
-            .query_row("SELECT id FROM bookmark WHERE url = ?1", [url], |r| r.get(0))
+            .query_row("SELECT id FROM bookmark WHERE url = ?1 AND kind = 'bookmark'", [url], |r| r.get(0))
             .optional()?;
         if let Some(id) = existing {
             return Ok((id, true));
@@ -867,7 +906,7 @@ impl Store {
 
     /// The bookmark with exactly this URL, if any.
     pub fn find_url(&self, url: &str) -> Result<Option<Bookmark>> {
-        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.url = ?1");
+        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.url = ?1 AND b.kind = 'bookmark'");
         self.conn.query_row(&sql, [url], bookmark).optional()
     }
 
@@ -889,7 +928,7 @@ impl Store {
             .prepare(
                 "SELECT b.id, b.url, b.etag, b.last_modified, b.content_hash FROM bookmark b
                  JOIN (SELECT lower(value ->> 0) AS name, value ->> 1 AS secs FROM json_each(?1)) s ON lower(b.schedule) = s.name
-                 WHERE b.check_enabled = 1 AND coalesce(b.last_checked, 0) + s.secs <= ?2
+                 WHERE b.check_enabled = 1 AND b.kind = 'bookmark' AND coalesce(b.last_checked, 0) + s.secs <= ?2
                  ORDER BY coalesce(b.last_checked, 0) + s.secs, b.id LIMIT ?3",
             )?
             .query_map(params![json, now, limit as i64], |r| {
@@ -905,7 +944,7 @@ impl Store {
         self.conn
             .prepare(
                 "SELECT id, url, etag, last_modified, content_hash FROM bookmark
-                 WHERE check_enabled = 1 AND (?1 IS NULL OR id IN (SELECT value FROM json_each(?1)))",
+                 WHERE check_enabled = 1 AND kind = 'bookmark' AND (?1 IS NULL OR id IN (SELECT value FROM json_each(?1)))",
             )?
             .query_map([json], |r| {
                 Ok(CheckTarget { id: r.get(0)?, url: r.get(1)?, etag: r.get(2)?, last_modified: r.get(3)?, content_hash: r.get(4)? })
