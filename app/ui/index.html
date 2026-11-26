@@ -106,6 +106,8 @@
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
   /* Floats over the list: the body grid places its children automatically. */
   #dup-bar:not([hidden]) { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+  /* The floating bar must not cover the last rows: the lists scroll past it. */
+  body:has(#dup-bar:not([hidden])) :is(#tablewrap, #list) { padding-bottom: 60px; }
   .vrow.dupodd:not(.sel) { background: color-mix(in srgb, var(--sel) 45%, transparent); }
   #report-lists ul { max-height: 40vh; overflow: auto; margin: 4px 0 8px; padding-left: 18px; }
   #report-lists li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
