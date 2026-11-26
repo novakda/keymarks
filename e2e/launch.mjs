@@ -64,5 +64,7 @@ export async function connect(port) {
     } catch { /* not up yet */ }
     await sleep(500);
   }
-  throw new Error(`app did not expose port ${port}`);
+  // Exited at once = handed over to another instance with the same identifier (single-instance).
+  const running = ps("Get-Process keymarks -ErrorAction SilentlyContinue | % { $_.Id.ToString() + ' ' + $_.Path }").replace(/\r?\n/g, '; ');
+  throw new Error(`app did not expose port ${port}; ${instances()} of the app under test running; keymarks processes: ${running || 'none'}`);
 }
