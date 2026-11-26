@@ -71,7 +71,24 @@
   nav .tools { padding: 0 8px 6px; display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   nav .tools input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -2px; }
   #kwlist { flex: 1; }
-  #savedlist { max-height: 35%; flex: none; }
+  #savedlist { max-height: 35vh; flex: none; }
+  /* Left column: the folder tree, then the Saved and Keywords panes (collapsible). */
+  nav .pane { display: flex; flex-direction: column; min-height: 0; }
+  #tree-pane { flex: 1 1 40%; border-bottom: 1px solid var(--line); }
+  #kw-pane { flex: 1 1 45%; border-top: 1px solid var(--line); }
+  nav .pane.collapsed { flex: none; }
+  nav .pane.collapsed > :not(h2) { display: none; }
+  nav h2.toggle { cursor: pointer; user-select: none; }
+  nav h2.toggle::before { content: '▾ '; }
+  nav .pane.collapsed h2.toggle::before { content: '▸ '; }
+  #tree { flex: 1; padding-bottom: 6px; }
+  #tree li { display: flex; align-items: center; gap: 2px; padding: 2px 8px 2px calc(8px + var(--depth) * 14px); cursor: default; user-select: none; white-space: nowrap; content-visibility: auto; contain-intrinsic-size: auto 22px; }
+  #tree li:hover { background: var(--line); }
+  #tree li[aria-selected=true] { background: var(--sel); }
+  #tree:focus-visible li[aria-selected=true] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #tree .twisty { width: 1.1em; flex: none; text-align: center; color: var(--muted); }
+  #tree .name { overflow: hidden; text-overflow: ellipsis; }
+  .vrow.note .title { font-style: italic; }
   #savedlist li { display: flex; gap: 6px; padding: 3px 10px; cursor: default; user-select: none; }
   #savedlist li:hover, #savedlist li.active { background: var(--sel); }
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
@@ -115,10 +132,10 @@
   .check-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .check-line input { width: auto; margin: 0; }
 
-  #sctx, #ctx, #bctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
-  #sctx strong, #ctx strong, #bctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-  #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
-  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
+  #sctx, #ctx, #bctx, #fctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+  #sctx strong, #ctx strong, #bctx strong, #fctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  #sctx button, #ctx button, #bctx button, #fctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
+  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible, #fctx button:hover, #fctx button:focus-visible { background: var(--sel); outline: none; }
   #bctx button[hidden] { display: none; }
   #settings fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 10px; display: grid; gap: 6px; }
   #settings legend { font-weight: 600; padding: 0 4px; }
@@ -128,7 +145,7 @@
   .keys th { text-align: left; padding: 10px 0 4px; color: var(--muted); font-weight: 600; }
   .keys td { padding: 3px 16px 3px 0; vertical-align: top; }
   .keys td:first-child { white-space: nowrap; font-family: ui-monospace, monospace; }
-  #sctx hr, #ctx hr, #bctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #sctx hr, #ctx hr, #bctx hr, #fctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
   dialog { width: min(640px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
   dialog::backdrop { background: rgb(0 0 0 / .35); }
@@ -218,6 +235,7 @@
     <summary class="secondary" aria-label="More">⋯</summary>
     <div class="menu" role="menu">
       <button id="new-bookmark" type="button" role="menuitem" title="Insert">New bookmark…</button>
+      <button id="new-folder" type="button" role="menuitem">New folder…</button>
       <button id="add-clipboard" type="button" role="menuitem" title="Alt+Insert">Add links from clipboard</button>
       <button id="import" type="button" role="menuitem">Import…</button>
       <button id="export-open" type="button" role="menuitem">Export…</button>
@@ -229,16 +247,24 @@
   </details>
 </header>
 
-<nav aria-label="Saved searches and keywords">
-  <h2 id="saved-head">Saved</h2>
-  <ul id="savedlist" aria-label="Saved searches and links"></ul>
-  <h2 id="kw-head">Keywords</h2>
-  <div class="tools">
-    <input id="kw-filter" type="search" placeholder="Find keyword…" aria-label="Find keyword">
-    <label><input id="kw-tagged" type="checkbox">Tagged only</label>
-    <button id="cleanup-open" type="button" class="secondary">Clean up keywords…</button>
-  </div>
-  <ul id="kwlist" aria-label="Keywords"></ul>
+<nav aria-label="Folders, saved searches and keywords">
+  <section class="pane" id="tree-pane">
+    <h2 id="tree-head">Folders</h2>
+    <ul id="tree" role="tree" aria-label="Folders" tabindex="0"></ul>
+  </section>
+  <section class="pane" id="saved-pane">
+    <h2 id="saved-head" class="toggle" role="button" tabindex="0" aria-expanded="true" title="Show or hide">Saved</h2>
+    <ul id="savedlist" aria-label="Saved searches and links"></ul>
+  </section>
+  <section class="pane" id="kw-pane">
+    <h2 id="kw-head" class="toggle" role="button" tabindex="0" aria-expanded="true" title="Show or hide">Keywords</h2>
+    <div class="tools">
+      <input id="kw-filter" type="search" placeholder="Find keyword…" aria-label="Find keyword">
+      <label><input id="kw-tagged" type="checkbox">Tagged only</label>
+      <button id="cleanup-open" type="button" class="secondary">Clean up keywords…</button>
+    </div>
+    <ul id="kwlist" aria-label="Keywords"></ul>
+  </section>
 </nav>
 <ul id="list" role="listbox" aria-label="Bookmarks" aria-multiselectable="true" tabindex="0"></ul>
 <div id="tablewrap" tabindex="0" hidden>
@@ -274,6 +300,9 @@
       <tr><td>Alt+← →</td><td>Previous / next bookmark, also while editing (saves the edits)</td></tr>
       <tr><td>Alt+1…9</td><td>Run a saved search or link</td></tr>
       <tr><td>Enter / Ctrl+Enter</td><td>In the keyword list: search for it / add it to the search</td></tr>
+      <tr><th colspan="2">Folders</th></tr>
+      <tr><td>↑ ↓ ← →</td><td>In the folder tree: move, collapse, expand</td></tr>
+      <tr><td>F2 / Del</td><td>In the folder tree: rename / delete the folder (its contents move up)</td></tr>
       <tr><th colspan="2">Bookmarks</th></tr>
       <tr><td>Enter</td><td>Open</td></tr>
       <tr><td>Shift+Enter</td><td>Open in a new browser window</td></tr>
@@ -320,6 +349,14 @@
   <button role="menuitem" data-act="delete">Delete… (Del)</button>
 </div>
 
+<div id="fctx" role="menu" hidden>
+  <strong id="fctx-title"></strong>
+  <button role="menuitem" data-act="new">New folder…</button>
+  <button role="menuitem" data-act="note">New note…</button>
+  <button role="menuitem" data-act="rename">Rename… (F2)</button>
+  <hr>
+  <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
+</div>
 <div id="sctx" class="ctxmenu" role="menu" hidden>
   <strong id="sctx-title"></strong>
   <button role="menuitem" data-act="run">Run</button>

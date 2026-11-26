@@ -22,6 +22,12 @@ let seq = 0;
 let version = null;
 let narrowed = [];         // keyword dictionary for the current search
 let dictionary = [];       // every keyword (autocomplete, tag state)
+// Explorer style: the tree shows folders only; with the search empty, the list shows the
+// selected folder's bookmarks and notes in folder order.
+const ROOT = 1;
+let folders = [];          // every folder, root first, then by parent and position
+let folder = ROOT;         // the selected folder
+try { folder = Number(localStorage.getItem('folder')) || ROOT; } catch {}
 
 // View and search preferences: read from localStorage, copied to settings.json on every
 // change (the app seeds localStorage from it at startup), so they travel with that file.
@@ -57,6 +63,9 @@ function rate(row, b) {
 }
 const shortUrl = (u) => u.replace(/^(https?|ftp):\/\/(www\.)?/i, '');
 const stars = (r) => (r > 0 ? '★'.repeat(Math.ceil(r / 2)) + ' ' : '');
+// Notes are items without a URL: marked, and never opened.
+const isNote = (b) => b?.kind === 'note';
+const noteMark = (b) => (isNote(b) ? '✎ ' : '');
 // Link-check results as shown to people (symbol + words; the symbol alone marks cards).
 const CHECK_LABELS = {
   ok: '✓ OK', changed: '◆ Changed', not_found: '✗ Not found', server_not_found: '✗ Site not found',
@@ -75,7 +84,7 @@ function checkLabel(b) {
 }
 const checkMark = (b) => (waiting.has(b.id) || (b.check_enabled && b.check_status && b.check_status !== 'ok') ? checkLabel(b).split(' ')[0] + ' ' : '');
 const COLUMNS = [
-  { id: 'title', label: 'Title', width: '34%', cell: (b) => checkMark(b) + stars(b.rating) + (b.title || b.url) },
+  { id: 'title', label: 'Title', width: '34%', cell: (b) => noteMark(b) + checkMark(b) + stars(b.rating) + (b.title || b.url) },
   { id: 'url', label: 'URL', width: '24%', cell: (b) => shortUrl(b.url) },
   { id: 'keywords', label: 'Keywords', width: '18%', cell: (b) => b.keywords },
   { id: 'description', label: 'Description', width: '20%', cell: (b) => b.description },
@@ -132,8 +141,8 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   let n, found, v, kw, hist;
   try {
     [n, found, v, kw, hist] = await Promise.all([
-      invoke('count'), invoke('search_ids', { query: q.value, opts }), invoke('data_version'),
-      invoke('keywords', { query: q.value, opts }), invoke('history'),
+      invoke('count'), invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
+      invoke('keywords', { query: q.value, opts: scoped() }), invoke('history'),
     ]);
   } catch (e) {
     if (mine !== seq) return;
@@ -180,6 +189,10 @@ function updateTray() {
   invoke('set_tray_results', { items }).catch(() => {});
 }
 
+// The search options plus the selected folder. The store uses the folder only while the
+// search is empty; a search covers the whole collection (folder scope is FIND-08, later).
+const scoped = () => ({ ...opts, folder });
+
 async function fetchRows(wanted) {
   const missing = [...new Set(wanted)].filter((id) => id !== undefined && !cache.has(id));
   if (!missing.length) return;
@@ -218,7 +231,7 @@ function render() {
   renderPanel();
   say(total === 0
     ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
-    : `${ids.length} matching · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+    : `${ids.length} matching${q.value.trim() ? '' : ` in “${folderName(folder)}”`} · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
 }
 
 function renderRows() {
@@ -361,6 +374,7 @@ function renderTable() {
     tr.ariaSelected = String(selected.has(ids[i]));
     tr.classList.toggle('sel', selected.has(ids[i]));
     tr.classList.toggle('cursor', i === cursor);
+    tr.classList.toggle('note', isNote(b));
     rate(tr, b);
     tr.append(...cols.map((c) => {
       const td = document.createElement('td');
@@ -404,13 +418,14 @@ function renderCards() {
     li.ariaSelected = String(selected.has(ids[i]));
     li.classList.toggle('sel', selected.has(ids[i]));
     li.classList.toggle('cursor', i === cursor);
+    li.classList.toggle('note', isNote(b));
     rate(li, b);
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = b ? checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
+    title.textContent = b ? noteMark(b) + checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = b ? [b.keywords, b.url].filter(Boolean).join(' · ') : '';
+    meta.textContent = b ? [b.keywords, isNote(b) ? (b.notes.split('\n')[0] || 'Note') : b.url].filter(Boolean).join(' · ') : '';
     li.append(title, meta);
     li.onclick = (e) => select(i, e);
     li.ondblclick = () => open(ids[i]);
@@ -514,6 +529,7 @@ function onListKeys(e) {
 }
 
 async function open(id, { newWindow = false } = {}) {
+  if (isNote(cache.get(id))) { say('A note has no link to open.'); return; }
   try {
     await invoke(newWindow ? 'open_bookmark_new_window' : 'open_bookmark', { id });
     refresh(); // visit count changed
@@ -1105,6 +1121,198 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---- folder tree (Explorer style: folders only; the list shows the selected one) -----
+
+const folderName = (id) => folders.find((f) => f.id === id)?.name ?? '';
+const childFolders = (id) => folders.filter((f) => f.parent_id === id); // already in position order
+
+async function refreshFolders() {
+  folders = await invoke('folders');
+  if (!folders.some((f) => f.id === folder)) setFolder(ROOT, { load: false }); // deleted elsewhere
+  renderTree();
+}
+
+/** The folders the tree shows, in order, with their depth: the root is always open. */
+// ponytail: renders every visible folder (no virtual scrolling); fine for hundreds, virtualise if trees get huge.
+function visibleFolders() {
+  const out = [];
+  const walk = (f, depth) => {
+    out.push([f, depth]);
+    if (f.id === ROOT || !f.folded) childFolders(f.id).forEach((c) => walk(c, depth + 1));
+  };
+  const root = folders.find((f) => f.id === ROOT);
+  if (root) walk(root, 0);
+  return out;
+}
+
+function renderTree() {
+  const tree = $('tree');
+  tree.replaceChildren(...visibleFolders().map(([f, depth]) => {
+    const li = document.createElement('li');
+    li.role = 'treeitem';
+    li.ariaLevel = String(depth + 1);
+    li.ariaSelected = String(f.id === folder);
+    li.dataset.id = f.id;
+    li.style.setProperty('--depth', depth);
+    const hasKids = childFolders(f.id).length > 0;
+    const open = f.id === ROOT || !f.folded;
+    if (hasKids && f.id !== ROOT) li.ariaExpanded = String(open);
+    const twisty = document.createElement('span');
+    twisty.className = 'twisty';
+    twisty.textContent = hasKids && f.id !== ROOT ? (open ? '▾' : '▸') : '';
+    twisty.onclick = (e) => { e.stopPropagation(); setFolded(f, !f.folded); };
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = f.name;
+    li.title = f.name;
+    li.append(twisty, name);
+    li.onclick = () => { setFolder(f.id); tree.focus(); };
+    li.ondblclick = () => { if (hasKids && f.id !== ROOT) setFolded(f, !f.folded); };
+    li.oncontextmenu = (e) => { e.preventDefault(); setFolder(f.id); showFolderMenu(e, f); };
+    return li;
+  }));
+  $('tree-head').textContent = `Folders [${folders.length - 1}]`;
+}
+
+/** Select a folder; the list then shows it (a search in progress is cleared). */
+function setFolder(id, { load = true } = {}) {
+  if (load && !confirmDiscard()) return;
+  const changed = id !== folder;
+  folder = id;
+  try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
+  renderTree();
+  $('tree').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
+  if (!load) return;
+  if (q.value) q.value = '';
+  else if (!changed) return;
+  refresh({ keepSelection: false });
+}
+
+// Expand state is kept per folder in the database (FLD-08).
+async function setFolded(f, folded) {
+  f.folded = folded;
+  renderTree();
+  invoke('set_folder_folded', { id: f.id, folded }).catch(fail('Saving the tree'));
+}
+
+$('tree').addEventListener('keydown', (e) => {
+  const shown = visibleFolders().map(([f]) => f);
+  const i = shown.findIndex((f) => f.id === folder);
+  const f = shown[i];
+  if (!f) return;
+  const hasKids = childFolders(f.id).length > 0;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const next = shown[Math.max(0, Math.min(shown.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    setFolder(next.id);
+  } else if (e.key === 'ArrowRight') {
+    if (hasKids && f.folded && f.id !== ROOT) setFolded(f, false);
+    else if (hasKids) setFolder(childFolders(f.id)[0].id);
+  } else if (e.key === 'ArrowLeft') {
+    if (hasKids && !f.folded && f.id !== ROOT) setFolded(f, true);
+    else if (f.parent_id) setFolder(f.parent_id);
+  } else if (e.key === 'Home' || e.key === 'End') {
+    setFolder(shown[e.key === 'Home' ? 0 : shown.length - 1].id);
+  } else if (e.key === 'F2') {
+    renameFolder(f);
+  } else if (e.key === 'Delete') {
+    deleteFolder(f);
+  } else if (e.key === 'Enter') {
+    list.focus();
+  } else return;
+  e.preventDefault();
+});
+
+// Minimal filing actions for now (FLD-16 and friends: undo, drag and drop come later).
+const newFolder = busyAware(async (parent) => {
+  const name = prompt(`New folder in “${folderName(parent)}”:`);
+  if (!name?.trim()) return;
+  try {
+    const id = await invoke('create_folder', { parent, name });
+    const p = folders.find((x) => x.id === parent);
+    if (p) p.folded = false; // show the new folder
+    if (parent !== ROOT) await invoke('set_folder_folded', { id: parent, folded: false });
+    await refreshFolders();
+    setFolder(id);
+    say(`Folder “${name.trim()}” created.`);
+  } catch (e) { fail('New folder')(e); }
+});
+
+const renameFolder = busyAware(async (f) => {
+  const name = prompt('Rename folder:', f.name);
+  if (!name?.trim() || name.trim() === f.name) return;
+  try {
+    await invoke('rename_folder', { id: f.id, name });
+    await refreshFolders();
+    render();
+  } catch (e) { fail('Rename')(e); }
+});
+
+const deleteFolder = busyAware(async (f) => {
+  if (f.id === ROOT) { say('The top folder can’t be deleted.'); return; }
+  const parent = folderName(f.parent_id);
+  if (!confirm(`Delete the folder “${f.name}”?\n\nNothing in it is deleted: its bookmarks, notes and folders move up into “${parent}”.`)) return;
+  try {
+    await invoke('delete_folder', { id: f.id });
+    folder = f.parent_id;
+    await refreshFolders();
+    setFolder(f.parent_id, { load: false });
+    await refresh({ keepSelection: false });
+    say(`Folder “${f.name}” deleted; its contents are now in “${parent}”.`);
+  } catch (e) { fail('Delete folder')(e); }
+});
+
+const newNote = busyAware(async (inFolder) => {
+  const title = prompt(`New note in “${folderName(inFolder)}” (title):`);
+  if (!title?.trim()) return;
+  try {
+    const id = await invoke('add_note', { folder: inFolder, title });
+    await reveal(id);
+    say('Note added. Write it in the Notes field.');
+  } catch (e) { fail('New note')(e); }
+});
+
+let menuFolder = null;
+function showFolderMenu(e, f) {
+  menuFolder = f;
+  const ctx = $('fctx');
+  $('fctx-title').textContent = f.name;
+  for (const act of ['rename', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  ctx.hidden = false;
+  ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
+  ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
+  ctx.querySelector('button').focus();
+}
+$('fctx').addEventListener('click', (e) => {
+  const act = e.target.dataset?.act;
+  const f = menuFolder;
+  if (!act || !f) return;
+  $('fctx').hidden = true;
+  if (act === 'new') newFolder(f.id);
+  else if (act === 'note') newNote(f.id);
+  else if (act === 'rename') renameFolder(f);
+  else if (act === 'delete') deleteFolder(f);
+});
+document.addEventListener('click', (e) => { if (!$('fctx').contains(e.target)) $('fctx').hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('fctx').hidden = true; });
+$('new-folder').onclick = () => newFolder(folder);
+
+// Saved and Keywords collapse to their headings; the choice is kept per machine.
+for (const pane of ['saved-pane', 'kw-pane']) {
+  const head = $(pane).querySelector('h2.toggle');
+  const set = (collapsed) => {
+    $(pane).classList.toggle('collapsed', collapsed);
+    head.ariaExpanded = String(!collapsed);
+  };
+  try { set(localStorage.getItem(`${pane}-collapsed`) === '1'); } catch {}
+  const toggle = () => {
+    const collapsed = !$(pane).classList.contains('collapsed');
+    set(collapsed);
+    try { localStorage.setItem(`${pane}-collapsed`, collapsed ? '1' : '0'); savePrefs(); } catch {}
+  };
+  head.onclick = toggle;
+  head.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+}
+
 // ---- keyword panel (Powermarks' Dictionary) ---------------------------------
 
 function renderKeywords() {
@@ -1336,6 +1544,10 @@ function renderPanel() {
   for (const name of ['title', 'url', 'description', 'notes', 'user_field', 'rating']) {
     form.elements[name].value = editing[name] ?? '';
   }
+  if (isNote(editing)) {
+    $('f-url').required = false;
+    for (const el of [$('f-url'), document.querySelector('label[for=f-url]'), $('pin-link'), ...form.querySelectorAll('.check-line')]) el.style.display = 'none';
+  }
   chips = words(editing.keywords);
   renderChips();
   const date = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
@@ -1504,7 +1716,11 @@ document.addEventListener('keydown', (e) => {
 let pendingReveal = null;
 async function reveal(id) {
   pendingReveal = id;
-  if (!ids.includes(id)) q.value = '';
+  if (!ids.includes(id)) {
+    q.value = '';
+    const [b] = await invoke('get_bookmarks', { ids: [id] }).catch(() => []);
+    if (b && b.folder_id !== folder) setFolder(b.folder_id, { load: false });
+  }
   await refresh({ keepSelection: false });
 }
 
@@ -1704,4 +1920,4 @@ addFromClipboard = busyAware(addFromClipboard);
 
 setView(view);
 refreshSaved().catch(fail('Saved items'));
-refreshDictionary().then(() => refresh({ keepSelection: false }));
+Promise.all([refreshDictionary(), refreshFolders().catch(fail('Folders'))]).then(() => refresh({ keepSelection: false }));
