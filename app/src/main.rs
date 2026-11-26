@@ -274,6 +274,13 @@ fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
     });
 }
 
+/// Test mode only (set by e2e/folders-smoke.mjs, like KEYMARKS_DATA_DIR): the file the
+/// native open/save dialog would return. That dialog is the OS's; it is not under test, and on
+/// the hidden test desktop nobody could answer it.
+fn e2e_file(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).map(PathBuf::from)
+}
+
 /// Pick a file and bring it in: bookmarks HTML (any browser, or Compass) with its folder tree,
 /// into a new folder named after the file (`new_folder`) or straight into the tree; any web
 /// page (its links); or a Keymarks JSON export (every field kept, into the root).
@@ -285,9 +292,14 @@ async fn import_html_file(
     folder_words: bool,
     new_folder: bool,
 ) -> Result<Option<ImportReport>, String> {
-    let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
-    let Some(path) = picked else { return Ok(None) };
-    let path = path.into_path().map_err(err)?;
+    let path = match e2e_file("KEYMARKS_E2E_OPEN_FILE") {
+        Some(p) => p,
+        None => {
+            let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
+            let Some(path) = picked else { return Ok(None) };
+            path.into_path().map_err(err)?
+        }
+    };
     let text = String::from_utf8_lossy(&std::fs::read(&path).map_err(err)?).into_owned();
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     let step = format!("Import from {label}");
@@ -331,9 +343,14 @@ async fn export_file(
         }
     };
     let rows = tree.rows_in_order();
-    let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
-    let Some(path) = picked else { return Ok(None) };
-    let path = path.into_path().map_err(err)?;
+    let path = match e2e_file("KEYMARKS_E2E_SAVE_FILE") {
+        Some(p) => p,
+        None => {
+            let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
+            let Some(path) = picked else { return Ok(None) };
+            path.into_path().map_err(err)?
+        }
+    };
     let bytes = match format.as_str() {
         "html" => store::export::to_netscape(&tree).into_bytes(),
         "csv" => store::export::to_csv(&rows, &fields).into_bytes(),

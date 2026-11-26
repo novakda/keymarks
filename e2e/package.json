@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "node smoke.mjs",
-    "tree": "node tree.mjs"
+    "tree": "node tree.mjs",
+    "folders": "node folders-smoke.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.64.1"

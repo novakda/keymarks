@@ -6,61 +6,19 @@
 //
 //   npm run smoke            (from e2e/, on Windows; closes and reopens the running app)
 
-import { chromium } from 'playwright-core';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { connect as connectTo, debugEnv, exe, freePort, log, sleep, startApp, stopApp } from './launch.mjs';
 import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (msg) => process.stderr.write(`· ${new Date().toTimeString().slice(0, 8)} ${msg}\n`);
-
-// Other apps (e.g. Electron) squat on common debug ports: ask the OS for a free one.
-const PORT = await new Promise((resolve) => {
-  const srv = net.createServer().listen(0, '127.0.0.1', () => {
-    const { port } = srv.address();
-    srv.close(() => resolve(port));
-  });
-});
-
-// Waits until the app has really exited, so its files can be deleted.
-function stopApp() {
-  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
-  for (let i = 0; i < 50; i++) {
-    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString();
-    if (!out.includes('keymarks.exe')) return;
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
-  }
-}
-
-// On a desktop of its own (desktop.ps1): nothing the app does can reach the user's screen or focus.
-function startApp(env) {
-  execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(root, 'e2e', 'desktop.ps1')}" "${exe}"`, {
-    env: { ...process.env, ...env }, stdio: 'ignore', windowsHide: true,
-  });
-}
+const PORT = await freePort();
+const connect = () => connectTo(PORT);
 
 // Whatever Keymarks the user had open (installed or dev) is put back at the end.
 const usersKeymarks = runningKeymarks();
-
-async function connect() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`, { timeout: 5000 });
-      const page = browser.contexts()[0]?.pages().find((p) => /tauri/.test(p.url()));
-      if (page) return { browser, page };
-      await browser.close();
-    } catch { /* not up yet */ }
-    await sleep(500);
-  }
-  throw new Error(`app did not expose port ${PORT}`);
-}
 
 // ---- run ------------------------------------------------------------------------------
 
@@ -102,7 +60,7 @@ log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
 // A saved preference the page must start with (settings.json seeds localStorage).
 fs.writeFileSync(path.join(work, 'settings.json'), JSON.stringify({ ui: { 'import-title-words': '1' } }));
 const webviewData = fs.mkdtempSync(path.join(os.tmpdir(), 'km-e2e-webview-'));
-startApp({ WEBVIEW2_USER_DATA_FOLDER: webviewData, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
+startApp({ ...debugEnv(PORT, webviewData), KEYMARKS_DATA_DIR: work });
 const { browser, page } = await connect().catch(emergencyExit);
 log(`connected to ${page.url()}`);
 
