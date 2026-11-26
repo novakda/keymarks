@@ -69,7 +69,7 @@ So this project is two things:
   collection so far, which survives an accidental mass delete. It also backs up before any
   cleanup or restore, and you can restore from inside the app.
 - **Import from Chrome, Edge and Firefox** (every profile), or any exported bookmarks
-  file. Folders become keywords, duplicates are skipped, and each import can be undone.
+  file. Folders come in as folders (folder names as keywords only if you ask), duplicates are skipped, and each import can be undone.
 - **Lossless Powermarks import, and export back.** It reads `pm35.htm` byte for byte and
   repairs text the original had stored double- or triple-encoded, even when one field mixes
   encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks
