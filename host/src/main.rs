@@ -29,6 +29,8 @@ enum Request {
     Show,
     /// Is this URL already bookmarked? (The popup then shows and edits that bookmark.)
     Lookup { url: String },
+    /// The popup's folder picker: every folder's path, and the New Item Folder (null until made).
+    Folders,
     Add {
         url: String,
         title: String,
@@ -42,6 +44,9 @@ enum Request {
         /// If the URL exists, save these fields onto it instead of reporting a duplicate.
         #[serde(default)]
         update: bool,
+        /// The popup's picked folder; absent means the New Item Folder (ITEM-01). Fast add ignores it.
+        #[serde(default)]
+        folder: Option<i64>,
     },
 }
 
@@ -125,14 +130,19 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
             Ok(None) => json!({ "ok": true, "found": false }),
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         },
-        Request::Add { url, title, keywords, description, fast, update } => {
+        Request::Folders => match (store.folders(), store.new_item_folder()) {
+            (Ok(all), Ok(inbox)) => json!({ "ok": true, "new_items": inbox, "folders": folder_paths(&all) }),
+            (Err(e), _) | (_, Err(e)) => json!({ "ok": false, "error": e.to_string() }),
+        },
+        Request::Add { url, title, keywords, description, fast, update, folder } => {
             let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
             let sizes_ok = [&url, &title, &keywords, &description].iter().all(|f| f.len() <= MAX_FIELD);
             if !scheme_ok || !sizes_ok {
                 return json!({ "ok": false, "error": "only http(s) pages up to 8 KB per field" });
             }
             let keywords = if fast { format!("{keywords} {fast_keywords}") } else { keywords };
-            let (id, existed) = match store.add(&url, title.trim(), keywords.trim(), description.trim()) {
+            let into = if fast { None } else { folder }.unwrap_or(store::NEW_ITEMS);
+            let (id, existed) = match store.add_in(into, &url, title.trim(), keywords.trim(), description.trim()) {
                 Ok(r) => r,
                 Err(e) => return json!({ "ok": false, "error": e.to_string() }),
             };
@@ -152,6 +162,22 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
             }
         }
     }
+}
+
+/// Each folder as { id, path }, the path below the root ("Work / Clients"; the root is its own name).
+fn folder_paths(all: &[store::Folder]) -> Vec<Value> {
+    let by_id: std::collections::HashMap<i64, &store::Folder> = all.iter().map(|f| (f.id, f)).collect();
+    let path = |f: &store::Folder| {
+        let mut parts = vec![f.name.as_str()];
+        let mut p = f.parent_id;
+        while let Some(parent) = p.and_then(|id| by_id.get(&id)).filter(|f| f.parent_id.is_some()) {
+            parts.push(&parent.name);
+            p = parent.parent_id;
+        }
+        parts.reverse();
+        parts.join(" / ")
+    };
+    all.iter().map(|f| json!({ "id": f.id, "path": path(f) })).collect()
 }
 
 /// None on clean EOF (the browser closed the port).
@@ -261,5 +287,28 @@ mod tests {
         assert_eq!(store.search("k2", 5).unwrap()[0].title, "A2");
         assert_eq!(store.find_url("https://f.example/").unwrap().unwrap().keywords, "page new");
         assert!(read_message(&mut [].as_slice()).unwrap().is_none());
+    }
+
+    #[test]
+    fn extension_adds_land_in_the_new_item_folder_or_the_picked_one() {
+        let mut store = Store::open(":memory:").unwrap();
+        let work = store.create_folder(store::ROOT, "Work", None).unwrap().unwrap();
+        let mut h = |m: &[u8]| handle(&mut store, m, "new");
+        // Popup: before any inbox exists the picker offers it (made on first use).
+        let list = h(br#"{"type":"folders"}"#);
+        assert_eq!(list["new_items"], Value::Null);
+        assert_eq!(list["folders"][1]["path"], "Work");
+        // Popup default, Fast Add and Fast add link: the New Item Folder (ITEM-01, ITEM-03).
+        let a = h(br#"{"type":"add","url":"https://a.example/","title":"A"}"#)["id"].as_i64().unwrap();
+        let f = h(br#"{"type":"add","url":"https://f.example/","title":"F","fast":true}"#)["id"].as_i64().unwrap();
+        // Popup with another folder picked.
+        let w = h(format!(r#"{{"type":"add","url":"https://w.example/","title":"W","folder":{work}}}"#).as_bytes())["id"].as_i64().unwrap();
+        let list = h(br#"{"type":"folders"}"#);
+        drop(h);
+        let inbox = store.new_item_folder().unwrap().unwrap();
+        assert_eq!(list["new_items"], inbox);
+        assert!(list["folders"].as_array().unwrap().iter().any(|f| f["id"] == inbox && f["path"] == "New"));
+        let folder_of = |id| store.get(id).unwrap().unwrap().folder_id;
+        assert_eq!((folder_of(a), folder_of(f), folder_of(w)), (inbox, inbox, work));
     }
 }
