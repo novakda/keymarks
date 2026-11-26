@@ -6,12 +6,11 @@
 //
 //   npm run smoke            (from e2e/, on Windows; closes and reopens the running app)
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { connect as connectTo, debugEnv, exe, freePort, log, sleep, startApp, stopApp } from './launch.mjs';
+import { connect as connectTo, debugEnv, exe, freePort, instances, log, sleep, startApp, stopApp } from './launch.mjs';
 import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
 const PORT = await freePort();
@@ -382,10 +381,9 @@ try {
   await page.click('#s-save');
   await idle();
   check('opening settings save and show again, keeping view preferences', opening.open_new_window === true && shown && savedSettings().open_new_window === false && 'ui' in opening);
-  const running = () => execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1;
   startApp({ KEYMARKS_NO_FOCUS: '1' });
   await sleep(3000);
-  check('second launch reuses the running app', running() === 1, `${running()} running`);
+  check('second launch reuses the running app', instances() === 1, `${instances()} running`);
   check('window is visible after a second launch', await page.evaluate(() => document.visibilityState === 'visible'));
 
   // 10. Link checking against a local server only (no real site is contacted)

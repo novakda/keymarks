@@ -27,13 +27,15 @@ export const freePort = () => new Promise((resolve) => {
 });
 
 // Waits until the app has really exited, so its files can be deleted.
+/** How many copies of the app under test run (only `exe` when isolated, else any keymarks.exe). */
+export const instances = () => (isolated ? Number(ps(`@(${ours}).Count`))
+  : execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1);
+
 export function stopApp() {
   if (isolated) ps(`${ours} | Stop-Process -Force`);
   else try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
   for (let i = 0; i < 50; i++) {
-    const up = isolated ? ps(`@(${ours}).Count`) !== '0'
-      : execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().includes('keymarks.exe');
-    if (!up) return;
+    if (!instances()) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
   }
 }

@@ -383,7 +383,7 @@ try {
   await page.evaluate(() => window.__e2eAnswer(false));
   await idle();
   check('4b Del asks and waits for the answer; Cancel keeps the folder', waited && !!folderRow('Kmzqalpha') && contents.every((id) => itemsIn(alpha.id).includes(id)),
-    waited ? 'deleted after Cancel' : 'deleted before any answer');
+    waited ? 'held until answered' : 'deleted before any answer');
   await expectConfirm(true);
   await key('Delete', '#tree');
   check('4 Del on a folder with items moves them up', !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
