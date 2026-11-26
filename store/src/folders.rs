@@ -22,6 +22,26 @@ pub struct Folder {
     pub folded: bool,
 }
 
+/// v8 migration step: folder names in their own full-text index (external content, kept by
+/// triggers, so undo, restore and every write path stay in step). Idempotent.
+pub(crate) fn migrate_search(tx: &Connection) -> Result<()> {
+    tx.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS folder_fts USING fts5(
+            name, content='folder', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+        CREATE TRIGGER IF NOT EXISTS folder_ai AFTER INSERT ON folder BEGIN
+            INSERT INTO folder_fts(rowid, name) VALUES (new.id, new.name);
+        END;
+        CREATE TRIGGER IF NOT EXISTS folder_ad AFTER DELETE ON folder BEGIN
+            INSERT INTO folder_fts(folder_fts, rowid, name) VALUES ('delete', old.id, old.name);
+        END;
+        CREATE TRIGGER IF NOT EXISTS folder_au AFTER UPDATE OF name ON folder BEGIN
+            INSERT INTO folder_fts(folder_fts, rowid, name) VALUES ('delete', old.id, old.name);
+            INSERT INTO folder_fts(rowid, name) VALUES (new.id, new.name);
+        END;
+        INSERT INTO folder_fts(folder_fts) VALUES ('rebuild');",
+    )
+}
+
 /// One child of a folder, in display order.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -417,7 +437,7 @@ mod tests {
             t
         }
         fn clean(&self) {
-            for ext in ["", "-wal", "-shm", ".v5.bak", ".v6.bak"] {
+            for ext in ["", "-wal", "-shm", ".v5.bak", ".v6.bak", ".v7.bak"] {
                 let _ = std::fs::remove_file(format!("{}{ext}", self.0));
             }
         }
@@ -746,6 +766,23 @@ mod tests {
     }
 
     #[test]
+    fn v7_database_gains_the_folder_path_index() {
+        let db = TempDb::new("v8");
+        let (f, b) = {
+            let mut s = Store::open(&db.0).unwrap();
+            let f = s.create_folder(ROOT, "Search engines", None).unwrap().unwrap();
+            let (b, _) = s.add("https://g.example/", "G", "", "").unwrap();
+            s.move_bookmark(b, f, None).unwrap();
+            s.conn.execute_batch("DROP TABLE folder_fts; DROP TRIGGER folder_ai; DROP TRIGGER folder_ad; DROP TRIGGER folder_au; PRAGMA user_version = 7;").unwrap();
+            (f, b)
+        };
+        let s = Store::open(&db.0).unwrap();
+        assert_eq!(version(&db.0), crate::SCHEMA_VERSION);
+        assert_eq!(s.search_ids("sea eng", &Default::default()).unwrap(), [b], "existing folders indexed");
+        let _ = f;
+    }
+
+    #[test]
     fn empty_search_lists_the_folder_in_folder_order() {
         use crate::query::{SearchOptions, SortKey};
         let mut s = Store::open(":memory:").unwrap();
@@ -763,7 +800,7 @@ mod tests {
         let by_title = SearchOptions { sort: vec![SortKey { column: "title".into(), desc: false }], ..in_f.clone() };
         assert_eq!(s.search_ids("", &by_title).unwrap(), [b, n, z], "a header sort is only a view");
         assert_eq!(s.search_ids("", &in_f).unwrap(), [z, n, b], "stored order untouched");
-        // A search still covers the whole collection (folder scope is a later step).
+        // A search covers the whole collection unless scoped to the folder (FIND-08).
         let mut found = s.search_ids("red", &in_f).unwrap();
         found.sort();
         assert_eq!(found, [a, z]);
@@ -771,5 +808,97 @@ mod tests {
         let kws: Vec<String> = s.keywords_with("", &in_f).unwrap().into_iter().map(|k| k.keyword).collect();
         assert_eq!(kws, ["blue", "red"]);
         assert_eq!(s.keywords_with("", &SearchOptions::default()).unwrap().len(), 2);
+    }
+
+    /// Search engines/Web/(g), Search engines/(d), Work/Engineering/(e), root/(r).
+    fn search_tree(s: &mut Store) -> (i64, i64, [i64; 4]) {
+        let se = s.create_folder(ROOT, "Search engines", None).unwrap().unwrap();
+        let web = s.create_folder(se, "Web", None).unwrap().unwrap();
+        let work = s.create_folder(ROOT, "Work", None).unwrap().unwrap();
+        let eng = s.create_folder(work, "Engineering", None).unwrap().unwrap();
+        let (g, _) = s.add("https://g.example/", "Google", "red", "").unwrap();
+        let (d, _) = s.add("https://d.example/", "DuckDuckGo", "red blue", "").unwrap();
+        let (e, _) = s.add("https://e.example/", "Build server", "blue", "").unwrap();
+        let (r, _) = s.add("https://r.example/", "Recipes", "red", "").unwrap();
+        s.move_bookmark(g, web, None).unwrap();
+        s.move_bookmark(d, se, None).unwrap();
+        s.move_bookmark(e, eng, None).unwrap();
+        let _ = r;
+        (se, work, [g, d, e, r])
+    }
+
+    fn sorted(mut v: Vec<i64>) -> Vec<i64> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn folder_path_is_searchable() {
+        use crate::query::{Mode, SearchOptions};
+        let mut s = Store::open(":memory:").unwrap();
+        let (se, work, [g, d, e, r]) = search_tree(&mut s);
+        let all = SearchOptions::default();
+        let ids = |s: &Store, q: &str, o: &SearchOptions| sorted(s.search_ids(q, o).unwrap());
+        // Every word of the path counts, at any depth below the matching folder (FIND-07).
+        assert_eq!(ids(&s, "sea eng", &all), [g, d], "\"sea eng\" finds a Search engines folder");
+        assert_eq!(ids(&s, "web", &all), [g]);
+        assert_eq!(ids(&s, "engineering google", &all), Vec::<i64>::new(), "both words, one item");
+        assert_eq!(ids(&s, "work build", &all), [e], "path word and title word together");
+        assert_eq!(ids(&s, "bookmarks", &all), Vec::<i64>::new(), "the root's name is not part of a path");
+        // Operators and whole words work on the path too.
+        assert_eq!(ids(&s, "red ! search", &all), [r]);
+        assert_eq!(ids(&s, "web | work", &all), [g, e]);
+        assert_eq!(ids(&s, "engine.", &all), Vec::<i64>::new(), "whole word: engine. is not engines");
+        assert_eq!(ids(&s, "engines.", &all), [g, d]);
+        // Rename and move re-index (rename: the folder's own name; move: the path follows the tree).
+        s.rename_folder(work, "Office").unwrap();
+        assert_eq!(ids(&s, "work", &all), Vec::<i64>::new());
+        assert_eq!(ids(&s, "office", &all), [e]);
+        s.move_folder(work, se, None).unwrap();
+        assert_eq!(ids(&s, "search build", &all), [e], "moved under Search engines");
+        s.undo().unwrap();
+        assert_eq!(ids(&s, "search build", &all), Vec::<i64>::new(), "undo of the move");
+        s.undo().unwrap();
+        assert_eq!(ids(&s, "work", &all), [e], "undo of the rename");
+        // Keywords mode searches the keywords field only, not the path.
+        let kw = SearchOptions { mode: Mode::Keywords, ..all.clone() };
+        assert_eq!(ids(&s, "web", &kw), Vec::<i64>::new());
+        // Exact mode: Folder is one of the fields, matched against the path (FIND-06).
+        let exact = |fields: &[&str]| SearchOptions { mode: Mode::Exact, fields: fields.iter().map(|f| f.to_string()).collect(), ..all.clone() };
+        assert_eq!(ids(&s, "engines › web", &exact(&["folder"])), [g]);
+        assert_eq!(ids(&s, "work › eng", &exact(&["folder"])), [e]);
+        assert_eq!(ids(&s, "web", &exact(&["title"])), Vec::<i64>::new(), "folder not chosen");
+        let cased = SearchOptions { match_case: true, ..exact(&["folder"]) };
+        assert_eq!(ids(&s, "web", &cased), Vec::<i64>::new());
+        assert_eq!(ids(&s, "Web", &cased), [g]);
+        assert!(crate::FIELDS.contains(&"folder"), "exact mode offers the folder by default");
+    }
+
+    #[test]
+    fn search_scoped_to_a_folder_and_below() {
+        use crate::query::{Mode, SearchOptions};
+        let mut s = Store::open(":memory:").unwrap();
+        let (se, work, [g, d, e, r]) = search_tree(&mut s);
+        let ids = |q: &str, o: &SearchOptions| sorted(s.search_ids(q, o).unwrap());
+        let everywhere = SearchOptions { folder: Some(se), ..Default::default() };
+        let here = SearchOptions { in_folder: true, ..everywhere.clone() };
+        assert_eq!(ids("red", &everywhere), [g, d, r], "default: the whole collection");
+        assert_eq!(ids("red", &here), [g, d], "the folder and its subfolders");
+        assert_eq!(ids("red ! google", &here), [d], "operators combine with the scope");
+        assert_eq!(ids("(red | blue) ! duckduckgo.", &here), [g]);
+        assert_eq!(ids("(red | blue) ! duck.", &here), [g, d], "whole word: duck. is not DuckDuckGo");
+        assert_eq!(ids("blue | build", &SearchOptions { folder: Some(work), ..here.clone() }), [e]);
+        assert_eq!(ids("red", &SearchOptions { folder: Some(ROOT), ..here.clone() }), [g, d, r], "the root: everything");
+        let exact = SearchOptions { mode: Mode::Exact, fields: vec!["url".into()], ..here.clone() };
+        assert_eq!(ids(".example", &exact), [g, d], "exact mode is scoped too");
+        // The empty search still lists only the folder itself, in folder order.
+        assert_eq!(s.search_ids("", &here).unwrap(), [d]);
+        // The keyword pane follows the scope.
+        let kws: Vec<(String, i64)> = s.keywords_with("red", &here).unwrap().into_iter().map(|k| (k.keyword, k.count)).collect();
+        assert_eq!(kws, [("blue".to_string(), 1), ("red".to_string(), 2)]);
+        // Scope is a search setting: it round-trips through the options JSON (FIND-11).
+        let o: SearchOptions = serde_json::from_str(r#"{"in_folder": true, "folder": 2}"#).unwrap();
+        assert!(o.in_folder && o.folder == Some(2));
+        assert!(!serde_json::from_str::<SearchOptions>("{}").unwrap().in_folder, "off unless chosen");
     }
 }

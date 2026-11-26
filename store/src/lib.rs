@@ -38,8 +38,18 @@ impl std::fmt::Display for SearchError {
 
 impl std::error::Error for SearchError {}
 
+/// The query as SQL, narrowed to the folder and its subfolders when the search is scoped (FIND-08).
+fn compile(query: &str, opts: &SearchOptions) -> std::result::Result<Option<query::Filter>, SearchError> {
+    let mut filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
+    if let (Some(f), Some(folder), true) = (filter.as_mut(), opts.folder, opts.in_folder) {
+        f.sql = format!("({}) AND b.folder_id IN ({})", f.sql, query::SUBTREE);
+        f.params.push(folder.to_string());
+    }
+    Ok(filter)
+}
+
 /// The `user_version` `migrate` brings a database to.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -416,6 +426,13 @@ impl Store {
             tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
+        // v8: folder names in full text, so the folder path is searchable (FIND-07).
+        if version < 8 {
+            let tx = store.conn.transaction()?;
+            folders::migrate_search(&tx)?;
+            tx.pragma_update(None, "user_version", 8)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -654,7 +671,7 @@ impl Store {
         opts: &SearchOptions,
         limit: usize,
     ) -> std::result::Result<(String, Vec<Value>), SearchError> {
-        let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
+        let filter = compile(query, opts)?;
         let mut params: Vec<Value> = Vec::new();
         let (with, join, cond, default_order) = match &filter {
             // An empty search inside a folder lists it in its stored order (VIEW-01, VIEW-03).
@@ -663,7 +680,6 @@ impl Store {
                 (String::new(), "", "b.folder_id = ?".to_string(), "b.position")
             }
             None => (String::new(), "", "1".to_string(), "b.added DESC"),
-            // ponytail: a search always covers the whole collection; folder scope is FIND-08 (step 6).
             Some(f) => {
                 // MATERIALIZED: rank the matches once, not once per bookmark row.
                 let (with, join) = match &f.rank {
@@ -705,7 +721,7 @@ impl Store {
         query: &str,
         opts: &SearchOptions,
     ) -> std::result::Result<Vec<KeywordCount>, SearchError> {
-        let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
+        let filter = compile(query, opts)?;
         // The pane follows the selected folder while the search is empty (KEY-02).
         let in_folder = opts.folder.filter(|_| filter.is_none()).map(|f| query::Filter {
             sql: "b.folder_id = ?".into(),

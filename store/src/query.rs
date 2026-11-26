@@ -6,7 +6,8 @@
 
 use serde::Deserialize;
 
-pub const FIELDS: [&str; 5] = ["title", "keywords", "description", "notes", "url"];
+/// Exact-mode fields. `folder` is the item's folder path (FIND-07), the others are columns.
+pub const FIELDS: [&str; 6] = ["title", "keywords", "description", "notes", "url", "folder"];
 /// Powermarks' field-mask bits (column order in pm.exe); bits 5–7 (status checking,
 /// schedule, status) have no text to search here.
 pub const PM_FIELD_BITS: [&str; 5] = ["title", "url", "keywords", "description", "notes"];
@@ -37,6 +38,8 @@ pub struct SearchOptions {
     pub sort: Vec<SortKey>,
     /// The folder shown when the search is empty (Explorer style); None: the whole collection.
     pub folder: Option<i64>,
+    /// A search covers `folder` and its subfolders only (FIND-08); off: the whole collection.
+    pub in_folder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -70,6 +73,7 @@ impl Default for SearchOptions {
             match_case: false,
             sort: Vec::new(),
             folder: None,
+            in_folder: false,
         }
     }
 }
@@ -113,8 +117,9 @@ fn exact(query: &str, opts: &SearchOptions) -> Result<Option<Filter>, String> {
         return Err("choose at least one field for exact search".into());
     }
     // ponytail: SQLite lower() folds ASCII only; non-ASCII case-insensitive matching needs ICU or a Rust-side scan.
+    let found = |text: &str| if opts.match_case { format!("instr({text}, ?) > 0") } else { format!("instr(lower({text}), lower(?)) > 0") };
     let clause = |f: &str| {
-        if opts.match_case { format!("instr(b.{f}, ?) > 0") } else { format!("instr(lower(b.{f}), lower(?)) > 0") }
+        if f == "folder" { format!("b.folder_id IN ({FOLDER_PATHS} SELECT id FROM p WHERE {})", found("path")) } else { found(&format!("b.{f}")) }
     };
     Ok(Some(Filter {
         sql: format!("({})", fields.iter().map(|f| clause(f)).collect::<Vec<_>>().join(" OR ")),
@@ -122,6 +127,18 @@ fn exact(query: &str, opts: &SearchOptions) -> Result<Option<Filter>, String> {
         rank: None,
     }))
 }
+
+/// Every folder below the root with its path ("Search engines › Web"), as CTE `p(id, path)`.
+const FOLDER_PATHS: &str = "WITH RECURSIVE p(id, path) AS (SELECT id, name FROM folder WHERE parent_id = 1 \
+    UNION ALL SELECT f.id, p.path || ' › ' || f.name FROM folder f JOIN p ON f.parent_id = p.id)";
+
+/// Folders whose path has a word matching `?` (an FTS5 query): a folder whose own name
+/// matches, and every folder below it. Moves need no re-index; renames re-index one row.
+const PATH_MATCH: &str = "b.folder_id IN (WITH RECURSIVE m(id) AS (SELECT rowid FROM folder_fts \
+    WHERE folder_fts MATCH ? AND rowid <> 1 UNION SELECT f.id FROM folder f JOIN m ON f.parent_id = m.id) SELECT id FROM m)";
+
+/// The folder `?` and every folder below it.
+pub(crate) const SUBTREE: &str = "WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT f.id FROM folder f JOIN t ON f.parent_id = t.id) SELECT id FROM t";
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -254,12 +271,20 @@ fn emit(e: &Expr, opts: &SearchOptions, negated: bool, f: &mut Filter, positive:
         Expr::Term { word, whole } => {
             let star = if *whole || !opts.partial { "" } else { "*" };
             let column = if opts.mode == Mode::Keywords { "keywords : " } else { "" };
-            let phrase = format!("{column}\"{}\"{star}", word.replace('"', "\"\""));
-            f.sql += "b.id IN (SELECT rowid FROM bookmark_fts WHERE bookmark_fts MATCH ?)";
+            let bare = format!("\"{}\"{star}", word.replace('"', "\"\""));
+            let phrase = format!("{column}{bare}");
+            let in_text = "b.id IN (SELECT rowid FROM bookmark_fts WHERE bookmark_fts MATCH ?)";
             if !negated {
                 positive.push(phrase.clone());
             }
             f.params.push(phrase);
+            if opts.mode == Mode::Keywords {
+                f.sql += in_text;
+            } else {
+                // The folder path counts as text of the item (FIND-07).
+                f.sql += &format!("({in_text} OR {PATH_MATCH})");
+                f.params.push(bare);
+            }
         }
         Expr::Not(inner) => {
             f.sql += "NOT (";
@@ -321,7 +346,7 @@ mod tests {
         let all = SearchOptions::default();
         assert_eq!(compile("  ", &all).unwrap(), None);
         let f = compile("rust ! java.", &all).unwrap().unwrap();
-        assert_eq!(f.params, ["\"rust\"*", "\"java\""]);
+        assert_eq!(f.params, ["\"rust\"*", "\"rust\"*", "\"java\"", "\"java\""], "each word: text, then folder path");
         assert_eq!(f.rank.as_deref(), Some("\"rust\"*")); // negated terms don't rank
 
         let kw = SearchOptions { mode: Mode::Keywords, partial: false, ..all.clone() };
@@ -339,7 +364,7 @@ mod tests {
     fn rating_filters() {
         let opts = SearchOptions::default();
         let f = compile("rust rating>=7", &opts).unwrap().unwrap();
-        assert!(f.sql.contains("b.rating >= 7") && f.params.len() == 1, "{}", f.sql);
+        assert!(f.sql.contains("b.rating >= 7") && f.params.len() == 2, "{}", f.sql);
         assert!(compile("rating<3 | rating=0", &opts).unwrap().unwrap().sql.contains("b.rating < 3 OR b.rating = 0"));
         assert_eq!(rating_filter("rating>=x"), None, "not a number: an ordinary word");
         assert_eq!(rating_filter("ratings"), None);
