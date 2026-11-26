@@ -481,7 +481,7 @@ try {
   pages.close();
 
   // 13. Saved searches and links (Powermarks' macros). Links are never clicked: that would open a browser.
-  const savedNames = () => page.$$eval('#savedlist li:not(.hint) span:nth-child(2)', (els) => els.map((e) => e.textContent));
+  const savedNames = () => page.$$eval('#savedlist li:not(.hint, #dup-view, #dead-view) span:nth-child(2)', (els) => els.map((e) => e.textContent));
   await setMode('keywords');
   await search('sql');
   const sqlKeywordsOnly = Number((await statusText()).match(/^(\d+)/)[1]);
