@@ -205,6 +205,7 @@ Requirements: Windows 10/11, the [Rust](https://rustup.rs) MSVC toolchain, and V
 Build Tools with C++. WebView2 ships with Windows.
 
 ```powershell
+cargo build --release -p keymarks-host       # first: the app bundles the release host
 cargo build --workspace                      # app + native host
 target\debug\keymarks-host.exe --install     # register the host for Chrome, Edge, Firefox
 target\debug\keymarks.exe                    # run; use "Import pm35.htm…" or the extension
