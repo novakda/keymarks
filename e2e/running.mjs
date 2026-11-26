@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 
 /** Path of the running keymarks.exe, or null. */
 export function runningKeymarks() {
+  if (process.env.KEYMARKS_EXE) return null; // isolated build (launch.mjs): the user's copy stays up
   const out = execSync(
     'powershell -NoProfile -Command "(Get-Process keymarks -ErrorAction SilentlyContinue | Select-Object -First 1).Path"',
     { windowsHide: true },

@@ -9,6 +9,12 @@ import { fileURLToPath } from 'node:url';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
+// KEYMARKS_EXE: a build with an identifier of its own (TAURI_CONFIG at build time), so its own
+// single-instance lock. It runs beside the user's copy: only that exe is stopped, the user's
+// copy is never closed or reopened (running.mjs).
+export const isolated = !!process.env.KEYMARKS_EXE;
+const ps = (cmd) => execSync(`powershell -NoProfile -Command "${cmd}"`, { windowsHide: true }).toString().trim();
+const ours = `Get-Process keymarks -ErrorAction SilentlyContinue | ? Path -eq '${exe.replace(/'/g, "''")}'`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const log = (msg) => process.stderr.write(`· ${new Date().toTimeString().slice(0, 8)} ${msg}\n`);
 
@@ -22,10 +28,12 @@ export const freePort = () => new Promise((resolve) => {
 
 // Waits until the app has really exited, so its files can be deleted.
 export function stopApp() {
-  try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
+  if (isolated) ps(`${ours} | Stop-Process -Force`);
+  else try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
   for (let i = 0; i < 50; i++) {
-    const out = execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString();
-    if (!out.includes('keymarks.exe')) return;
+    const up = isolated ? ps(`@(${ours}).Count`) !== '0'
+      : execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().includes('keymarks.exe');
+    if (!up) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
   }
 }
