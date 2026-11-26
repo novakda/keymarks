@@ -88,6 +88,26 @@ pub(crate) fn migrate_note_search(tx: &Connection) -> Result<()> {
     migrate_search(tx)
 }
 
+/// Sort folder's key (ORD-01). Folders sort by name for Title and URL, by date added for Added,
+/// and keep their order for Last visit.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortBy {
+    Title,
+    Url,
+    LastVisit,
+    Added,
+}
+
+/// Where Sort folder puts subfolders (ORD-02).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldersAt {
+    Mixed,
+    First,
+    Last,
+}
+
 /// One child of a folder, in display order.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -335,6 +355,56 @@ impl Store {
             &[id],
             |s| Ok(s.conn.execute("UPDATE folder SET note = ?2, modified = CASE WHEN note IS ?2 THEN modified ELSE unixepoch() END WHERE id = ?1", params![id, note])? == 1),
             |s, _| format!("Note on \u{201c}{}\u{201d}", s.folder(id).ok().flatten().map(|f| f.name).unwrap_or_default()),
+        )
+    }
+
+    /// Sort folder (ORD-01, ORD-02, ORD-03): rewrite the stored order of `id` (and, if
+    /// `recursive`, every folder below it) by `by`, as one undo step. Text compares without
+    /// case; ties keep their order. Returns how many folders were sorted, None if `id` is missing.
+    pub fn sort_folder(&mut self, id: i64, by: SortBy, descending: bool, folders_at: FoldersAt, recursive: bool) -> Result<Option<usize>> {
+        let Some(top) = self.folder(id)? else { return Ok(None) };
+        let scope: Vec<i64> = if recursive {
+            self.conn.prepare(crate::query::SUBTREE)?.query_map([id], |r| r.get(0))?.collect::<Result<_>>()?
+        } else {
+            vec![id]
+        };
+        let by_name = match by { SortBy::Title => "title", SortBy::Url => "URL", SortBy::LastVisit => "last visit", SortBy::Added => "date added" };
+        let name = format!("Sort \u{201c}{}\u{201d} by {by_name}", top.name);
+        self.record_tree(
+            &scope,
+            |s| {
+                let tx = s.conn.transaction()?;
+                for &folder in &scope {
+                    // (is a folder, text key, number key) per child, in stored order.
+                    let mut keyed: Vec<(Item, bool, String, Option<i64>)> = Vec::new();
+                    for item in siblings(&tx, folder)? {
+                        let (text, num): (String, Option<i64>) = match item {
+                            Item::Folder(f) => tx.query_row("SELECT name, added FROM folder WHERE id = ?1", [f], |r| {
+                                Ok((r.get(0)?, if by == SortBy::LastVisit { None } else { r.get(1)? }))
+                            })?,
+                            Item::Bookmark(b) => tx.query_row(
+                                "SELECT CASE ?2 WHEN 'url' THEN url ELSE coalesce(nullif(title, ''), url) END,
+                                        CASE ?2 WHEN 'visit' THEN last_visited ELSE added END FROM bookmark WHERE id = ?1",
+                                params![b, match by { SortBy::Url => "url", SortBy::LastVisit => "visit", _ => "" }],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )?,
+                        };
+                        keyed.push((item, matches!(item, Item::Folder(_)), text.to_lowercase(), num));
+                    }
+                    keyed.sort_by(|a, b| {
+                        let group = |f: bool| match folders_at { FoldersAt::First => !f, FoldersAt::Last => f, FoldersAt::Mixed => false };
+                        let key = match by {
+                            SortBy::Title | SortBy::Url => a.2.cmp(&b.2),
+                            SortBy::LastVisit | SortBy::Added => a.3.cmp(&b.3),
+                        };
+                        group(a.1).cmp(&group(b.1)).then(if descending { key.reverse() } else { key })
+                    });
+                    set_order(&tx, folder, &keyed.into_iter().map(|k| k.0).collect::<Vec<_>>())?;
+                }
+                tx.commit()?;
+                Ok(Some(scope.len()))
+            },
+            |_, _| name,
         )
     }
 
@@ -1076,5 +1146,42 @@ mod tests {
         s.redo().unwrap();
         assert_eq!(s.folder(f).unwrap().unwrap().note, "articles about gardening");
         assert!(!s.set_folder_note(9999, "x").unwrap(), "missing folder");
+    }
+
+    #[test]
+    fn sort_folder_rewrites_order_folders_first_recursive_one_undo_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        fn mk(s: &mut Store, folder: i64, url: &str, title: &str, visited: Option<i64>) {
+            let (id, _) = s.add(url, title, "", "").unwrap();
+            s.conn.execute("UPDATE bookmark SET last_visited = ?2 WHERE id = ?1", params![id, visited]).unwrap();
+            s.move_bookmark(id, folder, None).unwrap();
+        }
+        mk(&mut s, f, "https://c.example/", "charlie", Some(5));
+        let sub = s.create_folder(f, "zeta", None).unwrap().unwrap();
+        mk(&mut s, f, "https://a.example/", "Bravo", Some(9));
+        let sub2 = s.create_folder(f, "alpha", None).unwrap().unwrap();
+        mk(&mut s, f, "https://b.example/", "alpha", None);
+        mk(&mut s, sub, "https://y.example/", "Y", None);
+        mk(&mut s, sub, "https://x.example/", "X", None);
+        let _ = sub2;
+        let start = (names(&s, f), names(&s, sub));
+        fn n(v: &[(&'static str, &str)]) -> Vec<(&'static str, String)> { v.iter().map(|(k, t)| (*k, t.to_string())).collect() }
+
+        assert_eq!(s.sort_folder(f, SortBy::Title, false, FoldersAt::First, true).unwrap(), Some(3));
+        assert_eq!(names(&s, f), n(&[("f", "alpha"), ("f", "zeta"), ("b", "alpha"), ("b", "Bravo"), ("b", "charlie")]), "folders first, case-insensitive, stable");
+        assert_eq!(names(&s, sub), n(&[("b", "X"), ("b", "Y")]), "sub-folders too");
+        assert_eq!(s.history_labels().0.as_deref(), Some("Sort \u{201c}F\u{201d} by title"));
+        s.undo().unwrap();
+        assert_eq!((names(&s, f), names(&s, sub)), start, "one undo step puts both folders back");
+
+        assert_eq!(s.sort_folder(f, SortBy::Url, true, FoldersAt::Last, false).unwrap(), Some(1));
+        assert_eq!(names(&s, f), n(&[("b", "charlie"), ("b", "alpha"), ("b", "Bravo"), ("f", "zeta"), ("f", "alpha")]), "URL down, folders last");
+        assert_eq!(names(&s, sub), start.1, "not recursive: sub-folder untouched");
+        s.undo().unwrap();
+
+        s.sort_folder(f, SortBy::LastVisit, true, FoldersAt::Mixed, false).unwrap();
+        assert_eq!(names(&s, f)[..2], n(&[("b", "Bravo"), ("b", "charlie")])[..], "most recently visited first");
+        assert_eq!(s.sort_folder(9999, SortBy::Title, false, FoldersAt::First, true).unwrap(), None, "missing folder");
     }
 }

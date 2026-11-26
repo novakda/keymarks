@@ -30,6 +30,8 @@ let folder = ROOT;         // the selected folder
 // The Duplicate URLs view (SAVD-10, Ctrl+D): the list shows the store's duplicate groups instead.
 let dupView = false;
 let dupGroup = new Map();  // id -> its group's index, while dupView
+// The Dead Links view (SAVD-09, Ctrl+L): bookmarks whose last link check found them gone.
+let deadView = false;
 // The properties panel shows the selected folder (title and note, NOTE-02) while the tree has
 // focus, and the selected bookmark once the list does.
 let folderPanel = false;
@@ -149,7 +151,7 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   let n, found, v, kw, hist;
   try {
     [n, found, v, kw, hist] = await Promise.all([
-      invoke('count'), dupView ? invoke('duplicate_groups') : invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
+      invoke('count'), dupView ? invoke('duplicate_groups') : deadView ? invoke('dead_links') : invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
       invoke('keywords', { query: q.value, opts: scoped() }), invoke('history'),
     ]);
   } catch (e) {
@@ -268,6 +270,11 @@ function render() {
   renderPanel();
   $('dup-bar').hidden = !dupView;
   renderSaved();
+  if (deadView) {
+    return say(ids.length
+      ? `Dead Links: ${ids.length} bookmark${ids.length === 1 ? '' : 's'} whose last check found them gone (4xx, no such site, bad URL) · Del deletes · Check selected rechecks · Esc returns`
+      : 'Dead Links: none. Bookmarks show here once a link check finds them gone. Esc returns.');
+  }
   if (dupView) {
     return say(dupGroup.size
       ? `Duplicate URLs: ${new Set(dupGroup.values()).size} groups, ${ids.length} bookmarks · Merge or Keep resolves the focused one's group · Ctrl+D leaves`
@@ -375,7 +382,7 @@ function startColMove(e, c) {
 }
 
 function renderTable() {
-  const cols = shownCols.map((id) => COLUMNS.find((c) => c.id === id)).filter(Boolean);
+  const cols = [...shownCols, ...(deadView && !shownCols.includes('folder') ? ['folder'] : [])].map((id) => COLUMNS.find((c) => c.id === id)).filter(Boolean);
   $('table-cols').replaceChildren(...cols.map(() => document.createElement('col')));
   applyColWidths(cols);
   $('table-head').replaceChildren(...cols.map((c) => {
@@ -1077,13 +1084,19 @@ function renderSaved() {
     Object.assign(document.createElement('span'), { textContent: dupView ? `Duplicate URLs [${new Set(dupGroup.values()).size}]` : 'Duplicate URLs' }),
     Object.assign(document.createElement('span'), { className: 'n', textContent: 'Ctrl+D' }));
   dups.onclick = () => toggleDupView();
+  const dead = Object.assign(document.createElement('li'), { id: 'dead-view', title: 'Bookmarks whose link check found them gone · Ctrl+L' });
+  dead.classList.toggle('active', deadView);
+  dead.append(Object.assign(document.createElement('span'), { textContent: '✗', ariaHidden: 'true' }),
+    Object.assign(document.createElement('span'), { textContent: deadView ? `Dead Links [${ids.length}]` : 'Dead Links' }),
+    Object.assign(document.createElement('span'), { className: 'n', textContent: 'Ctrl+L' }));
+  dead.onclick = () => toggleDeadView();
   if (!savedItems.length) {
-    $('savedlist').replaceChildren(dups, Object.assign(document.createElement('li'), {
+    $('savedlist').replaceChildren(dups, dead, Object.assign(document.createElement('li'), {
       className: 'hint', textContent: 'Save searches with ☆ and pin links from a bookmark.',
     }));
     return;
   }
-  $('savedlist').replaceChildren(dups, ...savedItems.map((item, i) => {
+  $('savedlist').replaceChildren(dups, dead, ...savedItems.map((item, i) => {
     const li = document.createElement('li');
     li.title = (item.kind === 'link' ? item.url : item.query) + ' · click to run, right-click for more';
     const icon = document.createElement('span');
@@ -1118,8 +1131,24 @@ async function runSaved(item) {
 async function toggleDupView(on = !dupView) {
   if (!(await confirmDiscard())) return;
   dupView = on;
+  deadView = false;
   await refresh({ keepSelection: false });
 }
+
+async function toggleDeadView(on = !deadView) {
+  if (!(await confirmDiscard())) return;
+  deadView = on;
+  dupView = false;
+  await refresh({ keepSelection: false });
+}
+document.addEventListener('keydown', (e) => {
+  const ctrlL = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'l';
+  const esc = e.key === 'Escape' && deadView && !document.querySelector('dialog[open]') && !e.target.closest('input, textarea, select, [contenteditable]');
+  if (!ctrlL && !esc) return;
+  if (ctrlL && e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  toggleDeadView(ctrlL ? undefined : false);
+});
 
 // Merge: the focused bookmark takes the others' keywords and fills its empty fields from
 // them; Keep: the others are just deleted. Either way one undo step (Ctrl+Z).
@@ -1278,8 +1307,8 @@ function renderTree() {
  *  scoped to the folder: then it searches the new one). */
 async function setFolder(id, { load = true } = {}) {
   if (load && !(await confirmDiscard())) return;
-  const changed = id !== folder || dupView;
-  if (load) dupView = false;
+  const changed = id !== folder || dupView || deadView;
+  if (load) dupView = deadView = false;
   folder = id;
   try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
   renderTree();
@@ -1596,7 +1625,36 @@ $('fctx').addEventListener('click', (e) => {
   else if (act === 'move') openMovePicker({ folders: [f.id] });
   else if (act === 'delete') deleteFolder(f);
   else if (act === 'inbox') setInbox(f);
+  else if (act === 'sort') openSort(f);
 });
+
+// Sort folder (ORD-01..03): a one-shot rewrite of the stored order, one undo step. The
+// choices are remembered for next time.
+let sortFolder = null;
+function openSort(f) {
+  sortFolder = f;
+  let o = {};
+  try { o = JSON.parse(localStorage.getItem('sort-folder') || '{}'); } catch {}
+  $('sort-title').textContent = `Sort “${f.name}”`;
+  $('so-by').value = o.by ?? 'title';
+  $('so-dir').value = o.dir ?? 'up';
+  $('so-folders').value = o.folders ?? 'first';
+  $('so-sub').checked = o.sub ?? true;
+  $('sort-dlg').showModal();
+}
+$('sort-form').addEventListener('submit', busyAware(async (e) => {
+  e.preventDefault();
+  const o = { by: $('so-by').value, dir: $('so-dir').value, folders: $('so-folders').value, sub: $('so-sub').checked };
+  try { localStorage.setItem('sort-folder', JSON.stringify(o)); savePrefs(); } catch {}
+  $('sort-dlg').close();
+  const f = sortFolder;
+  try {
+    const n = await invoke('sort_folder', { id: f.id, by: o.by, descending: o.dir === 'down', foldersAt: o.folders, recursive: o.sub });
+    await refreshFolders();
+    await refresh();
+    say(`Sorted “${f.name}”${n > 1 ? ` and ${n - 1} folder${n === 2 ? '' : 's'} below it` : ''}. Ctrl+Z undoes it.`);
+  } catch (err) { fail('Sort folder')(err); }
+}));
 
 const setInbox = busyAware(async (f) => {
   try {
@@ -1911,7 +1969,7 @@ function renderFolderPanel() {
   editing = null;
   if (!f) return panel.replaceChildren();
   const head = Object.assign(document.createElement('h2'), { id: 'fn-title', textContent: f.name });
-  const where = Object.assign(document.createElement('div'), { className: 'info', textContent: `Folder · ${childFolders(f.id).length} subfolders` + (!searching() && !dupView ? ` · ${ids.length} items` : '') });
+  const where = Object.assign(document.createElement('div'), { className: 'info', textContent: `Folder · ${childFolders(f.id).length} subfolders` + (!searching() && !dupView && !deadView ? ` · ${ids.length} items` : '') });
   const label = Object.assign(document.createElement('label'), { htmlFor: 'fn-note', textContent: 'Folder notes' });
   const note = Object.assign(document.createElement('textarea'), { id: 'fn-note', value: f.note ?? '', rows: 10, placeholder: 'What this folder is for…' });
   note.dataset.folder = f.id;
@@ -2047,7 +2105,7 @@ document.addEventListener('click', (e) => {
 });
 applyOptsToUi();
 
-q.addEventListener('input', async () => { if (await confirmDiscard()) { dupView = false; refresh({ keepSelection: false }); } });
+q.addEventListener('input', async () => { if (await confirmDiscard()) { dupView = deadView = false; refresh({ keepSelection: false }); } });
 q.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && q.value) { e.preventDefault(); setSearch(''); return; }
   onListKeys(e);

@@ -574,6 +574,18 @@ fn rename_folder(db: State<Db>, id: i64, name: String) -> Result<(), String> {
     rename(&mut db.lock().unwrap(), id, &name)
 }
 
+/// Sort folder (ORD-01..03), one undo step. Returns how many folders were sorted.
+#[tauri::command]
+fn sort_folder(db: State<Db>, id: i64, by: store::SortBy, descending: bool, folders_at: store::FoldersAt, recursive: bool) -> Result<usize, String> {
+    db.lock().unwrap().sort_folder(id, by, descending, folders_at, recursive).map_err(err)?.ok_or_else(|| GONE.into())
+}
+
+/// The Dead Links view (SAVD-09).
+#[tauri::command]
+fn dead_links(db: State<Db>) -> Result<Vec<i64>, String> {
+    db.lock().unwrap().dead_links().map_err(err)
+}
+
 /// A folder's note (NOTE-02), one undo step.
 #[tauri::command]
 fn set_folder_note(db: State<Db>, id: i64, note: String) -> Result<(), String> {
@@ -1113,6 +1125,8 @@ fn main() {
             create_folder,
             rename_folder,
             set_folder_note,
+            sort_folder,
+            dead_links,
             delete_folder,
             set_new_item_folder,
             move_items,

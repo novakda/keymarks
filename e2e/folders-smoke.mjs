@@ -246,7 +246,7 @@ try {
   const bak = `${dbPath}.v${before.version}.bak`;
   const after = sql("SELECT count(*) AS n, sum(folder_id <> 1) AS out, sum(kind <> 'bookmark') AS notes FROM bookmark")[0];
   const shownTotal = Number((await status()).match(/· (\d+) bookmarks/)?.[1]);
-  check('1 upgrade: all bookmarks in the root, v8, with a .bak', before.version < 6 && userVersion(dbPath) === 8 && after.n === before.count
+  check('1 upgrade: all bookmarks in the root, v10, with a .bak', before.version < 6 && userVersion(dbPath) === 10 && after.n === before.count
     && after.out === 0 && after.notes === 0 && sql('SELECT count(*) AS n FROM folder')[0].n === 1 && fs.existsSync(bak) && userVersion(bak) === before.version
     && shownTotal === before.count && (await page.textContent('#tree-head')) === 'Folders [0]', `v${before.version}→v${userVersion(dbPath)}, ${before.count} → ${after.n}, ${after.out} outside the root`);
 
@@ -591,6 +591,50 @@ try {
     await key('Control+z'); // the move
     await key('Control+z'); // the note
     check('25b Ctrl+Z takes the folder note back', sql('SELECT note FROM folder WHERE id = ?', noted.id)[0]?.note === '', JSON.stringify(sql('SELECT note FROM folder WHERE id = ?', noted.id)));
+  }
+
+  // 26. Sort folder (ORD-01..03): folder menu → Sort folder… → Title, descending, folders
+  // first, sub-folders too; the stored order changes; one Ctrl+Z restores it.
+  {
+    const [noted] = sql("SELECT id FROM folder WHERE name = 'Kmzq noted'");
+    await openFolder(noted.id);
+    await newFolderHere('Kmzq sub');
+    await openFolder(noted.id);
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      const ins = db.prepare("INSERT INTO bookmark (url, title, added, folder_id) VALUES (?, ?, unixepoch(), ?)");
+      for (const t of ['Kmzq sort b', 'Kmzq sort C', 'Kmzq sort a']) ins.run(`https://kmzq-e2e-sort.example/${t.at(-1)}`, t, noted.id);
+    } finally { db.close(); }
+    const order = () => sql(`SELECT name AS t, position FROM folder WHERE parent_id = ?1 UNION ALL SELECT title, position FROM bookmark WHERE folder_id = ?1 ORDER BY 2`, noted.id).map((r) => r.t);
+    const startOrder = order();
+    await page.click(treeLi(noted.id), { button: 'right' });
+    await page.click('#fctx [data-act=sort]');
+    await page.selectOption('#so-by', 'title');
+    await page.selectOption('#so-dir', 'down');
+    await page.selectOption('#so-folders', 'first');
+    await page.click('#sort-form button[type=submit]');
+    await idle();
+    const sortedOrder = order();
+    check('26 Sort folder rewrites the stored order: folders first, then titles Z→A', JSON.stringify(sortedOrder) === JSON.stringify(['Kmzq sub', 'Kmzq sort C', 'Kmzq sort b', 'Kmzq sort a']), JSON.stringify(sortedOrder));
+    await key('Control+z');
+    check('26b one Ctrl+Z restores the order', JSON.stringify(order()) === JSON.stringify(startOrder), JSON.stringify(order()));
+  }
+
+  // 27. Dead Links view (SAVD-09): a bookmark whose check found it gone (status written as the
+  // checker would) is listed across folders with the Folder column; Esc returns.
+  {
+    const [one] = sql("SELECT id FROM bookmark WHERE url = 'https://kmzq-e2e-sort.example/a'");
+    {
+      const db = new DatabaseSync(dbPath);
+      try { db.exec('PRAGMA busy_timeout = 5000'); db.prepare("UPDATE bookmark SET check_status = 'not_found', http_status = 404, check_enabled = 1 WHERE id = ?").run(one.id); } finally { db.close(); }
+    }
+    await key('Control+l');
+    const deadIds = (await shown()).ids;
+    const folderCol = (await page.$$eval('#table-head th', (ths) => ths.map((t) => t.textContent))).some((t) => t.startsWith('Folder'));
+    check('27 Ctrl+L lists the dead link with the Folder column', deadIds.includes(one.id) && (await status()).startsWith('Dead Links') && folderCol, `${deadIds.length} ${folderCol}`);
+    await key('Escape');
+    check('27b Esc leaves the Dead Links view', !(await status()).startsWith('Dead Links'), await status());
   }
 } catch (e) {
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

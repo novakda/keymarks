@@ -37,6 +37,7 @@ function fakeTauri() {
     bm(14, 3, 1, 'Client wiki', 'https://client.example/'),
   ];
   const calls = (window.__calls = []);
+  window.__setStatus = (title, st) => { const b = items.find((x) => x.title === title); b.check_status = st; };
   window.__addItem = (folderId, title, url) => items.push(bm(nextId++, folderId, 99, title, url));
   let nextId = 100;
   const byPos = (a, b) => a.position - b.position;
@@ -132,6 +133,16 @@ function fakeTauri() {
       const gone = group.filter((id) => id !== keep);
       for (const id of gone) items.splice(items.findIndex((b) => b.id === id), 1);
       return gone.length;
+    },
+    dead_links: () => items.filter((b) => ['not_found', 'forbidden'].includes(b.check_status) && b.check_enabled).map((b) => b.id),
+    sort_folder: ({ id, by, descending, foldersAt, recursive }) => {
+      snap('Sort folder');
+      const kids = [...folders.filter((f) => f.parent_id === id), ...items.filter((b) => b.folder_id === id)].sort(byPos);
+      const name = (k) => (k.name ?? k.title).toLowerCase();
+      kids.sort((a, b) => (foldersAt === 'first' ? ('folded' in b) - ('folded' in a) : 0) || (descending ? -1 : 1) * name(a).localeCompare(name(b)));
+      kids.forEach((k, i) => { k.position = i + 1; });
+      window.__sorted = { id, by, descending, foldersAt, recursive };
+      return 1;
     },
     set_folder_note: ({ id, note }) => { snap('Note on folder'); folders.find((f) => f.id === id).note = note.trim(); },
     add_note: ({ folder, title }) => {
@@ -485,6 +496,30 @@ check('the saved note shows when the folder is chosen again', (await page.inputV
 await page.keyboard.press('Control+z');
 await idle();
 check('Ctrl+Z takes the note back', (await page.inputValue('#fn-note')) === '', await page.inputValue('#fn-note'));
+
+// ---- Sort folder (ORD-01): folder menu → dialog → one store call, one undo step ----
+await page.click('#tree li:has-text("Work") .name', { button: 'right' });
+await page.click('#fctx [data-act=sort]');
+await page.selectOption('#so-dir', 'down');
+await page.click('#sort-form button[type=submit]');
+await idle();
+const sorted = await page.evaluate(() => window.__sorted);
+check('Sort folder sends the folder, key, direction, folders first and sub-folders', JSON.stringify(sorted) === '{"id":2,"by":"title","descending":true,"foldersAt":"first","recursive":true}'
+  && JSON.stringify((await titles()).slice(0, 3)) === '["Wiki","Tracker","✎ Standup notes"]', `${JSON.stringify(sorted)} ${JSON.stringify(await titles())}`);
+check('the sort is an undo step', (await page.getAttribute('#undo', 'title')).includes('Sort folder'), await page.getAttribute('#undo', 'title'));
+
+// ---- Dead Links view (SAVD-09): Ctrl+L lists dead links across folders; Esc returns ----
+await page.evaluate(() => { window.__addItem(4, 'Gone page', 'https://gone.example/'); });
+await page.evaluate(() => window.__setStatus('Gone page', 'not_found'));
+await page.focus('#list');
+await page.keyboard.press('Control+l');
+await idle();
+check('Ctrl+L shows the dead links from every folder, "Dead Links [1]"', JSON.stringify(await titles()) === '["✗ Gone page"]' && (await page.textContent('#dead-view')).includes('Dead Links [1]')
+  && (await page.textContent('#status')).startsWith('Dead Links'), `${JSON.stringify(await titles())} ${await page.textContent('#dead-view')}`);
+await page.focus('#list');
+await page.keyboard.press('Escape');
+await idle();
+check('Esc leaves the Dead Links view', !(await page.textContent('#status')).startsWith('Dead Links'), await page.textContent('#status'));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

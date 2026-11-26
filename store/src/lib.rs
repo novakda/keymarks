@@ -10,7 +10,7 @@ mod query;
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-pub use folders::{Beside, Folder, NEW_ITEMS, Node, ROOT};
+pub use folders::{Beside, Folder, FoldersAt, NEW_ITEMS, Node, ROOT, SortBy};
 pub use query::{FIELDS, Mode, PM_FIELD_BITS, SearchOptions, SortKey};
 pub use rusqlite::Result;
 
@@ -1167,6 +1167,19 @@ impl Store {
         Ok(groups)
     }
 
+    /// The Dead Links view (SAVD-09): bookmarks with link checking on whose last check found
+    /// them gone (Compass: HTTP 400-404; here also an unknown host or a bad URL), by title.
+    pub fn dead_links(&self) -> Result<Vec<i64>> {
+        self.conn
+            .prepare(
+                "SELECT id FROM bookmark WHERE kind = 'bookmark' AND check_enabled AND check_status IN
+                 ('not_found', 'forbidden', 'unauthorized', 'client_error', 'server_not_found', 'bad_url')
+                 ORDER BY lower(coalesce(nullif(title, ''), url)), id",
+            )?
+            .query_map([], |r| r.get(0))?
+            .collect()
+    }
+
     /// Resolve `keep`'s duplicate group (SAVD-10) as one undo step: the other copies are
     /// deleted. With `merge`, `keep` first takes their keywords and, for each field it has
     /// empty, the first copy's value (the XFER-02 rule). Returns how many were deleted.
@@ -2309,5 +2322,20 @@ mod tests {
         assert_eq!(s.duplicate_groups().unwrap(), vec![vec![1, 2, 4], vec![5, 6]], "both undone");
         assert_eq!(s.get(1).unwrap().unwrap().keywords, "one");
         assert_eq!(s.merge_duplicates(3, true).unwrap(), 0, "no duplicates: nothing to do");
+    }
+
+    #[test]
+    fn dead_links_are_the_checked_4xx_and_unreachable_ones() {
+        let s = Store::open(":memory:").unwrap();
+        let ids: Vec<i64> = ["ok", "not_found", "forbidden", "server_error", "server_not_found", "bad_url", "client_error", "unauthorized", "rate_limited"]
+            .iter()
+            .map(|st| {
+                let (id, _) = s.add(&format!("https://{st}.example/"), st, "", "").unwrap();
+                s.conn.execute("UPDATE bookmark SET check_status = ?2 WHERE id = ?1", params![id, st]).unwrap();
+                id
+            })
+            .collect();
+        s.conn.execute("UPDATE bookmark SET check_enabled = 0 WHERE id = ?1", [ids[7]]).unwrap();
+        assert_eq!(s.dead_links().unwrap(), [ids[5], ids[6], ids[2], ids[1], ids[4]], "by title; checking off and 429/5xx are not dead");
     }
 }
