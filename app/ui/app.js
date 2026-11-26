@@ -2171,6 +2171,7 @@ $('import-pm35').onclick = busyAware(async () => {
 select = busyAware(select);
 open = busyAware(open);
 remove = busyAware(remove);
+reveal = busyAware(reveal);
 save = busyAware(save);
 runHistory = busyAware(runHistory);
 restoreBackup = busyAware(restoreBackup);

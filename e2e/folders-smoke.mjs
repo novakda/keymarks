@@ -353,16 +353,19 @@ try {
   const s19 = await shown();
   const curRow = await page.$$eval('#table-body tr.vrow', (rows) => rows.findIndex((r) => r.classList.contains('cursor') && r.classList.contains('sel')));
   check('19 Show in folder selects the folder and highlights the item', (await treeSelected()) === alpha.id && (await page.inputValue('#q')) === ''
-    && s19.selected.join() === String(target) && s19.ids[s19.cursor] === target && curRow === s19.cursor);
+    && s19.selected.join() === String(target) && s19.ids[s19.cursor] === target && curRow === s19.cursor,
+    `tree ${await treeSelected()} (want ${alpha.id}), ${s19.selected.length} selected, cursor ${s19.cursor}, row ${curRow}`);
 
-  // 4. Del on a folder with items: they move up.
+  // 4. Del on a folder with items: they move up. tauri-plugin-dialog replaces window.confirm
+  // with an async one (a native message box, answered through IPC, not CDP): `!confirm()` is
+  // then always false, so the page goes ahead without waiting for the answer. 4b reports that.
   const contents = itemsIn(alpha.id);
-  dialogsSeen.length = 0;
-  answers.push(true);
+  const confirmKind = await page.evaluate(() => window.confirm.constructor.name);
   await openFolder(alpha.id);
   await key('Delete', '#tree');
-  check('4 Del on a folder with items moves them up', dialogsSeen[0]?.type === 'confirm' && !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
-    && contents.every((id) => itemsIn(ROOT).includes(id)) && (await treeSelected()) === ROOT);
+  check('4 Del on a folder with items moves them up', !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
+    && contents.every((id) => itemsIn(ROOT).includes(id)) && (await treeSelected()) === ROOT, `${contents.length} items moved up`);
+  check('4b Del asks first and waits for the answer', confirmKind !== 'AsyncFunction', `window.confirm is ${confirmKind}: deleted before any answer`);
 
   // 12. Import a Netscape file with nested folders: under a new folder named after the file.
   await menu('import');
@@ -391,6 +394,7 @@ try {
   check('15 export everything: valid Netscape HTML, same folder tree', !all.error && JSON.stringify(all) === JSON.stringify(dbTree(ROOT)), all.error ?? `${all.links} top-level links`);
 
   // 16. Export one folder: only that subtree.
+  await key('ArrowRight', '#tree'); // expand the imported folder (selected after the import)
   await openFolder(folderRow('Kmzq Top').id);
   const sub = await exportNow('folder');
   const topTree = dbTree(folderRow('Kmzq Top').id, 'Kmzq Top');
