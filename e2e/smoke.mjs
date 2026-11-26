@@ -6,70 +6,18 @@
 //
 //   npm run smoke            (from e2e/, on Windows; closes and reopens the running app)
 
-import { chromium } from 'playwright-core';
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { connect as connectTo, debugEnv, exe, freePort, instances, log, sleep, startApp, stopApp } from './launch.mjs';
 import { restoreKeymarks, runningKeymarks } from './running.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.env.KEYMARKS_EXE ?? path.join(root, 'target', 'debug', 'keymarks.exe');
-// KEYMARKS_EXE: a build with an identifier of its own (TAURI_CONFIG at build time), so its own
-// single-instance lock. It runs beside the user's copy: only that exe is stopped, the user's
-// copy is never closed or reopened (running.mjs).
-const isolated = !!process.env.KEYMARKS_EXE;
-const ps = (cmd) => execSync(`powershell -NoProfile -Command "${cmd}"`, { windowsHide: true }).toString().trim();
-const ours = `Get-Process keymarks -ErrorAction SilentlyContinue | ? Path -eq '${exe.replace(/'/g, "''")}'`;
-/** How many copies of the app under test run (only `exe` when isolated, else any keymarks.exe). */
-const instances = () => (isolated ? Number(ps(`@(${ours}).Count`))
-  : execSync('tasklist /FI "IMAGENAME eq keymarks.exe" /NH', { windowsHide: true }).toString().split('keymarks.exe').length - 1);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (msg) => process.stderr.write(`· ${new Date().toTimeString().slice(0, 8)} ${msg}\n`);
-
-// Other apps (e.g. Electron) squat on common debug ports: ask the OS for a free one.
-const PORT = await new Promise((resolve) => {
-  const srv = net.createServer().listen(0, '127.0.0.1', () => {
-    const { port } = srv.address();
-    srv.close(() => resolve(port));
-  });
-});
-
-// Waits until the app has really exited, so its files can be deleted.
-function stopApp() {
-  if (isolated) ps(`${ours} | Stop-Process -Force`);
-  else try { execSync('taskkill /IM keymarks.exe /F', { stdio: 'ignore', windowsHide: true }); } catch { /* not running */ }
-  for (let i = 0; i < 50; i++) {
-    if (!instances()) return;
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // sleep without spawning a process
-  }
-}
-
-// On a desktop of its own (desktop.ps1): nothing the app does can reach the user's screen or focus.
-function startApp(env) {
-  execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${path.join(root, 'e2e', 'desktop.ps1')}" "${exe}"`, {
-    env: { ...process.env, ...env }, stdio: 'ignore', windowsHide: true,
-  });
-}
+const PORT = await freePort();
+const connect = () => connectTo(PORT);
 
 // Whatever Keymarks the user had open (installed or dev) is put back at the end.
 const usersKeymarks = runningKeymarks();
-
-async function connect() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`, { timeout: 5000 });
-      const page = browser.contexts()[0]?.pages().find((p) => /tauri/.test(p.url()));
-      if (page) return { browser, page };
-      await browser.close();
-    } catch { /* not up yet */ }
-    await sleep(500);
-  }
-  throw new Error(`app did not expose port ${PORT}`);
-}
 
 // ---- run ------------------------------------------------------------------------------
 
@@ -111,7 +59,7 @@ log(`starting ${exe} on a copy of the database, debug port ${PORT}`);
 // A saved preference the page must start with (settings.json seeds localStorage).
 fs.writeFileSync(path.join(work, 'settings.json'), JSON.stringify({ ui: { 'import-title-words': '1' } }));
 const webviewData = fs.mkdtempSync(path.join(os.tmpdir(), 'km-e2e-webview-'));
-startApp({ WEBVIEW2_USER_DATA_FOLDER: webviewData, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows`, KEYMARKS_DATA_DIR: work, KEYMARKS_NO_FOCUS: '1' });
+startApp({ ...debugEnv(PORT, webviewData), KEYMARKS_DATA_DIR: work });
 const { browser, page } = await connect().catch(emergencyExit);
 log(`connected to ${page.url()}`);
 
@@ -181,7 +129,7 @@ async function setOptions(fn) {
   await page.click('#status'); // outside click closes the menu
 }
 const fields = (wanted) => setOptions(async () => {
-  for (const f of ['title', 'url', 'keywords', 'description', 'notes']) {
+  for (const f of ['title', 'url', 'keywords', 'description', 'notes', 'folder']) {
     await page.setChecked(`input[name=field][value=${f}]`, wanted.includes(f));
     await idle();
   }
@@ -196,6 +144,8 @@ async function visibleCells(column) {
 
 try {
   const total = Number((await statusText()).match(/· (\d+) bookmarks/)[1]);
+  // An empty search lists the selected folder (FLD-04); Esc goes back to that listing.
+  const startListing = (await statusText()).match(/^\d+ matching in “[^”]*”/)?.[0];
 
   // 1. Operators (All fields)
   const sql = await count('sql');
@@ -259,7 +209,7 @@ try {
   check('valid search clears the error', (await count('sql')) === good && (await page.getAttribute('#q', 'aria-invalid')) === null);
   await page.press('#q', 'Escape');
   await idle();
-  check('Esc clears the search', (await page.inputValue('#q')) === '' && (await statusText()).startsWith(`${total} matching`));
+  check('Esc clears the search', (await page.inputValue('#q')) === '' && !!startListing && (await statusText()).startsWith(startListing), startListing);
   await search('sql');
   const before = await count('sql');
   const kw = await page.textContent('#kwlist li span:nth-child(2)');
@@ -531,7 +481,7 @@ try {
   pages.close();
 
   // 13. Saved searches and links (Powermarks' macros). Links are never clicked: that would open a browser.
-  const savedNames = () => page.$$eval('#savedlist li:not(.hint) span:nth-child(2)', (els) => els.map((e) => e.textContent));
+  const savedNames = () => page.$$eval('#savedlist li:not(.hint, #dup-view, #dead-view) span:nth-child(2)', (els) => els.map((e) => e.textContent));
   await setMode('keywords');
   await search('sql');
   const sqlKeywordsOnly = Number((await statusText()).match(/^(\d+)/)[1]);

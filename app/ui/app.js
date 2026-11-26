@@ -22,13 +22,27 @@ let seq = 0;
 let version = null;
 let narrowed = [];         // keyword dictionary for the current search
 let dictionary = [];       // every keyword (autocomplete, tag state)
+// Explorer style: the tree shows folders only; with the search empty, the list shows the
+// selected folder's bookmarks and notes in folder order.
+const ROOT = 1;
+let folders = [];          // every folder, root first, then by parent and position
+let folder = ROOT;         // the selected folder
+// The Duplicate URLs view (SAVD-10, Ctrl+D): the list shows the store's duplicate groups instead.
+let dupView = false;
+let dupGroup = new Map();  // id -> its group's index, while dupView
+// The Dead Links view (SAVD-09, Ctrl+L): bookmarks whose last link check found them gone.
+let deadView = false;
+// The properties panel shows the selected folder (title and note, NOTE-02) while the tree has
+// focus, and the selected bookmark once the list does.
+let folderPanel = false;
+try { folder = Number(localStorage.getItem('folder')) || ROOT; } catch {}
 
 // View and search preferences: read from localStorage, copied to settings.json on every
 // change (the app seeds localStorage from it at startup), so they travel with that file.
 // Storage may be unavailable, so never depend on it.
 const savePrefs = () => { try { invoke('save_ui_prefs', { prefs: { ...localStorage } }).catch(() => {}); } catch {} };
 savePrefs(); // also carries over preferences kept by versions before 0.8
-const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes'], match_case: false, sort: [] };
+const DEFAULT_OPTS = { mode: 'all', partial: true, fields: ['title', 'url', 'keywords', 'description', 'notes', 'folder'], match_case: false, sort: [], in_folder: false };
 let opts = { ...DEFAULT_OPTS };
 try { opts = { ...DEFAULT_OPTS, ...JSON.parse(localStorage.getItem('searchOptions') || '{}') }; } catch {}
 
@@ -57,6 +71,9 @@ function rate(row, b) {
 }
 const shortUrl = (u) => u.replace(/^(https?|ftp):\/\/(www\.)?/i, '');
 const stars = (r) => (r > 0 ? '★'.repeat(Math.ceil(r / 2)) + ' ' : '');
+// Notes are items without a URL: marked, and never opened.
+const isNote = (b) => b?.kind === 'note';
+const noteMark = (b) => (isNote(b) ? '✎ ' : '');
 // Link-check results as shown to people (symbol + words; the symbol alone marks cards).
 const CHECK_LABELS = {
   ok: '✓ OK', changed: '◆ Changed', not_found: '✗ Not found', server_not_found: '✗ Site not found',
@@ -75,7 +92,7 @@ function checkLabel(b) {
 }
 const checkMark = (b) => (waiting.has(b.id) || (b.check_enabled && b.check_status && b.check_status !== 'ok') ? checkLabel(b).split(' ')[0] + ' ' : '');
 const COLUMNS = [
-  { id: 'title', label: 'Title', width: '34%', cell: (b) => checkMark(b) + stars(b.rating) + (b.title || b.url) },
+  { id: 'title', label: 'Title', width: '34%', cell: (b) => noteMark(b) + checkMark(b) + stars(b.rating) + (b.title || b.url) },
   { id: 'url', label: 'URL', width: '24%', cell: (b) => shortUrl(b.url) },
   { id: 'keywords', label: 'Keywords', width: '18%', cell: (b) => b.keywords },
   { id: 'description', label: 'Description', width: '20%', cell: (b) => b.description },
@@ -88,6 +105,8 @@ const COLUMNS = [
   { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
   { id: 'check_status', label: 'Status', width: '9em', cell: checkLabel },
   { id: 'schedule', label: 'Schedule', width: '7em', cell: (b) => b.schedule ?? 'Manual' },
+  // ponytail: not sortable (the store has no path to sort by); add a SortKey when asked for.
+  { id: 'folder', label: 'Folder', width: '14%', cell: (b) => folderPath(b.folder_id), nosort: true },
 ];
 let view = 'cards';
 let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
@@ -132,8 +151,8 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   let n, found, v, kw, hist;
   try {
     [n, found, v, kw, hist] = await Promise.all([
-      invoke('count'), invoke('search_ids', { query: q.value, opts }), invoke('data_version'),
-      invoke('keywords', { query: q.value, opts }), invoke('history'),
+      invoke('count'), dupView ? invoke('duplicate_groups') : deadView ? invoke('dead_links') : invoke('search_ids', { query: q.value, opts: scoped() }), invoke('data_version'),
+      invoke('keywords', { query: q.value, opts: scoped() }), invoke('history'),
     ]);
   } catch (e) {
     if (mine !== seq) return;
@@ -147,6 +166,10 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
   showHistory(hist);
   const cursorId = ids[cursor];
   total = n;
+  if (dupView) {
+    dupGroup = new Map(found.flatMap((g, n) => g.map((id) => [id, n])));
+    found = found.flat();
+  }
   ids = found;
   version = v;
   narrowed = kw;
@@ -159,6 +182,7 @@ async function runRefresh(mine, { keepSelection = true } = {}) {
     selected = new Set([pendingReveal]);
     cursor = anchor = ids.indexOf(pendingReveal);
     pendingReveal = null;
+    folderPanel = false; // a new or revealed item: show it, not the folder
     revealCursor();
   }
   if (selected.size === 0 && ids.length) selected.add(ids[cursor]);
@@ -180,6 +204,30 @@ function updateTray() {
   invoke('set_tray_results', { items }).catch(() => {});
 }
 
+// The search options plus the selected folder. The store lists the folder while the search
+// is empty; a search covers the whole collection, or the folder and below when scoped (FIND-08).
+const scoped = () => ({ ...opts, folder });
+const searching = () => !!q.value.trim();
+
+function renderScope() {
+  const b = $('scope');
+  b.ariaPressed = String(!!opts.in_folder);
+  b.textContent = opts.in_folder ? `In “${folderName(folder)}”` : 'Everywhere';
+}
+
+function toggleScope() {
+  opts = { ...opts, in_folder: !opts.in_folder };
+  saveOpts();
+  renderScope();
+  if (searching()) refresh({ keepSelection: false }); else render();
+}
+$('scope').onclick = toggleScope;
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'f') return;
+  e.preventDefault();
+  toggleScope();
+});
+
 async function fetchRows(wanted) {
   const missing = [...new Set(wanted)].filter((id) => id !== undefined && !cache.has(id));
   if (!missing.length) return;
@@ -197,7 +245,11 @@ async function refreshDictionary() {
 setInterval(async () => {
   if (dirty || document.hidden) return;
   const v = await invoke('data_version').catch(() => version);
-  if (v !== version) { await refreshDictionary(); refresh(); }
+  if (v === version) return;
+  // An extension add may have made the New Item Folder; don't redraw under an inline rename.
+  if (!$('tree').querySelector('.naming')) await refreshFolders();
+  await refreshDictionary();
+  refresh();
 }, 1500);
 
 // ---- bookmark list ----------------------------------------------------------
@@ -216,9 +268,21 @@ function windowRange() {
 function render() {
   renderRows();
   renderPanel();
+  $('dup-bar').hidden = !dupView;
+  renderSaved();
+  if (deadView) {
+    return say(ids.length
+      ? `Dead Links: ${ids.length} bookmark${ids.length === 1 ? '' : 's'} whose last check found them gone (4xx, no such site, bad URL) · Del deletes · Check selected rechecks · Esc returns`
+      : 'Dead Links: none. Bookmarks show here once a link check finds them gone. Esc returns.');
+  }
+  if (dupView) {
+    return say(dupGroup.size
+      ? `Duplicate URLs: ${new Set(dupGroup.values()).size} groups, ${ids.length} bookmarks · Merge or Keep resolves the focused one's group · Ctrl+D leaves`
+      : 'Duplicate URLs: none. (http/https, www., a trailing / and the host\'s case don\'t count as different.) Ctrl+D leaves.');
+  }
   say(total === 0
     ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
-    : `${ids.length} matching · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
+    : `${ids.length} matching${!searching() ? ` in “${folderName(folder)}”` : opts.in_folder ? ` in “${folderName(folder)}” and below` : ''} · ${total} bookmarks · ${selected.size} selected · Enter opens · Del deletes`);
 }
 
 function renderRows() {
@@ -318,7 +382,7 @@ function startColMove(e, c) {
 }
 
 function renderTable() {
-  const cols = shownCols.map((id) => COLUMNS.find((c) => c.id === id)).filter(Boolean);
+  const cols = [...shownCols, ...(deadView && !shownCols.includes('folder') ? ['folder'] : [])].map((id) => COLUMNS.find((c) => c.id === id)).filter(Boolean);
   $('table-cols').replaceChildren(...cols.map(() => document.createElement('col')));
   applyColWidths(cols);
   $('table-head').replaceChildren(...cols.map((c) => {
@@ -336,8 +400,8 @@ function renderTable() {
       mark.textContent = (opts.sort[level].desc ? ' ▼' : ' ▲') + (level ? '2' : '');
       btn.append(mark);
     }
-    btn.title = 'Click to sort (again to reverse, a third time to clear) · Drag to move the column';
-    btn.onclick = () => sortBy(c);
+    btn.title = c.nosort ? 'Drag to move the column' : 'Click to sort (again to reverse, a third time to clear) · Drag to move the column';
+    if (!c.nosort) btn.onclick = () => sortBy(c);
     const grip = document.createElement('span');
     grip.className = 'grip';
     grip.title = 'Drag to resize; double-click to reset all columns';
@@ -360,7 +424,9 @@ function renderTable() {
     tr.className = 'vrow';
     tr.ariaSelected = String(selected.has(ids[i]));
     tr.classList.toggle('sel', selected.has(ids[i]));
+    tr.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     tr.classList.toggle('cursor', i === cursor);
+    tr.classList.toggle('note', isNote(b));
     rate(tr, b);
     tr.append(...cols.map((c) => {
       const td = document.createElement('td');
@@ -369,6 +435,8 @@ function renderTable() {
       if (c.num) td.className = 'num';
       return td;
     }));
+    tr.dataset.i = i;
+    tr.onpointerdown = (e) => startRowDrag(e, i);
     tr.onclick = (e) => select(i, e);
     tr.ondblclick = () => open(ids[i]);
     tr.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
@@ -403,15 +471,20 @@ function renderCards() {
     li.role = 'option';
     li.ariaSelected = String(selected.has(ids[i]));
     li.classList.toggle('sel', selected.has(ids[i]));
+    li.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     li.classList.toggle('cursor', i === cursor);
+    li.classList.toggle('note', isNote(b));
     rate(li, b);
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = b ? checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
+    title.textContent = b ? noteMark(b) + checkMark(b) + stars(b.rating) + (b.title || b.url) : '…';
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = b ? [b.keywords, b.url].filter(Boolean).join(' · ') : '';
+    // A search result also says where it is.
+    meta.textContent = b ? [searching() && folderPath(b.folder_id), b.keywords, isNote(b) ? (b.notes.split('\n')[0] || 'Note') : b.url].filter(Boolean).join(' · ') : '';
     li.append(title, meta);
+    li.dataset.i = i;
+    li.onpointerdown = (e) => startRowDrag(e, i);
     li.onclick = (e) => select(i, e);
     li.ondblclick = () => open(ids[i]);
     li.oncontextmenu = (e) => { e.preventDefault(); showBookmarkMenu(e, i); };
@@ -451,6 +524,7 @@ $('cols-menu').replaceChildren(...COLUMNS.map((c) => {
   const label = document.createElement('label');
   const box = document.createElement('input');
   box.type = 'checkbox';
+  box.value = c.id;
   box.checked = shownCols.includes(c.id);
   box.disabled = c.id === 'title';
   box.onchange = () => {
@@ -482,6 +556,7 @@ async function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } 
     anchor = i;
   }
   cursor = i;
+  folderPanel = false;
   revealCursor();
   await fetchRows([id]); // the properties panel needs it
   render();
@@ -501,12 +576,16 @@ function onListKeys(e) {
     render();
   } else if ((e.ctrlKey || e.metaKey) && ['+', '=', '-'].includes(e.key)) {
     changeRating([...selected], e.key === '-' ? -1 : 1);
+  } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey && inList) {
+    openMovePicker({ bookmarks: ids.filter((id) => selected.has(id)) });
   } else if (e.key === 'c' && (e.ctrlKey || e.metaKey) && inList) {
     copyUrls(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'x' && (e.ctrlKey || e.metaKey) && inList) {
     cut(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'v' && (e.ctrlKey || e.metaKey) && inList) {
     addFromClipboard();
+  } else if (e.key.toLowerCase() === 'l' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+    if (ids[cursor] !== undefined) reveal(ids[cursor], { inFolder: true });
   } else if (e.key === 'Delete' && inList) {
     remove([...selected]);
   } else return;
@@ -514,6 +593,7 @@ function onListKeys(e) {
 }
 
 async function open(id, { newWindow = false } = {}) {
+  if (isNote(cache.get(id))) { say('A note has no link to open.'); return; }
   try {
     await invoke(newWindow ? 'open_bookmark_new_window' : 'open_bookmark', { id });
     refresh(); // visit count changed
@@ -660,6 +740,7 @@ async function showBookmarkMenu(e, i) {
   const on = [...selected].every((id) => cache.get(id)?.check_enabled);
   m.querySelector('[data-act=checking]').textContent = on ? 'Turn link checking off' : 'Turn link checking on';
   m.querySelector('[data-act=pin]').hidden = many;
+  m.querySelector('[data-act=reveal]').hidden = many;
   m.querySelector('[data-act=copy]').textContent = many ? 'Copy URLs (Ctrl+C)' : 'Copy URL (Ctrl+C)';
   m.hidden = false;
   m.style.left = `${Math.min(e.clientX, innerWidth - m.offsetWidth - 4)}px`;
@@ -676,6 +757,8 @@ $('bctx').addEventListener('click', async (e) => {
   else if (act === 'open-new') chosen.forEach((id) => open(id, { newWindow: true }));
   else if (act === 'copy') copyUrls(chosen);
   else if (act === 'cut') cut(chosen);
+  else if (act === 'move') openMovePicker({ bookmarks: chosen });
+  else if (act === 'reveal') reveal(chosen[0], { inFolder: true });
   else if (act === 'check') startCheck(chosen);
   else if (act === 'fetch') fetchNow(chosen);
   else if (act === 'addkw') openAddKeywords(chosen);
@@ -745,6 +828,7 @@ async function runHistory(which) {
   if (!(await confirmDiscard())) return;
   try {
     const name = await invoke(which);
+    await refreshFolders(); // filing steps change the tree
     await refreshDictionary();
     await refresh();
     say(name ? `${which === 'undo' ? 'Undid' : 'Redid'}: ${name}` : `Nothing to ${which}.`);
@@ -889,6 +973,7 @@ $('settings-open').onclick = async () => {
     $('s-newwin').checked = s.open_new_window;
     $('s-hideopen').checked = s.hide_after_open;
     $('s-hidemin').checked = s.hide_when_minimized;
+    $('s-folderkw').checked = s.folder_keywords;
     $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
     $('settings').showModal();
@@ -920,6 +1005,7 @@ $('s-save').onclick = busyAware(async () => {
     open_new_window: $('s-newwin').checked,
     hide_after_open: $('s-hideopen').checked,
     hide_when_minimized: $('s-hidemin').checked,
+    folder_keywords: $('s-folderkw').checked,
     schedules: $('s-schedules').value,
   };
   try {
@@ -991,13 +1077,26 @@ async function refreshSaved() {
 }
 
 function renderSaved() {
+  // Built in, always first (Compass's "Duplicate URLs [n]", SAVD-10).
+  const dups = Object.assign(document.createElement('li'), { id: 'dup-view', title: 'Bookmarks whose URLs are the same link · Ctrl+D' });
+  dups.classList.toggle('active', dupView);
+  dups.append(Object.assign(document.createElement('span'), { textContent: '⧉', ariaHidden: 'true' }),
+    Object.assign(document.createElement('span'), { textContent: dupView ? `Duplicate URLs [${new Set(dupGroup.values()).size}]` : 'Duplicate URLs' }),
+    Object.assign(document.createElement('span'), { className: 'n', textContent: 'Ctrl+D' }));
+  dups.onclick = () => toggleDupView();
+  const dead = Object.assign(document.createElement('li'), { id: 'dead-view', title: 'Bookmarks whose link check found them gone · Ctrl+L' });
+  dead.classList.toggle('active', deadView);
+  dead.append(Object.assign(document.createElement('span'), { textContent: '✗', ariaHidden: 'true' }),
+    Object.assign(document.createElement('span'), { textContent: deadView ? `Dead Links [${ids.length}]` : 'Dead Links' }),
+    Object.assign(document.createElement('span'), { className: 'n', textContent: 'Ctrl+L' }));
+  dead.onclick = () => toggleDeadView();
   if (!savedItems.length) {
-    $('savedlist').replaceChildren(Object.assign(document.createElement('li'), {
+    $('savedlist').replaceChildren(dups, dead, Object.assign(document.createElement('li'), {
       className: 'hint', textContent: 'Save searches with ☆ and pin links from a bookmark.',
     }));
     return;
   }
-  $('savedlist').replaceChildren(...savedItems.map((item, i) => {
+  $('savedlist').replaceChildren(dups, dead, ...savedItems.map((item, i) => {
     const li = document.createElement('li');
     li.title = (item.kind === 'link' ? item.url : item.query) + ' · click to run, right-click for more';
     const icon = document.createElement('span');
@@ -1028,6 +1127,49 @@ async function runSaved(item) {
   await refresh({ keepSelection: false });
   say(`Saved search "${item.name}": ${ids.length} matching.`);
 }
+
+async function toggleDupView(on = !dupView) {
+  if (!(await confirmDiscard())) return;
+  dupView = on;
+  deadView = false;
+  await refresh({ keepSelection: false });
+}
+
+async function toggleDeadView(on = !deadView) {
+  if (!(await confirmDiscard())) return;
+  deadView = on;
+  dupView = false;
+  await refresh({ keepSelection: false });
+}
+document.addEventListener('keydown', (e) => {
+  const ctrlL = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'l';
+  const esc = e.key === 'Escape' && deadView && !document.querySelector('dialog[open]') && !e.target.closest('input, textarea, select, [contenteditable]');
+  if (!ctrlL && !esc) return;
+  if (ctrlL && e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  toggleDeadView(ctrlL ? undefined : false);
+});
+
+// Merge: the focused bookmark takes the others' keywords and fills its empty fields from
+// them; Keep: the others are just deleted. Either way one undo step (Ctrl+Z).
+async function resolveDuplicates(merge) {
+  const keep = ids[cursor];
+  if (!dupView || keep === undefined) return;
+  try {
+    const n = await invoke('merge_duplicates', { keep, merge });
+    await refreshDictionary();
+    await refresh();
+    say(`${merge ? 'Merged' : 'Deleted'} ${n} duplicate${n === 1 ? '' : 's'} of “${cache.get(keep)?.title || 'the focused bookmark'}”. Ctrl+Z undoes it.`);
+  } catch (e) { fail('Duplicates')(e); }
+}
+$('dup-merge').onclick = busyAware(() => resolveDuplicates(true));
+$('dup-keep').onclick = busyAware(() => resolveDuplicates(false));
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'd') return;
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  toggleDupView();
+});
 
 // One dialog for saving/editing both kinds. `item.id` 0 means new.
 let savedDraft = null;
@@ -1105,6 +1247,444 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ---- folder tree (Explorer style: folders only; the list shows the selected one) -----
+
+const folderName = (id) => folders.find((f) => f.id === id)?.name ?? '';
+const childFolders = (id) => folders.filter((f) => f.parent_id === id); // already in position order
+
+async function refreshFolders() {
+  folders = await invoke('folders');
+  if (!folders.some((f) => f.id === folder)) setFolder(ROOT, { load: false }); // deleted elsewhere
+  renderTree();
+}
+
+/** The folders the tree shows, in order, with their depth: the root is always open. */
+// ponytail: renders every visible folder (no virtual scrolling); fine for hundreds, virtualise if trees get huge.
+function visibleFolders(all = false) {
+  const out = [];
+  const walk = (f, depth) => {
+    out.push([f, depth]);
+    if (all || f.id === ROOT || !f.folded) childFolders(f.id).forEach((c) => walk(c, depth + 1));
+  };
+  const root = folders.find((f) => f.id === ROOT);
+  if (root) walk(root, 0);
+  return out;
+}
+
+function renderTree() {
+  const tree = $('tree');
+  tree.replaceChildren(...visibleFolders().map(([f, depth]) => {
+    const li = document.createElement('li');
+    li.role = 'treeitem';
+    li.ariaLevel = String(depth + 1);
+    li.ariaSelected = String(f.id === folder);
+    li.dataset.id = f.id;
+    li.style.setProperty('--depth', depth);
+    const hasKids = childFolders(f.id).length > 0;
+    const open = f.id === ROOT || !f.folded;
+    if (hasKids && f.id !== ROOT) li.ariaExpanded = String(open);
+    const twisty = document.createElement('span');
+    twisty.className = 'twisty';
+    twisty.textContent = hasKids && f.id !== ROOT ? (open ? '▾' : '▸') : '';
+    twisty.onclick = (e) => { e.stopPropagation(); setFolded(f, !f.folded); };
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = f.name;
+    li.title = f.new_items ? `${f.name}: the New Item Folder (browser and clipboard adds land here)` : f.name;
+    li.classList.toggle('inbox', !!f.new_items);
+    li.append(twisty, name);
+    if (f.id !== ROOT) li.onpointerdown = (e) => startDrag(e, { folders: [f.id] }, f.parent_id, f.name);
+    li.onclick = () => { setFolder(f.id); tree.focus(); };
+    li.ondblclick = () => { if (hasKids && f.id !== ROOT) setFolded(f, !f.folded); };
+    li.oncontextmenu = async (e) => { e.preventDefault(); await setFolder(f.id); showFolderMenu(e, f); };
+    return li;
+  }));
+  $('tree-head').textContent = `Folders [${folders.length - 1}]`;
+  renderScope();
+}
+
+/** Select a folder; the list then shows it (a search in progress is cleared, unless it is
+ *  scoped to the folder: then it searches the new one). */
+async function setFolder(id, { load = true } = {}) {
+  if (load && !(await confirmDiscard())) return;
+  const changed = id !== folder || dupView || deadView;
+  if (load) dupView = deadView = false;
+  folder = id;
+  try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
+  renderTree();
+  if (folderPanel) renderPanel();
+  $('tree').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
+  if (!load) return;
+  if (opts.in_folder && searching()) { if (!changed) return; }
+  else if (q.value) q.value = '';
+  else if (!changed) return;
+  refresh({ keepSelection: false });
+}
+
+// Expand state is kept per folder in the database (FLD-08).
+async function setFolded(f, folded) {
+  f.folded = folded;
+  renderTree();
+  invoke('set_folder_folded', { id: f.id, folded }).catch(fail('Saving the tree'));
+}
+
+$('tree').addEventListener('keydown', (e) => {
+  const shown = visibleFolders().map(([f]) => f);
+  const i = shown.findIndex((f) => f.id === folder);
+  const f = shown[i];
+  if (!f) return;
+  const hasKids = childFolders(f.id).length > 0;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const next = shown[Math.max(0, Math.min(shown.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    setFolder(next.id);
+  } else if (e.key === 'ArrowRight') {
+    if (hasKids && f.folded && f.id !== ROOT) setFolded(f, false);
+    else if (hasKids) setFolder(childFolders(f.id)[0].id);
+  } else if (e.key === 'ArrowLeft') {
+    if (hasKids && !f.folded && f.id !== ROOT) setFolded(f, true);
+    else if (f.parent_id) setFolder(f.parent_id);
+  } else if (e.key === 'Home' || e.key === 'End') {
+    setFolder(shown[e.key === 'Home' ? 0 : shown.length - 1].id);
+  } else if (e.key === 'F2') {
+    renameFolder(f);
+  } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (f.id === ROOT) say('The top folder can’t move.');
+    else openMovePicker({ folders: [f.id] });
+  } else if (e.key === 'Delete') {
+    deleteFolder(f);
+  } else if (e.key === 'Enter') {
+    list.focus();
+  } else return;
+  e.preventDefault();
+});
+
+// ---- filing: New folder, Move to folder, drag and drop (FLD-16, ITEM-16, FLD-07) --------
+// Each is one undo step in the store (DATA-04); Ctrl+Z goes through runHistory.
+
+/** New folder inside `parent`, named in place in the tree (Enter keeps, Esc cancels). */
+function newFolder(parent) {
+  const p = folders.find((x) => x.id === parent);
+  if (!p || $('tree').querySelector('li.naming')) return;
+  if (parent !== ROOT && p.folded) setFolded(p, false); // show where it goes
+  const row = $('tree').querySelector(`li[data-id="${parent}"]`);
+  const li = document.createElement('li');
+  li.className = 'naming';
+  li.style.setProperty('--depth', Number(row.style.getPropertyValue('--depth')) + 1);
+  const input = document.createElement('input');
+  input.value = 'New folder';
+  input.ariaLabel = `Name of the new folder in “${p.name}”`;
+  li.append(input);
+  row.after(li);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = busyAware(async (keep) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    li.remove();
+    $('tree').focus();
+    if (!keep || !name) return;
+    try {
+      const id = await invoke('create_folder', { parent, name });
+      await refreshFolders();
+      setFolder(id);
+      say(`Folder “${name}” created. (Ctrl+Z undoes)`);
+    } catch (e) { fail('New folder')(e); }
+  });
+  input.onkeydown = (e) => {
+    e.stopPropagation(); // not the tree's keys
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+
+const folderPath = (id) => {
+  const parts = [];
+  for (let f = folders.find((x) => x.id === id); f; f = folders.find((x) => x.id === f.parent_id)) parts.unshift(f.name);
+  return parts.join(' › ');
+};
+/** Is folder `id` the folder `of` or inside it? */
+const inSubtree = (id, of) => {
+  for (let f = folders.find((x) => x.id === id); f; f = folders.find((x) => x.id === f.parent_id)) if (f.id === of) return true;
+  return false;
+};
+const describe = ({ folders: fs = [], bookmarks = [] }) => (fs.length
+  ? `folder “${folderName(fs[0])}”`
+  : bookmarks.length === 1 ? `“${cache.get(bookmarks[0])?.title || cache.get(bookmarks[0])?.url || 'the bookmark'}”` : `${bookmarks.length} bookmarks`);
+
+/** Move folders or bookmarks into `to` (at the end, or beside a child of it). */
+const moveItems = busyAware(async (what, to, beside = null) => {
+  try {
+    await invoke('move_items', { folders: what.folders ?? [], bookmarks: what.bookmarks ?? [], to, beside });
+    const dest = folders.find((x) => x.id === to);
+    if (what.folders?.length && dest && to !== ROOT && dest.folded) await invoke('set_folder_folded', { id: to, folded: false }); // show it arrive
+    await refreshFolders();
+    await refresh();
+    say(`Moved ${describe(what)} to “${folderName(to)}”. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Move')(e); }
+});
+
+// Move to folder (Ctrl+M): a folder picker with type-ahead.
+let moving = null;
+let pick = 0;
+function pickerChoices() {
+  const t = $('mv-filter').value.trim().toLowerCase();
+  return visibleFolders(true).map(([f]) => f)
+    .filter((f) => !(moving.folders ?? []).some((m) => inSubtree(f.id, m)))
+    .map((f) => [f.id, folderPath(f.id)])
+    .filter(([, path]) => !t || path.toLowerCase().includes(t));
+}
+function renderPicker() {
+  const choices = pickerChoices();
+  pick = Math.max(0, Math.min(pick, choices.length - 1));
+  $('mv-list').replaceChildren(...choices.map(([id, path], i) => {
+    const li = document.createElement('li');
+    li.role = 'option';
+    li.textContent = path;
+    li.dataset.id = id;
+    li.ariaSelected = String(i === pick);
+    li.onclick = () => { pick = i; renderPicker(); };
+    li.ondblclick = () => $('move-form').requestSubmit();
+    return li;
+  }));
+  $('mv-list').querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
+  $('mv-submit').disabled = !choices.length;
+}
+async function openMovePicker(what) {
+  if (!(what.folders?.length || what.bookmarks?.length) || !(await confirmDiscard())) return;
+  moving = what;
+  $('move-title').textContent = `Move ${describe(what)} to`;
+  $('mv-filter').value = '';
+  pick = 0;
+  renderPicker();
+  $('move-dlg').showModal();
+  $('mv-filter').focus();
+}
+$('mv-filter').addEventListener('input', () => { pick = 0; renderPicker(); });
+$('mv-filter').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  pick += e.key === 'ArrowDown' ? 1 : -1;
+  renderPicker();
+});
+$('move-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const choice = pickerChoices()[pick];
+  if (!choice) return;
+  $('move-dlg').close();
+  moveItems(moving, choice[0]);
+});
+
+// Drag and drop: pointer events, as for the columns (the webview keeps HTML drag and drop
+// for files dropped from Explorer). Onto a tree folder = into it; a folder near a tree
+// row's top or bottom edge = before or after it; a bookmark between list rows = reorder,
+// only while the list shows the folder's own order (no search, no header sort).
+function startRowDrag(e, i) {
+  const id = ids[i];
+  // The selection if the row is in it, else just this row; in list order.
+  const what = () => ({ bookmarks: selected.has(id) ? ids.filter((x) => selected.has(x)) : [id] });
+  startDrag(e, what, q.value.trim() ? null : folder, null);
+}
+
+function dropTarget(m, what, from) {
+  const el = document.elementFromPoint(m.clientX, m.clientY);
+  const li = el?.closest('#tree li[data-id]');
+  if (li) {
+    const id = Number(li.dataset.id);
+    const f = folders.find((x) => x.id === id);
+    if (what.folders?.some((x) => inSubtree(id, x))) return null; // not into itself
+    const r = li.getBoundingClientRect();
+    const y = (m.clientY - r.top) / r.height;
+    if (what.folders && id !== ROOT && y < 0.25) return { el: li, cls: 'drop-before', to: f.parent_id, beside: { folder: true, id, after: false } };
+    // After an open folder with children would look like "into its first child": not offered.
+    if (what.folders && id !== ROOT && y > 0.75 && (f.folded || !childFolders(id).length)) return { el: li, cls: 'drop-after', to: f.parent_id, beside: { folder: true, id, after: true } };
+    if (id === from) return null; // already there
+    return { el: li, cls: 'drop-in', to: id, beside: null };
+  }
+  const row = el?.closest('.vrow');
+  if (row && what.bookmarks && from === folder && !q.value.trim() && !opts.sort.length) {
+    const id = ids[Number(row.dataset.i)];
+    if (id === undefined || what.bookmarks.includes(id)) return null;
+    const r = row.getBoundingClientRect();
+    const after = m.clientY > r.top + r.height / 2;
+    return { el: row, cls: after ? 'drop-after' : 'drop-before', to: folder, beside: { folder: false, id, after } };
+  }
+  return null;
+}
+
+function startDrag(e, whatFn, from, label) {
+  if (e.button !== 0 || e.target.closest('input, button')) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let what = null;
+  let drop = null;
+  let ghost = null;
+  const clear = () => document.querySelectorAll('.drop-in, .drop-before, .drop-after').forEach((x) => x.classList.remove('drop-in', 'drop-before', 'drop-after'));
+  const end = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    removeEventListener('keydown', esc, true);
+    clear();
+    ghost?.remove();
+  };
+  const move = (m) => {
+    if (!what) {
+      if (Math.hypot(m.clientX - x0, m.clientY - y0) < 6) return;
+      what = typeof whatFn === 'function' ? whatFn() : whatFn;
+      ghost = document.createElement('div');
+      ghost.id = 'drag-ghost';
+      ghost.textContent = label ?? describe(what);
+      document.body.append(ghost);
+    }
+    ghost.style.left = `${m.clientX + 12}px`;
+    ghost.style.top = `${m.clientY + 12}px`;
+    clear();
+    drop = dropTarget(m, what, from);
+    drop?.el.classList.add(drop.cls);
+  };
+  const up = () => {
+    end();
+    if (!what) return; // a plain click
+    // The click that ends a drag is not a select. None fires if it ends on another element,
+    // so the guard lasts only for this event, never eating a later real click.
+    const stop = (k) => k.stopPropagation();
+    addEventListener('click', stop, { capture: true, once: true });
+    setTimeout(() => removeEventListener('click', stop, { capture: true }));
+    if (drop) moveItems(what, drop.to, drop.beside);
+  };
+  const esc = (k) => { if (k.key === 'Escape') { k.stopPropagation(); what = null; end(); } };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+  addEventListener('keydown', esc, true);
+}
+
+// Ctrl+Shift+N anywhere but a text field: a new folder in the selected one.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'n') return;
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  newFolder(folder);
+});
+
+const renameFolder = busyAware(async (f) => {
+  const name = prompt('Rename folder:', f.name);
+  if (!name?.trim() || name.trim() === f.name) return;
+  try {
+    await invoke('rename_folder', { id: f.id, name });
+    await refreshFolders();
+    render();
+  } catch (e) { fail('Rename')(e); }
+});
+
+const deleteFolder = busyAware(async (f) => {
+  if (f.id === ROOT) { say('The top folder can’t be deleted.'); return; }
+  const parent = folderName(f.parent_id);
+  const inbox = f.new_items ? '\n\nIt is the New Item Folder: the next add from the browser or clipboard makes a new “New” folder.' : '';
+  if (!(await ask(`Delete the folder “${f.name}”?\n\nNothing in it is deleted: its bookmarks, notes and folders move up into “${parent}”.${inbox}`))) return;
+  try {
+    await invoke('delete_folder', { id: f.id });
+    folder = f.parent_id;
+    await refreshFolders();
+    setFolder(f.parent_id, { load: false });
+    await refresh({ keepSelection: false });
+    say(`Folder “${f.name}” deleted; its contents are now in “${parent}”. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Delete folder')(e); }
+});
+
+const newNote = busyAware(async (inFolder) => {
+  const title = prompt(`New note in “${folderName(inFolder)}” (title):`);
+  if (!title?.trim()) return;
+  try {
+    const id = await invoke('add_note', { folder: inFolder, title });
+    await reveal(id);
+    say('Note added. Write it in the Notes field.');
+  } catch (e) { fail('New note')(e); }
+});
+
+let menuFolder = null;
+function showFolderMenu(e, f) {
+  menuFolder = f;
+  const ctx = $('fctx');
+  $('fctx-title').textContent = f.name;
+  for (const act of ['rename', 'move', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  ctx.querySelector('[data-act=inbox]').disabled = !!f.new_items;
+  ctx.hidden = false;
+  ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
+  ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
+  ctx.querySelector('button').focus();
+}
+$('fctx').addEventListener('click', (e) => {
+  const act = e.target.dataset?.act;
+  const f = menuFolder;
+  if (!act || !f) return;
+  $('fctx').hidden = true;
+  if (act === 'new') newFolder(f.id);
+  else if (act === 'note') newNote(f.id);
+  else if (act === 'rename') renameFolder(f);
+  else if (act === 'move') openMovePicker({ folders: [f.id] });
+  else if (act === 'delete') deleteFolder(f);
+  else if (act === 'inbox') setInbox(f);
+  else if (act === 'sort') openSort(f);
+});
+
+// Sort folder (ORD-01..03): a one-shot rewrite of the stored order, one undo step. The
+// choices are remembered for next time.
+let sortFolder = null;
+function openSort(f) {
+  sortFolder = f;
+  let o = {};
+  try { o = JSON.parse(localStorage.getItem('sort-folder') || '{}'); } catch {}
+  $('sort-title').textContent = `Sort “${f.name}”`;
+  $('so-by').value = o.by ?? 'title';
+  $('so-dir').value = o.dir ?? 'up';
+  $('so-folders').value = o.folders ?? 'first';
+  $('so-sub').checked = o.sub ?? true;
+  $('sort-dlg').showModal();
+}
+$('sort-form').addEventListener('submit', busyAware(async (e) => {
+  e.preventDefault();
+  const o = { by: $('so-by').value, dir: $('so-dir').value, folders: $('so-folders').value, sub: $('so-sub').checked };
+  try { localStorage.setItem('sort-folder', JSON.stringify(o)); savePrefs(); } catch {}
+  $('sort-dlg').close();
+  const f = sortFolder;
+  try {
+    const n = await invoke('sort_folder', { id: f.id, by: o.by, descending: o.dir === 'down', foldersAt: o.folders, recursive: o.sub });
+    await refreshFolders();
+    await refresh();
+    say(`Sorted “${f.name}”${n > 1 ? ` and ${n - 1} folder${n === 2 ? '' : 's'} below it` : ''}. Ctrl+Z undoes it.`);
+  } catch (err) { fail('Sort folder')(err); }
+}));
+
+const setInbox = busyAware(async (f) => {
+  try {
+    await invoke('set_new_item_folder', { id: f.id });
+    await refreshFolders();
+    await refresh();
+    say(`New Item Folder: “${f.name}”. Browser and clipboard adds land here. (Ctrl+Z undoes)`);
+  } catch (e) { fail('Set New Item Folder')(e); }
+});
+document.addEventListener('click', (e) => { if (!$('fctx').contains(e.target)) $('fctx').hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('fctx').hidden = true; });
+$('new-folder').onclick = () => newFolder(folder);
+
+// Saved and Keywords collapse to their headings; the choice is kept per machine.
+for (const pane of ['saved-pane', 'kw-pane']) {
+  const head = $(pane).querySelector('h2.toggle');
+  const set = (collapsed) => {
+    $(pane).classList.toggle('collapsed', collapsed);
+    head.ariaExpanded = String(!collapsed);
+  };
+  try { set(localStorage.getItem(`${pane}-collapsed`) === '1'); } catch {}
+  const toggle = () => {
+    const collapsed = !$(pane).classList.contains('collapsed');
+    set(collapsed);
+    try { localStorage.setItem(`${pane}-collapsed`, collapsed ? '1' : '0'); savePrefs(); } catch {}
+  };
+  head.onclick = toggle;
+  head.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+}
+
 // ---- keyword panel (Powermarks' Dictionary) ---------------------------------
 
 function renderKeywords() {
@@ -1141,7 +1721,7 @@ async function setSearch(text) {
   refresh({ keepSelection: false });
 }
 
-function addToSearch(keyword) {
+async function addToSearch(keyword) {
   if (opts.mode === 'exact') return setSearch(keyword);
   if (!terms(q.value).some((w) => lower(w) === lower(keyword))) setSearch(`${q.value.trim()} ${keyword}`.trim());
 }
@@ -1310,6 +1890,7 @@ $('cleanup-apply').addEventListener('click', busyAware(async () => {
 function renderPanel() {
   const one = selected.size === 1 ? cache.get([...selected][0]) : null;
   if (dirty && editing && one?.id === editing.id) return; // keep unsaved edits on screen
+  if (folderPanel) return renderFolderPanel();
   dirty = false;
   editing = one ? { ...one } : null;
   if (selected.size > 1) {
@@ -1335,6 +1916,10 @@ function renderPanel() {
   rating.append(...Array.from({ length: 11 }, (_, n) => new Option(n ? `${n} / 10` : 'Not rated', n)));
   for (const name of ['title', 'url', 'description', 'notes', 'user_field', 'rating']) {
     form.elements[name].value = editing[name] ?? '';
+  }
+  if (isNote(editing)) {
+    $('f-url').required = false;
+    for (const el of [$('f-url'), document.querySelector('label[for=f-url]'), $('pin-link'), ...form.querySelectorAll('.check-line')]) el.style.display = 'none';
   }
   chips = words(editing.keywords);
   renderChips();
@@ -1374,6 +1959,34 @@ function renderPanel() {
   };
   input.onblur = () => { if (input.value.trim()) commitChip(); };
 }
+
+// A folder's title and note (NOTE-02, ITEM-11). The note saves when the box loses focus, as
+// one undo step; it is searched with the folder path (a word in it finds what's filed below).
+function renderFolderPanel() {
+  const f = folders.find((x) => x.id === folder);
+  const box = $('fn-note');
+  if (box && document.activeElement === box && Number(box.dataset.folder) === f?.id) return; // typing
+  editing = null;
+  if (!f) return panel.replaceChildren();
+  const head = Object.assign(document.createElement('h2'), { id: 'fn-title', textContent: f.name });
+  const where = Object.assign(document.createElement('div'), { className: 'info', textContent: `Folder · ${childFolders(f.id).length} subfolders` + (!searching() && !dupView && !deadView ? ` · ${ids.length} items` : '') });
+  const label = Object.assign(document.createElement('label'), { htmlFor: 'fn-note', textContent: 'Folder notes' });
+  const note = Object.assign(document.createElement('textarea'), { id: 'fn-note', value: f.note ?? '', rows: 10, placeholder: 'What this folder is for…' });
+  note.dataset.folder = f.id;
+  note.onblur = async () => {
+    if (note.value.trim() === (f.note ?? '')) return;
+    try {
+      await invoke('set_folder_note', { id: f.id, note: note.value });
+      await refreshFolders();
+      await refresh(); // undo label, and a search may now match through the note
+      say(`Saved the note on “${f.name}”. Ctrl+Z undoes it.`);
+    } catch (e) { fail('Folder note')(e); }
+  };
+  const hint = Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Saves when you leave the box. Words in it find this folder\'s bookmarks.' });
+  panel.replaceChildren(head, where, label, note, hint);
+}
+$('tree').addEventListener('focusin', () => { if (!folderPanel) { folderPanel = true; renderPanel(); } });
+for (const el of [list, tablewrap]) el.addEventListener('focusin', () => { if (folderPanel) { folderPanel = false; renderPanel(); } });
 
 function commitChip() {
   const input = $('f-kw');
@@ -1492,7 +2105,7 @@ document.addEventListener('click', (e) => {
 });
 applyOptsToUi();
 
-q.addEventListener('input', async () => { if (await confirmDiscard()) refresh({ keepSelection: false }); });
+q.addEventListener('input', async () => { if (await confirmDiscard()) { dupView = deadView = false; refresh({ keepSelection: false }); } });
 q.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && q.value) { e.preventDefault(); setSearch(''); return; }
   onListKeys(e);
@@ -1508,10 +2121,24 @@ document.addEventListener('keydown', (e) => {
 /** Show one bookmark: clear the search if needed, then select and scroll to it. Whichever
  *  refresh first lists it does the selecting (a background fetch may refresh concurrently). */
 let pendingReveal = null;
-async function reveal(id) {
+/** `inFolder`: show it in its folder even when the list already shows it (Show in folder,
+ *  FLD-14): the folders above it open, the tree selects its folder. */
+async function reveal(id, { inFolder = false } = {}) {
+  if (inFolder && !(await confirmDiscard())) return;
   pendingReveal = id;
-  if (!ids.includes(id)) q.value = '';
+  if (inFolder || !ids.includes(id)) {
+    q.value = '';
+    const [b] = await invoke('get_bookmarks', { ids: [id] }).catch(() => []);
+    if (b && inFolder) {
+      for (let f = folders.find((x) => x.id === b.folder_id); f?.parent_id; f = folders.find((x) => x.id === f.parent_id)) {
+        const p = folders.find((x) => x.id === f.parent_id);
+        if (p.id !== ROOT && p.folded) setFolded(p, false);
+      }
+    }
+    if (b && (inFolder || b.folder_id !== folder)) setFolder(b.folder_id, { load: false });
+  }
   await refresh({ keepSelection: false });
+  if (inFolder) scroller().focus();
 }
 
 async function newBookmark() {
@@ -1526,14 +2153,16 @@ async function newBookmark() {
 async function addNewBookmark() {
   $('n-error').textContent = '';
   try {
-    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value });
+    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value, folder });
     $('new-dlg').close();
     await refreshDictionary();
     if (report.added) {
       await reveal(report.ids[0]);
       say($('n-title').value.trim() ? 'Added.' : 'Added. Fetching its title…');
     } else {
-      say('That URL is already bookmarked.');
+      const same = report.items[0];
+      if (same) await reveal(same.id);
+      say(`That URL is already bookmarked${same?.outcome === 'updated' ? ' (its empty title was filled in)' : ''}: shown.`);
     }
   } catch (e) { $('n-error').textContent = String(e); }
 }
@@ -1546,21 +2175,24 @@ $('n-cancel').onclick = () => $('new-dlg').close();
 // Cancel buttons are type=button (so Enter never means Cancel) and close their dialog.
 document.addEventListener('click', (e) => { if (e.target.matches('dialog [data-close]')) e.target.closest('dialog').close(); });
 
+const alreadyHere = (r) => (r.updated + r.skipped ? `, ${r.updated + r.skipped} already here${r.updated ? ` (${r.updated} filled in)` : ''}` : '');
+
 async function addFromClipboard() {
   if (!(await confirmDiscard())) return;
   try {
     const r = await invoke('add_from_clipboard');
+    await refreshFolders(); // the New Item Folder may have just been made
     await refreshDictionary();
     await refresh();
-    const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
-    say(`Added ${r.added} link${r.added === 1 ? '' : 's'} from the clipboard${dup}. Fetching titles… (Ctrl+Z undoes)`);
+    say(`Added ${r.added} link${r.added === 1 ? '' : 's'} from the clipboard${alreadyHere(r)}. Fetching titles… (Ctrl+Z undoes)`);
   } catch (e) { fail('Add from clipboard')(e); }
 }
 
 $('new-bookmark').onclick = () => newBookmark();
 $('add-clipboard').onclick = () => addFromClipboard();
-// Powermarks' keys: Insert adds a bookmark, Alt+Insert adds links from the clipboard.
-// (Ctrl+N works too where WebView2 doesn't keep it for itself.)
+// Powermarks' keys: Insert adds a bookmark (to the selected folder), Alt+Insert adds links
+// from the clipboard (to the New Item Folder). Ctrl+N adds a bookmark too: WebView2 passes it
+// to the page (e2e/os-keys.mjs presses it for real).
 document.addEventListener('keydown', (e) => {
   const typing = e.target.closest('input, textarea, select');
   if (e.key === 'Insert' && !e.ctrlKey && !e.altKey && !e.shiftKey && !typing) { e.preventDefault(); newBookmark(); }
@@ -1569,9 +2201,8 @@ document.addEventListener('keydown', (e) => {
 });
 // Added without the page asking: files dropped on the window, or the clipboard hotkey.
 const addedBy = (what) => async ({ payload: r }) => {
-  const dup = r.duplicates ? `, ${r.duplicates} already here` : '';
-  if (!dirty) { await refreshDictionary(); await refresh(); }
-  say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${dup}. (Ctrl+Z undoes)`);
+  if (!dirty) { await refreshFolders(); await refreshDictionary(); await refresh(); }
+  say(`Added ${r.added} ${what}${r.added === 1 ? '' : 's'}${alreadyHere(r)}. (Ctrl+Z undoes)`);
 };
 window.__TAURI__.event.listen('files-added', addedBy('file'));
 window.__TAURI__.event.listen('clipboard-added', addedBy('link'));
@@ -1589,6 +2220,8 @@ window.__TAURI__.event.listen('bookmarks-changed', async () => {
 $('export-open').onclick = () => {
   const n = (k) => k.toLocaleString();
   $('ex-all').textContent = `All ${n(total)} bookmarks`;
+  $('ex-folder').textContent = `Folder “${folderName(folder)}” and its subfolders`;
+  document.querySelector('input[name=ex-scope][value=folder]').disabled = folder === ROOT;
   $('ex-matching').textContent = `The ${n(ids.length)} matching the current search`;
   $('ex-selected').textContent = `The ${n(selected.size)} selected`;
   document.querySelector('input[name=ex-scope][value=selected]').disabled = selected.size === 0;
@@ -1624,9 +2257,9 @@ document.querySelectorAll('input[name=ex-format]').forEach((r) => { r.onchange =
 $('ex-go').onclick = busyAware(async () => {
   const format = document.querySelector('input[name=ex-format]:checked').value;
   const scope = document.querySelector('input[name=ex-scope]:checked').value;
-  const chosen = scope === 'all' ? null : scope === 'matching' ? ids : [...selected];
+  const chosen = scope === 'all' || scope === 'folder' ? null : scope === 'matching' ? ids : [...selected];
   try {
-    const done = await invoke('export_file', { format, ids: chosen, fields: exportFields, title: $('ex-title').value });
+    const done = await invoke('export_file', { format, ids: chosen, folder: scope === 'folder' ? folder : null, fields: exportFields, title: $('ex-title').value });
     if (!done) return; // save dialog cancelled
     $('export-dlg').close();
     say(`Exported ${done[0].toLocaleString()} bookmark${done[0] === 1 ? '' : 's'} to ${done[1]}.`);
@@ -1635,23 +2268,58 @@ $('ex-go').onclick = busyAware(async () => {
 
 // ---- import --------------------------------------------------------------------
 
+// The merge report (XFER-02): counts, and each link under what became of it.
+const REPORT_SHOWN = 500; // per list; the rest are counted
 function importDone(report, from) {
   if (!report) return; // file dialog cancelled
-  const dup = report.duplicates ? `, skipped ${report.duplicates} already here` : '';
-  say(`Imported ${report.added} bookmark${report.added === 1 ? '' : 's'} from ${from}${dup}. Ctrl+Z undoes it.`);
+  const fs = report.folders ? ` in ${report.folders} folder${report.folders === 1 ? '' : 's'}` : '';
+  const sum = `Merge from ${from}: ${report.added} added${fs} / ${report.updated} updated / ${report.skipped} skipped.`;
+  say(`${sum} Ctrl+Z undoes it.`);
+  $('report-sum').textContent = sum;
+  $('report-lists').replaceChildren(...[
+    ['added', 'Added'], ['updated', 'Updated: already here, empty fields filled from the import'], ['skipped', 'Skipped: already here, nothing to fill'],
+  ].map(([outcome, label]) => {
+    const rows = report.items.filter((i) => i.outcome === outcome);
+    const d = Object.assign(document.createElement('details'), { className: `report-${outcome}` });
+    d.append(Object.assign(document.createElement('summary'), { textContent: `${label} (${rows.length})` }));
+    const ul = document.createElement('ul');
+    ul.append(...rows.slice(0, REPORT_SHOWN).map((i) => {
+      const li = document.createElement('li');
+      li.append(Object.assign(document.createElement('span'), { textContent: i.title || i.url }), ' ',
+        Object.assign(document.createElement('span'), { className: 'hint', textContent: i.url }));
+      li.ondblclick = () => { $('report-dlg').close(); reveal(i.id); };
+      return li;
+    }));
+    if (rows.length > REPORT_SHOWN) ul.append(Object.assign(document.createElement('li'), { className: 'hint', textContent: `…and ${rows.length - REPORT_SHOWN} more` }));
+    d.append(ul);
+    return d;
+  }));
+  $('report-dlg').showModal();
 }
 
 async function afterImport(report, from) {
   $('import-dlg').close();
   await refreshDictionary();
+  await refreshFolders();
+  // Show what came in: the new folder if there is one.
+  if (report.folder) setFolder(report.folder, { load: false });
   await refresh({ keepSelection: false });
   importDone(report, from);
 }
+
+// The tree options every tree-keeping import passes, as chosen in the dialog.
+const importChoices = () => ({
+  titleWords: $('import-title-words').checked,
+  folderWords: $('import-folder-words').checked,
+  newFolder: document.querySelector('input[name=import-into]:checked').value === 'new',
+});
 
 importBtn.onclick = busyAware(async () => {
   if (!(await confirmDiscard())) return;
   $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'Looking for browsers…' }));
   $('import-dlg').showModal();
+  // Folder names as keywords: the Options setting, changeable here for this import (Q4).
+  try { $('import-folder-words').checked = !!(await invoke('get_settings')).folder_keywords; } catch { $('import-folder-words').checked = false; }
   try {
     const sources = await invoke('browser_sources');
     if (!sources.length) {
@@ -1665,7 +2333,7 @@ importBtn.onclick = busyAware(async () => {
       Object.assign(tr.insertCell(), { className: 'num', textContent: src.count === null ? "can't read" : `${src.count.toLocaleString()} bookmarks` });
       const btn = Object.assign(document.createElement('button'), { type: 'button', className: 'secondary', textContent: 'Import', disabled: !src.count });
       btn.onclick = busyAware(async () => {
-        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile, titleWords: $('import-title-words').checked }), `${src.browser}`); }
+        try { await afterImport(await invoke('import_browser', { browser: src.browser, profile: src.profile, ...importChoices() }), `${src.browser}`); }
         catch (e) { fail('Import')(e); }
       });
       tr.insertCell().append(btn);
@@ -1679,15 +2347,15 @@ $('import-title-words').onchange = (e) => { try { localStorage.setItem('import-t
 
 $('import-html').onclick = busyAware(async () => {
   try {
-    const report = await invoke('import_html_file', { titleWords: $('import-title-words').checked });
+    const report = await invoke('import_html_file', importChoices());
     if (report) await afterImport(report, 'the file');
   } catch (e) { fail('Import')(e); }
 });
 
 $('import-pm35').onclick = busyAware(async () => {
   try {
-    const n = await invoke('import_pm35');
-    if (n !== null) await afterImport({ added: n, duplicates: 0 }, 'Powermarks');
+    const report = await invoke('import_pm35');
+    if (report !== null) await afterImport(report, 'Powermarks');
   } catch (e) { fail('Import')(e); }
 });
 
@@ -1696,6 +2364,7 @@ $('import-pm35').onclick = busyAware(async () => {
 select = busyAware(select);
 open = busyAware(open);
 remove = busyAware(remove);
+reveal = busyAware(reveal);
 save = busyAware(save);
 runHistory = busyAware(runHistory);
 restoreBackup = busyAware(restoreBackup);
@@ -1710,4 +2379,4 @@ addFromClipboard = busyAware(addFromClipboard);
 
 setView(view);
 refreshSaved().catch(fail('Saved items'));
-refreshDictionary().then(() => refresh({ keepSelection: false }));
+Promise.all([refreshDictionary(), refreshFolders().catch(fail('Folders'))]).then(() => refresh({ keepSelection: false }));

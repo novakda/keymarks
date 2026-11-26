@@ -4,7 +4,7 @@
 //!
 //! Then start the app on it: set KEYMARKS_DATA_DIR=<folder> and run keymarks.exe.
 
-use store::{Store, browsers::read_netscape_html};
+use store::{ROOT, Store, browsers::read_netscape_html};
 
 const RATINGS: &[(&str, i64)] = &[
     ("https://www.rust-lang.org/", 9),
@@ -32,7 +32,7 @@ fn main() {
     }
     let html = include_str!("../../docs/demo/bookmarks.html");
     let mut store = Store::open(db.to_str().expect("UTF-8 path")).expect("open");
-    let report = store.import_bookmarks("Demo", &read_netscape_html(html)).expect("import");
+    let report = store.import_tree("Demo", &read_netscape_html(html), ROOT, None, false).expect("import");
     for (url, rating) in RATINGS {
         let mut b = store.find_url(url).expect("query").expect("demo bookmark");
         b.rating = *rating;

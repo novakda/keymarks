@@ -5,8 +5,9 @@
 
 **A keyword-first bookmark manager for Windows and today's browsers, rebuilt from the ideas of Powermarks 3.5.**
 
-Type a few words, see the bookmarks that match, press Enter. No folders to file things in, no
-cloud account, no browser lock-in: one local database you can search the way you think.
+Type a few words, see the bookmarks that match, press Enter. Keywords first, a folder tree
+when you want one, no cloud account, no browser lock-in: one local database you can search
+the way you think.
 
 ![Searching "rust": the list and the keyword panel narrow as you type](docs/screenshots/search.png)
 
@@ -48,13 +49,20 @@ So this project is two things:
 - **Saved searches and links**, like Powermarks' macros. Save a search with ☆ (its mode
   and fields too), pin a bookmark as a link, run any of them with a click or Alt+1…9, and
   reorder them.
+- **A folder tree, Explorer style.** Folders sit beside the list, the way Windows Explorer
+  shows them, and the list shows the chosen folder. Create, rename and delete folders in
+  place, **Move to folder** or drag and drop, and **Sort folder** by title, URL, last visit
+  or date added. Every change is one undo step.
+- **Notes.** A note can be an item of its own with no URL, and a folder can carry a note;
+  words in a folder note find what is filed below it.
 - **Editing.** A properties panel with a tag-style keyword editor and autocomplete,
   multi-select, delete, and **undo/redo** with named steps (Ctrl+Z / Ctrl+Y).
 - **Cards or table view.** Choose from 11 columns, sort by up to two keys (as the
   original did), and scroll through all your bookmarks without a cap.
 - **Browser extension** (Chrome, Edge, Firefox). One click adds the current page,
   prefilled with its title, description and keywords. On a page you already have, it
-  edits that bookmark instead. **Fast add** (Alt+Shift+K, or right-click a page or link)
+  edits that bookmark instead. Adds land in the **New Item Folder** (any folder can be
+  marked as it), and the popup can pick another. **Fast add** (Alt+Shift+K, or right-click a page or link)
   adds without a popup and tags the bookmark `new` for later review. The app's list
   updates live.
 - **Quick adding in the app.** Insert opens New bookmark, and Alt+Insert adds every link on
@@ -64,12 +72,26 @@ So this project is two things:
   runs.
 - **Link checking.** Finds dead, blocked and changed pages, a few requests at a time.
   "Changed" ignores ads, scripts and timestamps. It fixes the URLs of pages that moved
-  permanently, as an undoable step. Checks only run when you ask.
+  permanently, as an undoable step. Checks only run when you ask. The **Dead Links** view
+  (Ctrl+L) lists every bookmark found gone, across folders.
+- **One duplicate-URL rule everywhere.** Adds, the extension and imports all match URLs the
+  same way. Each import ends with a merge report (added, updated, skipped), and the
+  **Duplicate URLs** view (Ctrl+D) merges or keeps copies, undoably.
 - **Safe with your data.** It backs up on every start and keeps a copy of your largest
   collection so far, which survives an accidental mass delete. It also backs up before any
-  cleanup or restore, and you can restore from inside the app.
+  cleanup or restore, and you can restore from inside the app. A database from an older
+  version is upgraded automatically, after a backup; older versions can't open it afterwards.
 - **Import from Chrome, Edge and Firefox** (every profile), or any exported bookmarks
-  file. Folders become keywords, duplicates are skipped, and each import can be undone.
+  file. Folders come in as folders (folder names as keywords only if you ask), duplicates
+  are merged, and each import can be undone.
+- **Export keeps the folders.** Bookmarks HTML (for any browser, or back into Keymarks)
+  writes the tree in your order, empty folders, folder notes, notes and descriptions
+  included; export everything, one folder and its subfolders, a search or the selection.
+  Keymarks JSON carries every field and the tree.
+- **Search knows the folders.** Folder names count as words (`sea eng` finds what sits in
+  "Search engines"); the Folder field and column show the path. Search everywhere or only
+  in the selected folder and below (Ctrl+Shift+F); Show in folder (Ctrl+Shift+L) finds a
+  result in the tree.
 - **Lossless Powermarks import, and export back.** It reads `pm35.htm` byte for byte and
   repairs text the original had stored double- or triple-encoded, even when one field mixes
   encodings. It can write a `pm35.htm` the original program can open again, or a bookmarks
@@ -169,7 +191,7 @@ A few decisions worth noting:
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
   round-trip and timing on a real collection, an exact-undo check after a full cleanup, and
   both export formats read back field by field.
-- **End-to-end** (`e2e/`, 49 checks in about 30 s): starts the real app with WebView2's
+- **End-to-end** (`e2e/`: `npm run smoke`, 86 checks, and `npm run folders`, 33): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
   sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
   a link check against a local test server (it never contacts real sites).
@@ -177,6 +199,9 @@ A few decisions worth noting:
   - Its checks compare results to each other rather than to fixed numbers (for example,
     `a b` returns no more than `a`), so they pass on anyone's collection.
   - Its output contains counts only, never bookmark text.
+  - `npm run keys` presses the shortcut keys through Windows SendInput, the path a real
+    keyboard takes after its driver (CDP key events don't). It needs the isolated
+    build in `KEYMARKS_EXE`, an empty data folder, and takes focus for about 15 s.
 
 ### 5. Working with an AI assistant
 
@@ -197,7 +222,8 @@ Requirements: Windows 10/11, the [Rust](https://rustup.rs) MSVC toolchain, and V
 Build Tools with C++. WebView2 ships with Windows.
 
 ```powershell
-cargo build --workspace                      # app + native host
+cargo build --release -p keymarks-host       # first: the app bundles the release host
+cargo build --workspace                      # then the app (and a debug host)
 target\debug\keymarks-host.exe --install     # register the host for Chrome, Edge, Firefox
 target\debug\keymarks.exe                    # run; use "Import pm35.htm…" or the extension
 ```
@@ -206,8 +232,9 @@ To load the extension: open `chrome://extensions` (or `edge://extensions`), turn
 **Developer mode**, click **Load unpacked**, and choose `extension/`. In Firefox, use
 `about:debugging` and load it as a temporary add-on.
 
-Tests: `cargo test --workspace`, then `cd e2e && npm install && npm run smoke`. The
-end-to-end test closes and reopens the app.
+Tests: `cargo test --workspace`, then `cd e2e && npm install && npm run smoke && npm run folders`.
+The end-to-end tests close and reopen the app, unless `KEYMARKS_EXE` points at a build with
+its own identifier, which runs beside yours.
 
 Data lives in `%APPDATA%\com.pattern158.keymarks\` (`bookmarks.db`, `settings.json`,
 `backups\`).
@@ -217,7 +244,7 @@ Data lives in `%APPDATA%\com.pattern158.keymarks\` (`bookmarks.db`, `settings.js
 Next, from the requirements doc:
 
 - **Scheduled link checking** (opt-in), plus pause and resume.
-- **Two-way sync** between PCs.
+- **Two-way sync** between PCs, folders included.
 
 ## Licence
 

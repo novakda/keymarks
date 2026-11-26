@@ -16,6 +16,8 @@
   input, textarea, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; }
   #q { flex: 1; font-size: 16px; padding: 8px 10px; }
   #q[aria-invalid=true] { border-color: var(--danger); }
+  #scope { max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #scope[aria-pressed=true] { background: var(--sel); }
   #mode { width: auto; }
   .seg { display: flex; }
   .seg button { border-radius: 0; border-color: var(--line); }
@@ -71,10 +73,44 @@
   nav .tools { padding: 0 8px 6px; display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   nav .tools input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -2px; }
   #kwlist { flex: 1; }
-  #savedlist { max-height: 35%; flex: none; }
+  #savedlist { max-height: 35vh; flex: none; }
+  /* Left column: the folder tree, then the Saved and Keywords panes (collapsible). */
+  nav .pane { display: flex; flex-direction: column; min-height: 0; }
+  #tree-pane { flex: 1 1 40%; border-bottom: 1px solid var(--line); }
+  #kw-pane { flex: 1 1 45%; border-top: 1px solid var(--line); }
+  nav .pane.collapsed { flex: none; }
+  nav .pane.collapsed > :not(h2) { display: none; }
+  nav h2.toggle { cursor: pointer; user-select: none; }
+  nav h2.toggle::before { content: '▾ '; }
+  nav .pane.collapsed h2.toggle::before { content: '▸ '; }
+  #tree { flex: 1; padding-bottom: 6px; }
+  #tree li { display: flex; align-items: center; gap: 2px; padding: 2px 8px 2px calc(8px + var(--depth) * 14px); cursor: default; user-select: none; white-space: nowrap; content-visibility: auto; contain-intrinsic-size: auto 22px; }
+  #tree li:hover { background: var(--line); }
+  #tree li[aria-selected=true] { background: var(--sel); }
+  #tree:focus-visible li[aria-selected=true] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #tree .twisty { width: 1.1em; flex: none; text-align: center; color: var(--muted); }
+  #tree .name { overflow: hidden; text-overflow: ellipsis; }
+  #tree li.inbox .name::after { content: " \2193 new"; color: var(--muted); font-size: 11px; }
+  .vrow.note .title { font-style: italic; }
+  /* Drag and drop (FLD-07): into a folder, or between rows. */
+  #tree li.drop-in { background: var(--sel); outline: 2px solid var(--accent); outline-offset: -2px; }
+  .drop-before { box-shadow: inset 0 2px var(--accent) !important; }
+  .drop-after { box-shadow: inset 0 -2px var(--accent) !important; }
+  #drag-ghost { position: fixed; z-index: 20; pointer-events: none; padding: 2px 8px; border-radius: 6px; background: var(--accent); color: #fff; font-size: 12px; white-space: nowrap; }
+  #tree li.naming input { flex: 1; min-width: 0; font: inherit; padding: 0 4px; }
+  #mv-list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; max-height: 50vh; border-top: 1px solid var(--line); }
+  #mv-list li { padding: 3px 16px; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #mv-list li[aria-selected=true] { background: var(--sel); }
   #savedlist li { display: flex; gap: 6px; padding: 3px 10px; cursor: default; user-select: none; }
   #savedlist li:hover, #savedlist li.active { background: var(--sel); }
   #savedlist .n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  /* Floats over the list: the body grid places its children automatically. */
+  #dup-bar:not([hidden]) { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+  /* The floating bar must not cover the last rows: the lists scroll past it. */
+  body:has(#dup-bar:not([hidden])) :is(#tablewrap, #list) { padding-bottom: 60px; }
+  .vrow.dupodd:not(.sel) { background: color-mix(in srgb, var(--sel) 45%, transparent); }
+  #report-lists ul { max-height: 40vh; overflow: auto; margin: 4px 0 8px; padding-left: 18px; }
+  #report-lists li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #savedlist .hint { color: var(--muted); font-size: 12px; padding: 0 10px 6px; cursor: default; }
   #kwlist li { display: flex; gap: 6px; padding: 2px 10px; cursor: default; user-select: none; content-visibility: auto; contain-intrinsic-size: auto 22px; }
   #kwlist li:hover, #kwlist li.active, #kwlist li:focus { background: var(--sel); outline: none; }
@@ -98,6 +134,8 @@
   aside { background: var(--panel); padding: 12px; overflow-y: auto; }
   aside label { display: block; margin: 10px 0 3px; font-size: 12px; color: var(--muted); }
   aside textarea { height: 64px; resize: vertical; }
+  aside #fn-note { height: 220px; }
+  #fn-title { font-size: 15px; margin: 0; overflow-wrap: anywhere; }
   .tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); cursor: text; }
   .tags:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
   .chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px; border-radius: 12px; background: var(--chip); font-size: 13px; }
@@ -115,10 +153,10 @@
   .check-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .check-line input { width: auto; margin: 0; }
 
-  #sctx, #ctx, #bctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
-  #sctx strong, #ctx strong, #bctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-  #sctx button, #ctx button, #bctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
-  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible { background: var(--sel); outline: none; }
+  #sctx, #ctx, #bctx, #fctx { position: fixed; z-index: 10; min-width: 170px; padding: 4px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+  #sctx strong, #ctx strong, #bctx strong, #fctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  #sctx button, #ctx button, #bctx button, #fctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
+  #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible, #fctx button:hover, #fctx button:focus-visible { background: var(--sel); outline: none; }
   #bctx button[hidden] { display: none; }
   #settings fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 10px; display: grid; gap: 6px; }
   #settings legend { font-weight: 600; padding: 0 4px; }
@@ -128,7 +166,7 @@
   .keys th { text-align: left; padding: 10px 0 4px; color: var(--muted); font-weight: 600; }
   .keys td { padding: 3px 16px 3px 0; vertical-align: top; }
   .keys td:first-child { white-space: nowrap; font-family: ui-monospace, monospace; }
-  #sctx hr, #ctx hr, #bctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #sctx hr, #ctx hr, #bctx hr, #fctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
   dialog { width: min(640px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
   dialog::backdrop { background: rgb(0 0 0 / .35); }
@@ -168,6 +206,7 @@
 <body>
 <header>
   <input id="q" type="search" placeholder="Type keywords…" autofocus aria-label="Search bookmarks" aria-describedby="q-help">
+  <button id="scope" type="button" class="secondary" aria-pressed="false" title="Search everywhere, or only the selected folder and its subfolders (Ctrl+Shift+F)">Everywhere</button>
   <button id="save-search" type="button" class="secondary icon" title="Save this search" aria-label="Save this search">☆</button>
   <select id="mode" aria-label="Search mode">
     <option value="all">All fields</option>
@@ -185,9 +224,10 @@
         <label><input type="checkbox" name="field" value="keywords"> Keywords</label>
         <label><input type="checkbox" name="field" value="description"> Description</label>
         <label><input type="checkbox" name="field" value="notes"> Notes</label>
+        <label><input type="checkbox" name="field" value="folder"> Folder</label>
         <label><input type="checkbox" id="opt-case"> Match case</label>
       </fieldset>
-      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · <code>rating>=7</code> by rating · Esc clears</p>
+      <p id="q-help" class="help">Words: <code>a b</code> both · <code>a | b</code> either · <code>a ! b</code> without · <code>( )</code> group · <code>word.</code> whole word · <code>rating>=7</code> by rating · folder names count too · Esc clears</p>
     </div>
   </details>
   <div class="seg" role="group" aria-label="View">
@@ -218,6 +258,7 @@
     <summary class="secondary" aria-label="More">⋯</summary>
     <div class="menu" role="menu">
       <button id="new-bookmark" type="button" role="menuitem" title="Insert">New bookmark…</button>
+      <button id="new-folder" type="button" role="menuitem" title="Ctrl+Shift+N">New folder</button>
       <button id="add-clipboard" type="button" role="menuitem" title="Alt+Insert">Add links from clipboard</button>
       <button id="import" type="button" role="menuitem">Import…</button>
       <button id="export-open" type="button" role="menuitem">Export…</button>
@@ -229,17 +270,30 @@
   </details>
 </header>
 
-<nav aria-label="Saved searches and keywords">
-  <h2 id="saved-head">Saved</h2>
-  <ul id="savedlist" aria-label="Saved searches and links"></ul>
-  <h2 id="kw-head">Keywords</h2>
-  <div class="tools">
-    <input id="kw-filter" type="search" placeholder="Find keyword…" aria-label="Find keyword">
-    <label><input id="kw-tagged" type="checkbox">Tagged only</label>
-    <button id="cleanup-open" type="button" class="secondary">Clean up keywords…</button>
-  </div>
-  <ul id="kwlist" aria-label="Keywords"></ul>
+<nav aria-label="Folders, saved searches and keywords">
+  <section class="pane" id="tree-pane">
+    <h2 id="tree-head">Folders</h2>
+    <ul id="tree" role="tree" aria-label="Folders" tabindex="0"></ul>
+  </section>
+  <section class="pane" id="saved-pane">
+    <h2 id="saved-head" class="toggle" role="button" tabindex="0" aria-expanded="true" title="Show or hide">Saved</h2>
+    <ul id="savedlist" aria-label="Saved searches and links"></ul>
+  </section>
+  <section class="pane" id="kw-pane">
+    <h2 id="kw-head" class="toggle" role="button" tabindex="0" aria-expanded="true" title="Show or hide">Keywords</h2>
+    <div class="tools">
+      <input id="kw-filter" type="search" placeholder="Find keyword…" aria-label="Find keyword">
+      <label><input id="kw-tagged" type="checkbox">Tagged only</label>
+      <button id="cleanup-open" type="button" class="secondary">Clean up keywords…</button>
+    </div>
+    <ul id="kwlist" aria-label="Keywords"></ul>
+  </section>
 </nav>
+<div id="dup-bar" role="toolbar" aria-label="Duplicate URLs" hidden>
+  <span>Focused bookmark:</span>
+  <button id="dup-merge" type="button" title="Keep the focused bookmark; it takes the other copies' keywords and fills its empty fields from them; the copies are deleted">Merge group into it</button>
+  <button id="dup-keep" type="button" class="secondary" title="Keep the focused bookmark as it is; delete the other copies">Keep it, delete the others</button>
+</div>
 <ul id="list" role="listbox" aria-label="Bookmarks" aria-multiselectable="true" tabindex="0"></ul>
 <div id="tablewrap" tabindex="0" hidden>
   <table id="table" aria-label="Bookmarks" aria-multiselectable="true">
@@ -269,11 +323,19 @@
       <tr><th colspan="2">Finding</th></tr>
       <tr><td>Type</td><td>Search as you type (see the Options menu for syntax)</td></tr>
       <tr><td>Esc</td><td>Clear the search</td></tr>
+      <tr><td>Ctrl+Shift+F</td><td>Search everywhere / only in the selected folder and its subfolders</td></tr>
+      <tr><td>Ctrl+Shift+L</td><td>Show the selected bookmark in its folder</td></tr>
       <tr><td>↑ ↓ PgUp PgDn Home End</td><td>Move through the list (Shift extends the selection)</td></tr>
       <tr><td>Ctrl+A</td><td>Select all shown</td></tr>
       <tr><td>Alt+← →</td><td>Previous / next bookmark, also while editing (saves the edits)</td></tr>
       <tr><td>Alt+1…9</td><td>Run a saved search or link</td></tr>
       <tr><td>Enter / Ctrl+Enter</td><td>In the keyword list: search for it / add it to the search</td></tr>
+      <tr><th colspan="2">Folders</th></tr>
+      <tr><td>Ctrl+Shift+N</td><td>New folder inside the selected one (type its name, Enter)</td></tr>
+      <tr><td>Ctrl+M</td><td>Move the selected bookmarks (in the list) or folder (in the tree) to a folder</td></tr>
+      <tr><td>Drag</td><td>Bookmarks onto a folder to move them; folders onto or between folders; within a folder's list to reorder (when the list isn't sorted)</td></tr>
+      <tr><td>↑ ↓ ← →</td><td>In the folder tree: move, collapse, expand</td></tr>
+      <tr><td>F2 / Del</td><td>In the folder tree: rename / delete the folder (its contents move up)</td></tr>
       <tr><th colspan="2">Bookmarks</th></tr>
       <tr><td>Enter</td><td>Open</td></tr>
       <tr><td>Shift+Enter</td><td>Open in a new browser window</td></tr>
@@ -306,6 +368,8 @@
   <button role="menuitem" data-act="open-new">Open in new window (Shift+Enter)</button>
   <button role="menuitem" data-act="copy">Copy URL (Ctrl+C)</button>
   <button role="menuitem" data-act="cut">Cut (Ctrl+X)</button>
+  <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
+  <button role="menuitem" data-act="reveal">Show in folder (Ctrl+Shift+L)</button>
   <button role="menuitem" data-act="visited">Mark visited</button>
   <hr>
   <button role="menuitem" data-act="check">Check link (Ctrl+T)</button>
@@ -320,6 +384,31 @@
   <button role="menuitem" data-act="delete">Delete… (Del)</button>
 </div>
 
+<dialog id="move-dlg" aria-labelledby="move-title">
+  <form method="dialog" id="move-form">
+    <h2 id="move-title">Move to folder</h2>
+    <div class="settings-body">
+      <input id="mv-filter" autocomplete="off" placeholder="Type to find a folder" aria-label="Find a folder" aria-controls="mv-list">
+    </div>
+    <ul id="mv-list" role="listbox" aria-label="Folders"></ul>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit" id="mv-submit">Move</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="fctx" role="menu" hidden>
+  <strong id="fctx-title"></strong>
+  <button role="menuitem" data-act="new">New folder (Ctrl+Shift+N)</button>
+  <button role="menuitem" data-act="note">New note…</button>
+  <button role="menuitem" data-act="rename">Rename… (F2)</button>
+  <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
+  <button role="menuitem" data-act="sort">Sort folder…</button>
+  <button role="menuitem" data-act="inbox" title="Bookmarks added from the browser and the clipboard land here">Set as New Item Folder</button>
+  <hr>
+  <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
+</div>
 <div id="sctx" class="ctxmenu" role="menu" hidden>
   <strong id="sctx-title"></strong>
   <button role="menuitem" data-act="run">Run</button>
@@ -330,6 +419,36 @@
   <hr>
   <button role="menuitem" data-act="delete">Delete…</button>
 </div>
+
+<dialog id="report-dlg" aria-labelledby="report-title">
+  <form method="dialog">
+    <h2 id="report-title">Merge report</h2>
+    <p id="report-sum"></p>
+    <div id="report-lists"></div>
+    <p class="hint">Double-click a line to show the bookmark. Ctrl+Z undoes the whole import.</p>
+    <div class="row"><button value="close">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="sort-dlg" aria-labelledby="sort-title">
+  <form method="dialog" id="sort-form">
+    <h2 id="sort-title">Sort folder</h2>
+    <div class="settings-body">
+      <p class="help">Rewrites the folder's stored order. Ctrl+Z undoes it.</p>
+      <label for="so-by">Sort by</label>
+      <select id="so-by"><option value="title">Title</option><option value="url">URL</option><option value="last_visit">Last visit</option><option value="added">Added</option></select>
+      <label for="so-dir">Order</label>
+      <select id="so-dir"><option value="up">Ascending (A→Z, oldest first)</option><option value="down">Descending (Z→A, newest first)</option></select>
+      <label for="so-folders">Folders</label>
+      <select id="so-folders"><option value="first">First</option><option value="last">Last</option><option value="mixed">Mixed in</option></select>
+      <label><input type="checkbox" id="so-sub" checked> Sort sub-folders too</label>
+    </div>
+    <div class="row">
+      <button type="button" class="secondary" data-close>Cancel</button>
+      <button type="submit">Sort</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="saved-dlg" aria-labelledby="saved-title">
   <form method="dialog" id="saved-form">
@@ -364,8 +483,13 @@
 <dialog id="import-dlg" aria-labelledby="import-title">
   <form method="dialog">
     <h2 id="import-title">Import bookmarks</h2>
-    <p class="intro">Bookmarks are merged in: folder names become keywords, and links you already have are skipped. Each import can be undone with Ctrl+Z.</p>
+    <p class="intro">Folders come in as folders, in their order. Links you already have are not added again (http/https, www., a trailing / and the host's case don't count as different); one already here takes any field it has empty from the import. A report lists what was added, updated and skipped. Each import can be undone with Ctrl+Z.</p>
+    <fieldset class="plain"><legend>Put it</legend>
+      <label><input type="radio" name="import-into" value="new" checked> In a new folder named after the browser or file</label>
+      <label><input type="radio" name="import-into" value="tree"> Straight into the tree (folders with the same name are merged)</label>
+    </fieldset>
     <div id="import-sources"></div>
+    <label class="check"><input id="import-folder-words" type="checkbox"> Also add folder names as keywords</label>
     <label class="check"><input id="import-title-words" type="checkbox"> Also make keywords from title words (common words left out)</label>
     <div class="row">
       <button id="import-html" type="button" class="secondary" title="Browser bookmarks HTML, any web page (its links) or a Keymarks JSON export">Bookmarks, web page or JSON file…</button>
@@ -426,7 +550,7 @@
     <h2 id="export-title">Export bookmarks</h2>
     <div class="settings-body">
       <fieldset class="plain"><legend>Format</legend>
-        <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (keywords become tags)</label>
+        <label><input type="radio" name="ex-format" value="html" checked> Bookmarks HTML: import into Chrome, Edge, Firefox or any browser (folders kept, keywords become tags)</label>
         <label><input type="radio" name="ex-format" value="pm35"> Powermarks 3.5 (pm35.htm): open in the original Powermarks</label>
         <label><input type="radio" name="ex-format" value="csv"> CSV: open in Excel or any spreadsheet</label>
         <label><input type="radio" name="ex-format" value="print"> Printable list: a web page with a table, to read or print</label>
@@ -439,6 +563,7 @@
       </fieldset>
       <fieldset class="plain"><legend>Which bookmarks</legend>
         <label><input type="radio" name="ex-scope" value="all" checked> <span id="ex-all">All</span></label>
+        <label><input type="radio" name="ex-scope" value="folder"> <span id="ex-folder">This folder</span></label>
         <label><input type="radio" name="ex-scope" value="matching"> <span id="ex-matching">Matching the search</span></label>
         <label><input type="radio" name="ex-scope" value="selected"> <span id="ex-selected">Selected</span></label>
       </fieldset>
@@ -471,9 +596,10 @@
         <label for="s-cliphotkey">Hotkey to add the links on the clipboard, from anywhere</label>
         <input id="s-cliphotkey" placeholder="Press a key combination (empty = none)">
       </fieldset>
-      <fieldset><legend>Adding</legend>
+      <fieldset><legend>Adding and importing</legend>
         <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
         <input id="s-fast" placeholder="e.g. new">
+        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
       </fieldset>
       <fieldset><legend>Link checking</legend>
         <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>

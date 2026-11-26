@@ -2,9 +2,10 @@
 //! `pm35.htm` (the original program can open it again), CSV, a printable HTML table and
 //! full-fidelity JSON (which Keymarks imports back).
 
-use crate::{Result, SavedItem, Store};
-use pm35::{Database, Entry, field};
+use crate::{Entry, Folder, Result, SavedItem, Store};
+use pm35::{Database, field};
 use rusqlite::params;
+use std::collections::{HashMap, HashSet};
 
 /// Everything an export needs about one bookmark.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -26,34 +27,108 @@ pub struct ExportRow {
     pub schedule: Option<String>,
     /// The record imported from Powermarks, if any (kept so unknown fields survive).
     pub pm_mdata: Option<String>,
+    /// "bookmark" (also when empty, for files written before folders), or "note" (no URL).
+    pub kind: String,
+    /// The folder it sits in (0: unknown, the top level) and its place there.
+    pub folder_id: i64,
+    pub position: i64,
+}
+
+/// What an export covers: rows, and for a folder (or everything) the folders below it, so
+/// the tree can be written out. `top` is the folder whose contents become the top level;
+/// None is a flat list (a selection or search), kept in its given order.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Tree {
+    pub top: Option<i64>,
+    pub folders: Vec<Folder>,
+    #[serde(rename = "bookmarks")]
+    pub rows: Vec<ExportRow>,
+}
+
+impl Tree {
+    pub fn flat(rows: Vec<ExportRow>) -> Tree {
+        Tree { top: None, folders: Vec::new(), rows }
+    }
+
+    /// The tree in stored order as import entries (what `Store::import_tree` takes). Rows
+    /// whose folder isn't in the tree come last at the top level, in their given order.
+    pub fn entries(&self) -> Vec<Entry> {
+        // Children per folder: (position, folders before items, index into folders or rows).
+        let mut kids: HashMap<i64, Vec<(i64, bool, usize)>> = HashMap::new();
+        for (i, f) in self.folders.iter().enumerate() {
+            kids.entry(f.parent_id.unwrap_or(0)).or_default().push((f.position, false, i));
+        }
+        let known: HashSet<i64> = self.top.into_iter().chain(self.folders.iter().map(|f| f.id)).collect();
+        let mut loose = Vec::new();
+        for (i, r) in self.rows.iter().enumerate() {
+            if known.contains(&r.folder_id) {
+                kids.entry(r.folder_id).or_default().push((r.position, true, i));
+            } else {
+                loose.push(i);
+            }
+        }
+        for v in kids.values_mut() {
+            v.sort(); // stable on ties: folders first, then source order (as `siblings` does)
+        }
+        fn walk(t: &Tree, kids: &HashMap<i64, Vec<(i64, bool, usize)>>, folder: i64, out: &mut Vec<Entry>) {
+            for &(_, item, i) in kids.get(&folder).into_iter().flatten() {
+                if item {
+                    out.push(Entry::Row(Box::new(t.rows[i].clone())));
+                } else {
+                    let f = &t.folders[i];
+                    out.push(Entry::Folder { name: f.name.clone(), note: f.note.clone(), added: Some(f.added) });
+                    walk(t, kids, f.id, out);
+                    out.push(Entry::Close);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(top) = self.top {
+            walk(self, &kids, top, &mut out);
+        }
+        out.extend(loose.into_iter().map(|i| Entry::Row(Box::new(self.rows[i].clone()))));
+        out
+    }
+
+    /// The rows in tree order, for the formats without folders (CSV, printable, pm35).
+    pub fn rows_in_order(&self) -> Vec<ExportRow> {
+        self.entries().into_iter().filter_map(|e| if let Entry::Row(r) = e { Some(*r) } else { None }).collect()
+    }
+}
+
+const ROW_COLS: &str = "url, title, keywords, description, notes, user_field, added, last_visited, last_modified, \
+                        last_checked, visits, rating, check_enabled, pm_mdata, schedule, kind, folder_id, position";
+
+fn export_row(r: &rusqlite::Row) -> Result<ExportRow> {
+    Ok(ExportRow {
+        url: r.get(0)?,
+        title: r.get(1)?,
+        keywords: r.get(2)?,
+        description: r.get(3)?,
+        notes: r.get(4)?,
+        user_field: r.get(5)?,
+        added: r.get(6)?,
+        last_visited: r.get(7)?,
+        last_modified: r.get(8)?,
+        last_checked: r.get(9)?,
+        visits: r.get(10)?,
+        rating: r.get(11)?,
+        check_enabled: r.get(12)?,
+        pm_mdata: r.get(13)?,
+        schedule: r.get(14)?,
+        kind: r.get(15)?,
+        folder_id: r.get(16)?,
+        position: r.get(17)?,
+    })
 }
 
 impl Store {
     /// Rows to export: the given ids in that order, or every bookmark (oldest first).
     pub fn export_rows(&self, ids: Option<&[i64]>) -> Result<Vec<ExportRow>> {
-        let cols = "url, title, keywords, description, notes, user_field, added, last_visited, last_modified, \
-                    last_checked, visits, rating, check_enabled, pm_mdata, schedule";
-        let map = |r: &rusqlite::Row| {
-            Ok(ExportRow {
-                url: r.get(0)?,
-                title: r.get(1)?,
-                keywords: r.get(2)?,
-                description: r.get(3)?,
-                notes: r.get(4)?,
-                user_field: r.get(5)?,
-                added: r.get(6)?,
-                last_visited: r.get(7)?,
-                last_modified: r.get(8)?,
-                last_checked: r.get(9)?,
-                visits: r.get(10)?,
-                rating: r.get(11)?,
-                check_enabled: r.get(12)?,
-                pm_mdata: r.get(13)?,
-                schedule: r.get(14)?,
-            })
-        };
+        let cols = ROW_COLS;
         match ids {
-            None => self.conn.prepare(&format!("SELECT {cols} FROM bookmark ORDER BY coalesce(added, 0), id"))?.query_map([], map)?.collect(),
+            None => self.conn.prepare(&format!("SELECT {cols} FROM bookmark ORDER BY coalesce(added, 0), id"))?.query_map([], export_row)?.collect(),
             Some(ids) => {
                 let json = serde_json::to_string(ids).expect("ids serialize");
                 // json_each keeps the requested order via its key.
@@ -61,19 +136,37 @@ impl Store {
                     .prepare(&format!(
                         "SELECT {cols} FROM json_each(?1) j JOIN bookmark b ON b.id = j.value ORDER BY j.key"
                     ))?
-                    .query_map(params![json], map)?
+                    .query_map(params![json], export_row)?
                     .collect()
             }
         }
     }
+
+    /// Folder `top` and everything below it (XFER-16 range "a folder"; ROOT is everything).
+    /// A missing folder gives an empty tree.
+    pub fn export_tree(&self, top: i64) -> Result<Tree> {
+        let sub = "WITH RECURSIVE sub(id) AS (SELECT id FROM folder WHERE id = ?1
+                   UNION ALL SELECT f.id FROM folder f JOIN sub ON f.parent_id = sub.id)";
+        let folders = self
+            .conn
+            .prepare(&format!("{sub} SELECT {} FROM folder WHERE id IN sub AND id <> ?1 ORDER BY parent_id, position, id", crate::folders::FOLDER_COLS))?
+            .query_map([top], crate::folders::folder_row)?
+            .collect::<Result<_>>()?;
+        let rows = self
+            .conn
+            .prepare(&format!("{sub} SELECT {ROW_COLS} FROM bookmark WHERE folder_id IN sub ORDER BY folder_id, position, id"))?
+            .query_map([top], export_row)?
+            .collect::<Result<_>>()?;
+        Ok(Tree { top: Some(top), folders, rows })
+    }
 }
 
 impl Store {
-    /// A Powermarks file of `ids` (or everything), with Saved items as macros and tagged
-    /// keywords, so Powermarks 3.5 gets those back too.
-    pub fn export_pm35(&self, ids: Option<&[i64]>) -> Result<Vec<u8>> {
+    /// A Powermarks file of `rows`, with Saved items as macros and tagged keywords, so
+    /// Powermarks 3.5 gets those back too.
+    pub fn export_pm35(&self, rows: &[ExportRow]) -> Result<Vec<u8>> {
         let tagged: Vec<String> = self.conn.prepare("SELECT keyword FROM tagged_keyword ORDER BY keyword")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
-        Ok(to_pm35_with(&self.export_rows(ids)?, &self.saved_items()?, &tagged))
+        Ok(to_pm35_with(rows, &self.saved_items()?, &tagged))
     }
 }
 
@@ -180,23 +273,25 @@ pub fn to_printable(rows: &[ExportRow], fields: &[String], title: &str) -> Strin
     out + "</tbody></table>\n</body></html>\n"
 }
 
-/// Every field of every row, for scripts and for importing back into Keymarks.
-pub fn to_json(rows: &[ExportRow]) -> String {
-    serde_json::to_string_pretty(&serde_json::json!({ "format": "keymarks-1", "bookmarks": rows })).expect("rows serialize")
+/// Every field of every row, and the folders, for scripts and for importing back into Keymarks.
+pub fn to_json(tree: &Tree) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({ "format": "keymarks-1", "top": tree.top, "folders": tree.folders, "bookmarks": tree.rows }))
+        .expect("rows serialize")
 }
 
-/// The bookmarks in a Keymarks JSON export.
-pub fn read_json(text: &str) -> std::result::Result<Vec<ExportRow>, String> {
+/// The tree in a Keymarks JSON export (files from before folders read as a flat list).
+pub fn read_json(text: &str) -> std::result::Result<Tree, String> {
     #[derive(serde::Deserialize)]
     struct File {
         format: String,
-        bookmarks: Vec<ExportRow>,
+        #[serde(flatten)]
+        tree: Tree,
     }
     let file: File = serde_json::from_str(text).map_err(|e| format!("not a Keymarks JSON export: {e}"))?;
     if file.format != "keymarks-1" {
         return Err(format!("unknown Keymarks JSON format {}", file.format));
     }
-    Ok(file.bookmarks)
+    Ok(file.tree)
 }
 
 #[cfg(test)]
@@ -208,29 +303,58 @@ fn html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// Netscape bookmark HTML. No folders: keywords travel as Firefox-style TAGS, so importing
-/// the file back into Keymarks gives the same keywords.
-pub fn to_netscape(rows: &[ExportRow]) -> String {
+/// Text for a `<DD>`: escaped, line breaks as `<BR>`.
+fn dd_text(s: &str) -> String {
+    html(s).replace("\r\n", "\n").replace('\n', "<BR>")
+}
+
+/// Netscape bookmark HTML, the tree as `<H3>`/`<DL>` (XFER-16). Keywords travel as
+/// Firefox-style TAGS; a `<DD>` holds the notes, then the description in Compass's `<meta>`
+/// part, so Keymarks (and Compass) read both back; a folder's `<DD>` is its note.
+/// URL-less notes aren't links and are left out.
+pub fn to_netscape(tree: &Tree) -> String {
     let mut out = String::from(
         "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n\
          <!-- This is an automatically generated file. Exported by Keymarks. -->\n\
          <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n\
          <TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n",
     );
-    for r in rows {
-        let mut attrs = format!("HREF=\"{}\"", html(&r.url));
-        if let Some(t) = r.added {
-            attrs += &format!(" ADD_DATE=\"{t}\"");
-        }
-        if let Some(t) = r.last_visited {
-            attrs += &format!(" LAST_VISIT=\"{t}\"");
-        }
-        if !r.keywords.is_empty() {
-            attrs += &format!(" TAGS=\"{}\"", html(&r.keywords.split_whitespace().collect::<Vec<_>>().join(",")));
-        }
-        out += &format!("    <DT><A {attrs}>{}</A>\n", html(&r.title));
-        if !r.description.is_empty() {
-            out += &format!("    <DD>{}\n", html(&r.description));
+    let mut depth = 1;
+    for e in tree.entries() {
+        let pad = "    ".repeat(depth);
+        match e {
+            Entry::Folder { name, note, added } => {
+                let date = added.map(|t| format!(" ADD_DATE=\"{t}\"")).unwrap_or_default();
+                out += &format!("{pad}<DT><H3{date}>{}</H3>\n", html(&name));
+                if !note.is_empty() {
+                    out += &format!("{pad}<DD>{}\n", dd_text(&note));
+                }
+                out += &format!("{pad}<DL><p>\n");
+                depth += 1;
+            }
+            Entry::Close => {
+                depth -= 1;
+                out += &format!("{}</DL><p>\n", "    ".repeat(depth));
+            }
+            Entry::Row(r) if r.url.is_empty() => {}
+            Entry::Row(r) => {
+                let mut attrs = format!("HREF=\"{}\"", html(&r.url));
+                if let Some(t) = r.added {
+                    attrs += &format!(" ADD_DATE=\"{t}\"");
+                }
+                if let Some(t) = r.last_visited {
+                    attrs += &format!(" LAST_VISIT=\"{t}\"");
+                }
+                if !r.keywords.is_empty() {
+                    attrs += &format!(" TAGS=\"{}\"", html(&r.keywords.split_whitespace().collect::<Vec<_>>().join(",")));
+                }
+                out += &format!("{pad}<DT><A {attrs}>{}</A>\n", html(&r.title));
+                let meta = if r.description.is_empty() { String::new() } else { format!("<meta><BR>{}</meta>", dd_text(&r.description)) };
+                if !r.notes.is_empty() || !meta.is_empty() {
+                    out += &format!("{pad}<DD>{}{meta}\n", dd_text(&r.notes));
+                }
+            }
+            Entry::Bookmark(_) => unreachable!("trees from the store hold rows"),
         }
     }
     out + "</DL><p>\n"
@@ -284,6 +408,7 @@ pub fn to_pm35_with(rows: &[ExportRow], saved: &[SavedItem], tagged: &[String]) 
     let hex = |t: Option<i64>| format!("{:X}", t.unwrap_or(0).clamp(0, u32::MAX as i64));
     let entries = rows
         .iter()
+        .filter(|r| !r.url.is_empty() || r.pm_mdata.is_some()) // notes, but not Powermarks' own records
         .map(|r| {
             let mut m: Vec<String> = r
                 .pm_mdata
@@ -315,7 +440,7 @@ pub fn to_pm35_with(rows: &[ExportRow], saved: &[SavedItem], tagged: &[String]) 
                 .filter(|(_, v)| !v.is_empty())
                 .map(|(k, v)| (k.to_string(), pm_text(v)))
                 .collect();
-            Entry { url: pm_text(&r.url), title: pm_text(&r.title), extras, mdata: m }
+            pm35::Entry { url: pm_text(&r.url), title: pm_text(&r.title), extras, mdata: m }
         })
         .collect();
     let macros: String = saved.iter().map(|i| format!("<!--macro={}-->\r\n", macro_record(i))).collect();
@@ -329,6 +454,150 @@ pub fn to_pm35_with(rows: &[ExportRow], saved: &[SavedItem], tagged: &[String]) 
 mod tests {
     use super::*;
     use crate::browsers::read_netscape_html;
+
+    use crate::{Entry, NewBookmark, ROOT};
+
+    /// The tree under `folder`, depth-first, one line per folder or item with every field the
+    /// round trips must keep. URL-less notes only `with_notes` (Netscape HTML has no place for them).
+    fn tree_lines(s: &Store, folder: i64, with_notes: bool) -> Vec<String> {
+        fn walk(s: &Store, folder: i64, depth: usize, with_notes: bool, out: &mut Vec<String>) {
+            let pad = "  ".repeat(depth);
+            for n in s.children(folder).unwrap() {
+                match n {
+                    crate::Node::Folder(f) => {
+                        out.push(format!("{pad}[{}|{:?}|{}", f.name, f.note, f.added));
+                        walk(s, f.id, depth + 1, with_notes, out);
+                    }
+                    crate::Node::Bookmark(b) if b.kind == "note" && !with_notes => {}
+                    crate::Node::Bookmark(b) => out.push(format!(
+                        "{pad}{}|{}|{}|{}|{:?}|{:?}|{:?}",
+                        b.kind, b.url, b.title, b.keywords, b.description, b.notes, b.added
+                    )),
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(s, folder, 0, with_notes, &mut out);
+        out
+    }
+
+    /// Nested and empty folders, folder notes, interleaved order, notes, descriptions,
+    /// keywords, markup and non-Latin text, and a URL-less note.
+    fn tree_store() -> (Store, i64) {
+        let mut s = Store::open(":memory:").unwrap();
+        let b = |url: &str, title: &str, keywords: &str, description: &str, notes: &str, added: i64| {
+            Entry::Bookmark(NewBookmark {
+                url: url.into(),
+                title: title.into(),
+                keywords: keywords.into(),
+                description: description.into(),
+                notes: notes.into(),
+                added: Some(added),
+            })
+        };
+        let f = |name: &str, note: &str, added: i64| Entry::Folder { name: name.into(), note: note.into(), added: Some(added) };
+        let entries = [
+            b("https://top.example/", "Top & <first>", "alpha beta", "", "", 1_600_000_000),
+            f("Dev", "dev stuff\nsecond line", 1_600_000_100),
+            f("Rust", "", 1_600_000_200),
+            b("https://rust-lang.org/", "Rust", "rust lang", "The Rust language", "my note\nline two", 1_600_000_300),
+            Entry::Close,
+            f("Empty", "", 1_600_000_400),
+            Entry::Close,
+            b("http://www.example.com/a?x=1&y=\"2\"", "Caf\u{e9} \u{1f600}", "", "only a description", "", 1_600_000_500),
+            Entry::Close,
+            b("https://after.example/", "After", "", "", "only notes", 1_600_000_600),
+            f("Empty top", "a note on an empty folder", 1_600_000_700),
+            Entry::Close,
+        ];
+        s.import_tree("fixture", &entries, ROOT, None, false).unwrap();
+        let dev = s.children(ROOT).unwrap().into_iter().find_map(|n| match n {
+            crate::Node::Folder(f) if f.name == "Dev" => Some(f.id),
+            _ => None,
+        });
+        let dev = dev.unwrap();
+        s.add_note(dev, "Shopping", "eggs and flour").unwrap().unwrap();
+        (s, dev)
+    }
+
+    #[test]
+    fn netscape_round_trips_the_tree() {
+        let (s, _) = tree_store();
+        let html = to_netscape(&s.export_tree(ROOT).unwrap());
+        assert!(!html.contains("Shopping"), "URL-less notes are not links");
+        let mut fresh = Store::open(":memory:").unwrap();
+        fresh.import_tree("Import", &read_netscape_html(&html), ROOT, None, false).unwrap();
+        let want = tree_lines(&s, ROOT, false);
+        assert_eq!(want.len(), 8, "{want:#?}");
+        assert_eq!(tree_lines(&fresh, ROOT, false), want, "same tree, order and fields");
+    }
+
+    #[test]
+    fn json_round_trips_the_tree() {
+        let (mut s, _) = tree_store();
+        let id = s.search("Rust", 1).unwrap()[0].id;
+        let mut b = s.get(id).unwrap().unwrap();
+        (b.rating, b.user_field, b.visits) = (7, "uf".into(), 4);
+        s.update(&b).unwrap();
+        let tree = s.export_tree(ROOT).unwrap();
+        let back = read_json(&to_json(&tree)).unwrap();
+        assert_eq!(back, tree);
+        let mut fresh = Store::open(":memory:").unwrap();
+        fresh.import_tree("Import JSON", &back.entries(), ROOT, None, false).unwrap();
+        assert_eq!(tree_lines(&fresh, ROOT, true), tree_lines(&s, ROOT, true), "notes too");
+        let fields = |t: &Tree| t.rows_in_order().into_iter().map(|r| ExportRow { folder_id: 0, position: 0, ..r }).collect::<Vec<_>>();
+        assert_eq!(fields(&fresh.export_tree(ROOT).unwrap()), fields(&tree), "every field");
+    }
+
+    #[test]
+    fn folder_export_is_that_subtree() {
+        let (s, dev) = tree_store();
+        let tree = s.export_tree(dev).unwrap();
+        assert_eq!(tree.rows.len(), 3, "Rust, the www link and the note");
+        let mut fresh = Store::open(":memory:").unwrap();
+        fresh.import_tree("Import", &read_netscape_html(&to_netscape(&tree)), ROOT, None, false).unwrap();
+        assert_eq!(tree_lines(&fresh, ROOT, false), tree_lines(&s, dev, false));
+        assert!(s.export_tree(9999).unwrap().rows.is_empty(), "missing folder: nothing");
+    }
+
+    #[test]
+    fn browser_file_through_keymarks_and_back() {
+        // What Chrome and Firefox write, folders nested and empty, a description as <DD>.
+        let file = r#"<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+    <DT><H3 ADD_DATE="1600000000" LAST_MODIFIED="1600000001" PERSONAL_TOOLBAR_FOLDER="true">Bookmarks bar</H3>
+    <DL><p>
+        <DT><A HREF="https://news.example/" ADD_DATE="1600000002" ICON="data:image/png;base64,AAAA">News</A>
+        <DT><H3 ADD_DATE="1600000003">Work</H3>
+        <DL><p>
+            <DT><H3 ADD_DATE="1600000004">Empty</H3>
+            <DL><p>
+            </DL><p>
+            <DT><A HREF="https://wiki.example/page?a=1&amp;b=2" ADD_DATE="1600000005" TAGS="docs,wiki">Wiki &amp; docs</A>
+            <DD>Team wiki
+        </DL><p>
+    </DL><p>
+    <DT><A HREF="https://loose.example/" ADD_DATE="1600000006">Loose</A>
+</DL><p>
+"#;
+        let read = read_netscape_html(file);
+        let mut s = Store::open(":memory:").unwrap();
+        s.import_tree("Import", &read, ROOT, None, false).unwrap();
+        let ours = to_netscape(&s.export_tree(ROOT).unwrap());
+        assert_eq!(read_netscape_html(&ours), read, "nothing lost or changed through Keymarks");
+        // The shape browsers expect: the doctype first, every <H3> opens a <DL>, lists balance.
+        assert!(ours.starts_with("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"));
+        let lines: Vec<&str> = ours.lines().map(str::trim).filter(|l| !l.starts_with("<DD>")).collect();
+        for (i, _) in lines.iter().enumerate().filter(|(_, l)| l.starts_with("<DT><H3")) {
+            assert_eq!(lines[i + 1], "<DL><p>", "folder at line {i} opens its list");
+        }
+        assert_eq!(ours.matches("<DL><p>").count(), ours.matches("</DL><p>").count());
+        assert_eq!(ours.matches("<DT><H3").count(), 3);
+    }
+
 
     fn store() -> Store {
         let mut s = Store::open(":memory:").unwrap();
@@ -368,13 +637,13 @@ mod tests {
         (b.notes, b.rating, b.user_field) = ("note".into(), 7, "uf".into());
         s.update(&b).unwrap();
         let rows = export_rows_all(&s);
-        let back = read_json(&to_json(&rows)).unwrap();
-        assert_eq!(back, rows);
+        let back = read_json(&to_json(&Tree::flat(rows.clone()))).unwrap();
+        assert_eq!(back.rows, rows);
         let mut fresh = Store::open(":memory:").unwrap();
-        let report = fresh.import_rows("Import JSON", &back).unwrap();
-        assert_eq!((report.added, report.duplicates), (2, 0));
+        let report = fresh.import_tree("Import JSON", &back.entries(), ROOT, None, false).unwrap();
+        assert_eq!((report.added, report.skipped), (2, 0));
         assert_eq!(export_rows_all(&fresh), rows, "every field, Powermarks record included");
-        assert_eq!(fresh.import_rows("again", &back).unwrap().duplicates, 2);
+        assert_eq!(fresh.import_tree("again", &back.entries(), ROOT, None, false).unwrap().skipped, 2);
         fresh.undo().unwrap();
         fresh.undo().unwrap();
         assert_eq!(fresh.count().unwrap(), 0);
@@ -385,10 +654,14 @@ mod tests {
     fn netscape_round_trips_keywords() {
         let s = store();
         let rows = s.export_rows(None).unwrap();
-        let back = read_netscape_html(&to_netscape(&rows));
+        let html = to_netscape(&Tree::flat(rows));
+        assert!(!html.contains("<H3"), "a flat list has no folders");
+        let back = read_netscape_html(&html);
+        let back = crate::bookmarks(&back);
         assert_eq!(back.len(), 2);
         assert_eq!((back[0].title.as_str(), back[0].keywords.as_str()), ("Caf\u{e9} & Bar", "food paris"));
-        assert_eq!(back[1].description, "a \"quoted\" <desc>");
+        // The description travels in Compass's <meta> part of the <DD>, so it comes back a description.
+        assert_eq!((back[1].description.as_str(), back[1].notes.as_str()), ("a \"quoted\" <desc>", ""));
         assert_eq!(back[1].keywords, "tag1 tag2");
         assert_eq!(back[0].added, Some(0x634DF1F5));
     }
@@ -441,7 +714,7 @@ mod tests {
         ] {
             s.save_item(&SavedItem { id: 0, name: name.into(), kind: kind.into(), query: query.into(), options: options.into(), url: url.into() }).unwrap();
         }
-        let db = pm35::parse(&s.export_pm35(None).unwrap()).unwrap();
+        let db = pm35::parse(&s.export_pm35(&s.export_rows(None).unwrap()).unwrap()).unwrap();
         let mut again = Store::open(":memory:").unwrap();
         again.import_pm35(&db).unwrap();
         let back = again.saved_items().unwrap();

@@ -51,7 +51,7 @@ fn count(db: State<Db>) -> Result<i64, String> {
 
 /// Pick a pm35.htm and import it. Only into an empty store, so re-importing can't duplicate.
 #[tauri::command]
-async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<usize>, String> {
+async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<ImportReport>, String> {
     let picked = app
         .dialog()
         .file()
@@ -64,7 +64,7 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, Sett
     if store.count().map_err(|e| e.to_string())? > 0 {
         return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
-    let n = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
+    let report = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
     // The file's check schedules join Settings, so its bookmarks' schedule names mean something.
     let mut current = settings.current.lock().unwrap();
     let known = desktop::parse_schedules(&current.schedules).unwrap_or_default();
@@ -84,7 +84,7 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, Sett
             *current = new;
         }
     }
-    Ok(Some(n))
+    Ok(Some(report))
 }
 
 #[derive(serde::Serialize)]
@@ -100,29 +100,43 @@ struct SourceView {
 async fn browser_sources() -> Vec<SourceView> {
     browsers::detect()
         .into_iter()
-        .map(|s| SourceView { count: browsers::read(&s).ok().map(|b| b.len()), browser: s.browser, profile: s.profile })
+        .map(|s| SourceView { count: browsers::read(&s).ok().map(|b| store::bookmarks(&b).len()), browser: s.browser, profile: s.profile })
         .collect()
 }
 
-/// Merge-import one detected browser profile (looked up again here: the UI never passes paths).
+/// Import one detected browser profile (looked up again here: the UI never passes paths) with
+/// its folder tree: into a new folder named after it (`new_folder`) or straight into the tree.
 #[tauri::command]
-async fn import_browser(db: State<'_, Db>, browser: String, profile: String, title_words: bool) -> Result<ImportReport, String> {
+async fn import_browser(
+    db: State<'_, Db>,
+    browser: String,
+    profile: String,
+    title_words: bool,
+    folder_words: bool,
+    new_folder: bool,
+) -> Result<ImportReport, String> {
     let source = browsers::detect()
         .into_iter()
         .find(|s| s.browser == browser && s.profile == profile)
         .ok_or_else(|| format!("{browser} profile {profile} not found"))?;
-    let items = with_title_words(browsers::read(&source)?, title_words);
-    db.lock().unwrap().import_bookmarks(&format!("Import from {browser} ({profile})"), &items).map_err(err)
+    let entries = with_title_words(browsers::read(&source)?, title_words);
+    let name = format!("{browser} ({profile})");
+    db.lock()
+        .unwrap()
+        .import_tree(&format!("Import from {name}"), &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words)
+        .map_err(err)
 }
 
-/// The import option "keywords from titles": each title's words join its folder keywords.
-fn with_title_words(mut items: Vec<store::NewBookmark>, on: bool) -> Vec<store::NewBookmark> {
+/// The import option "keywords from titles": each title's words join its keywords.
+fn with_title_words(mut entries: Vec<store::Entry>, on: bool) -> Vec<store::Entry> {
     if on {
-        for b in &mut items {
-            b.keywords = format!("{} {}", b.keywords, store::title_keywords(&b.title));
+        for e in &mut entries {
+            if let store::Entry::Bookmark(b) = e {
+                b.keywords = format!("{} {}", b.keywords, store::title_keywords(&b.title));
+            }
         }
     }
-    items
+    entries
 }
 
 /// Remove keywords from the selection (one undo step).
@@ -155,19 +169,20 @@ fn normalize_url(input: &str) -> Result<String, String> {
     reqwest::Url::parse(&s).map(|u| u.to_string()).map_err(|e| format!("Not a valid URL: {e}"))
 }
 
-/// Add one bookmark by URL (Ctrl+N). Without a title, the page's own is fetched.
+/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree.
+/// Without a title, the page's own is fetched.
 #[tauri::command]
-fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String) -> Result<ImportReport, String> {
+fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64) -> Result<ImportReport, String> {
     let url = normalize_url(&url)?;
     let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
-    let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), added: None };
-    let report = db.lock().unwrap().import_bookmarks("Add bookmark", &[item]).map_err(err)?;
+    let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), notes: String::new(), added: None };
+    let report = db.lock().unwrap().import_bookmarks("Add bookmark", folder, &[item]).map_err(err)?;
     fetch_in_background(app, report.ids.clone());
     Ok(report)
 }
 
-/// Add every link on the clipboard (Powermarks' Alt+Ins), tagged with the fast-add keywords;
-/// titles and descriptions are fetched in the background.
+/// Add every link on the clipboard (Powermarks' Alt+Ins) to the New Item Folder (ITEM-06),
+/// tagged with the fast-add keywords; titles and descriptions are fetched in the background.
 #[tauri::command]
 fn add_from_clipboard(app: AppHandle) -> Result<ImportReport, String> {
     clipboard_add(&app)
@@ -184,10 +199,10 @@ pub fn clipboard_add(app: &AppHandle) -> Result<ImportReport, String> {
     let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
     let items: Vec<_> = urls
         .into_iter()
-        .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), added: None })
+        .map(|url| store::NewBookmark { title: url.clone(), url, keywords: keywords.clone(), description: String::new(), notes: String::new(), added: None })
         .collect();
     let step = format!("Add {} link{} from the clipboard", items.len(), if items.len() == 1 { "" } else { "s" });
-    let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)?;
+    let report = app.state::<Db>().lock().unwrap().import_bookmarks(&step, store::NEW_ITEMS, &items).map_err(err)?;
     fetch_in_background(app.clone(), report.ids.clone());
     Ok(report)
 }
@@ -209,12 +224,13 @@ fn copy_bookmarks(app: AppHandle, db: State<Db>, ids: Vec<i64>) -> Result<usize,
 }
 
 /// Files and folders dropped from Explorer become file:/// bookmarks, opened with their
-/// associated app. Titled by file name and given the fast-add keywords, like a clipboard add.
+/// associated app. Titled by file name and given the fast-add keywords, and put in the New
+/// Item Folder, like a clipboard add.
 fn add_files(app: &AppHandle, paths: &[PathBuf]) -> Result<ImportReport, String> {
     let keywords = app.state::<SettingsState>().current.lock().unwrap().fast_add_keywords.clone();
     let items = file_bookmarks(paths, &keywords);
     let step = format!("Add {} file{}", items.len(), if items.len() == 1 { "" } else { "s" });
-    app.state::<Db>().lock().unwrap().import_bookmarks(&step, &items).map_err(err)
+    app.state::<Db>().lock().unwrap().import_bookmarks(&step, store::NEW_ITEMS, &items).map_err(err)
 }
 
 fn file_bookmarks(paths: &[PathBuf], keywords: &str) -> Vec<store::NewBookmark> {
@@ -223,7 +239,7 @@ fn file_bookmarks(paths: &[PathBuf], keywords: &str) -> Vec<store::NewBookmark> 
         .filter_map(|p| {
             let url = reqwest::Url::from_file_path(p).ok()?.to_string();
             let title = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
-            Some(store::NewBookmark { url, title, keywords: keywords.into(), description: String::new(), added: None })
+            Some(store::NewBookmark { url, title, keywords: keywords.into(), description: String::new(), notes: String::new(), added: None })
         })
         .collect()
 }
@@ -260,33 +276,56 @@ fn fetch_in_background(app: AppHandle, ids: Vec<i64>) {
     });
 }
 
-/// Pick a file and merge it in: bookmarks HTML (any browser), any web page (its links), or a
-/// Keymarks JSON export (every field kept).
+/// Test mode only (set by e2e/folders-smoke.mjs, like KEYMARKS_DATA_DIR): the file the
+/// native open/save dialog would return. That dialog is the OS's; it is not under test, and on
+/// the hidden test desktop nobody could answer it.
+fn e2e_file(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).map(PathBuf::from)
+}
+
+/// Pick a file and bring it in: bookmarks HTML (any browser, or Compass) with its folder tree,
+/// into a new folder named after the file (`new_folder`) or straight into the tree; any web
+/// page (its links); or a Keymarks JSON export (every field kept, into the root).
 #[tauri::command]
-async fn import_html_file(app: AppHandle, db: State<'_, Db>, title_words: bool) -> Result<Option<ImportReport>, String> {
-    let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
-    let Some(path) = picked else { return Ok(None) };
-    let path = path.into_path().map_err(err)?;
+async fn import_html_file(
+    app: AppHandle,
+    db: State<'_, Db>,
+    title_words: bool,
+    folder_words: bool,
+    new_folder: bool,
+) -> Result<Option<ImportReport>, String> {
+    let path = match e2e_file("KEYMARKS_E2E_OPEN_FILE") {
+        Some(p) => p,
+        None => {
+            let picked = app.dialog().file().add_filter("Bookmarks, web pages or Keymarks JSON", &["html", "htm", "json"]).blocking_pick_file();
+            let Some(path) = picked else { return Ok(None) };
+            path.into_path().map_err(err)?
+        }
+    };
     let text = String::from_utf8_lossy(&std::fs::read(&path).map_err(err)?).into_owned();
     let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     let step = format!("Import from {label}");
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
-        let rows = store::export::read_json(&text)?;
-        return db.lock().unwrap().import_rows(&step, &rows).map(Some).map_err(err);
+        let entries = store::export::read_json(&text)?.entries();
+        let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(label);
+        return db.lock().unwrap().import_tree(&step, &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words).map(Some).map_err(err);
     }
-    let items = with_title_words(browsers::read_netscape_html(&text), title_words);
-    db.lock().unwrap().import_bookmarks(&step, &items).map(Some).map_err(err)
+    let entries = with_title_words(browsers::read_netscape_html(&text), title_words);
+    let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(label);
+    db.lock().unwrap().import_tree(&step, &entries, store::ROOT, new_folder.then_some(name.as_str()), folder_words).map(Some).map_err(err)
 }
 
-/// Export bookmarks (`ids` in that order, or all) to a file the user picks: "html" (any
-/// browser), "pm35" (Powermarks 3.5), "csv" or "print" (the chosen `fields`; `title` heads
-/// the printable page) or "json" (everything). Returns (count, file name), or None if cancelled.
+/// Export bookmarks (`ids` in that order, else `folder`'s subtree, else everything) to a file
+/// the user picks: "html" (any browser; the folder tree), "pm35" (Powermarks 3.5), "csv" or
+/// "print" (the chosen `fields`; `title` heads the printable page) or "json" (everything,
+/// folders too). Returns (count, file name), or None if cancelled.
 #[tauri::command]
 async fn export_file(
     app: AppHandle,
     db: State<'_, Db>,
     format: String,
     ids: Option<Vec<i64>>,
+    folder: Option<i64>,
     fields: Vec<String>,
     title: String,
 ) -> Result<Option<(usize, String)>, String> {
@@ -298,16 +337,28 @@ async fn export_file(
         "json" => ("keymarks-bookmarks.json", "Keymarks JSON", "json"),
         other => return Err(format!("unknown export format {other}")),
     };
-    let rows = db.lock().unwrap().export_rows(ids.as_deref()).map_err(err)?;
-    let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
-    let Some(path) = picked else { return Ok(None) };
-    let path = path.into_path().map_err(err)?;
+    let tree = {
+        let s = db.lock().unwrap();
+        match ids {
+            Some(ids) => store::export::Tree::flat(s.export_rows(Some(&ids)).map_err(err)?),
+            None => s.export_tree(folder.unwrap_or(store::ROOT)).map_err(err)?,
+        }
+    };
+    let rows = tree.rows_in_order();
+    let path = match e2e_file("KEYMARKS_E2E_SAVE_FILE") {
+        Some(p) => p,
+        None => {
+            let picked = app.dialog().file().set_file_name(default).add_filter(filter, &[ext]).blocking_save_file();
+            let Some(path) = picked else { return Ok(None) };
+            path.into_path().map_err(err)?
+        }
+    };
     let bytes = match format.as_str() {
-        "html" => store::export::to_netscape(&rows).into_bytes(),
+        "html" => store::export::to_netscape(&tree).into_bytes(),
         "csv" => store::export::to_csv(&rows, &fields).into_bytes(),
         "print" => store::export::to_printable(&rows, &fields, &title).into_bytes(),
-        "json" => store::export::to_json(&rows).into_bytes(),
-        _ => db.lock().unwrap().export_pm35(ids.as_deref()).map_err(err)?,
+        "json" => store::export::to_json(&tree).into_bytes(),
+        _ => db.lock().unwrap().export_pm35(&rows).map_err(err)?,
     };
     std::fs::write(&path, bytes).map_err(err)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -414,6 +465,18 @@ fn open_checked<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<(), String>
     app.opener().open_url(url, None::<&str>).map_err(err)
 }
 
+/// The Duplicates view (SAVD-10): ids grouped by `store::url_key`, each group oldest first.
+#[tauri::command]
+fn duplicate_groups(db: State<Db>) -> Result<Vec<Vec<i64>>, String> {
+    db.lock().unwrap().duplicate_groups().map_err(err)
+}
+
+/// Resolve `keep`'s duplicate group: merge the others into it, or just delete them. One undo step.
+#[tauri::command]
+fn merge_duplicates(db: State<Db>, keep: i64, merge: bool) -> Result<usize, String> {
+    db.lock().unwrap().merge_duplicates(keep, merge).map_err(err)
+}
+
 #[tauri::command]
 fn saved_items(db: State<Db>) -> Result<Vec<SavedItem>, String> {
     db.lock().unwrap().saved_items().map_err(err)
@@ -457,10 +520,121 @@ fn open_link(app: AppHandle, url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn update_bookmark(db: State<Db>, bookmark: Bookmark) -> Result<bool, String> {
-    if bookmark.url.trim().is_empty() {
+    let mut store = db.lock().unwrap();
+    edit_allowed(&store, &bookmark)?;
+    store.update(&bookmark).map_err(err)
+}
+
+/// Bookmarks need a URL; notes have none. Judged by the stored kind, not what the page sent.
+fn edit_allowed(store: &Store, b: &Bookmark) -> Result<(), String> {
+    let note = store.get(b.id).map_err(err)?.is_some_and(|s| s.kind == "note");
+    if !note && b.url.trim().is_empty() {
         return Err("URL can't be empty".into());
     }
-    db.lock().unwrap().update(&bookmark).map_err(|e| e.to_string())
+    Ok(())
+}
+
+// ---- folders (Explorer style: the tree shows folders, the list one folder's items) ----
+
+#[tauri::command]
+fn folders(db: State<Db>) -> Result<Vec<store::Folder>, String> {
+    db.lock().unwrap().folders().map_err(err)
+}
+
+fn folder_name(name: &str) -> Result<&str, String> {
+    Some(name.trim()).filter(|n| !n.is_empty()).ok_or_else(|| "Give the folder a name".into())
+}
+
+const GONE: &str = "That folder no longer exists";
+
+fn new_folder(store: &mut Store, parent: i64, name: &str) -> Result<i64, String> {
+    store.create_folder(parent, folder_name(name)?, None).map_err(err)?.ok_or_else(|| GONE.into())
+}
+
+fn rename(store: &mut Store, id: i64, name: &str) -> Result<(), String> {
+    store.rename_folder(id, folder_name(name)?).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
+/// Its contents move up to the parent; nothing else is deleted.
+fn remove_folder(store: &mut Store, id: i64) -> Result<(), String> {
+    if id == store::ROOT {
+        return Err("The top folder can't be deleted".into());
+    }
+    store.delete_folder(id).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
+/// A new folder, last in `parent`. Returns its id.
+#[tauri::command]
+fn create_folder(db: State<Db>, parent: i64, name: String) -> Result<i64, String> {
+    new_folder(&mut db.lock().unwrap(), parent, &name)
+}
+
+#[tauri::command]
+fn rename_folder(db: State<Db>, id: i64, name: String) -> Result<(), String> {
+    rename(&mut db.lock().unwrap(), id, &name)
+}
+
+/// Sort folder (ORD-01..03), one undo step. Returns how many folders were sorted.
+#[tauri::command]
+fn sort_folder(db: State<Db>, id: i64, by: store::SortBy, descending: bool, folders_at: store::FoldersAt, recursive: bool) -> Result<usize, String> {
+    db.lock().unwrap().sort_folder(id, by, descending, folders_at, recursive).map_err(err)?.ok_or_else(|| GONE.into())
+}
+
+/// The Dead Links view (SAVD-09).
+#[tauri::command]
+fn dead_links(db: State<Db>) -> Result<Vec<i64>, String> {
+    db.lock().unwrap().dead_links().map_err(err)
+}
+
+/// A folder's note (NOTE-02), one undo step.
+#[tauri::command]
+fn set_folder_note(db: State<Db>, id: i64, note: String) -> Result<(), String> {
+    db.lock().unwrap().set_folder_note(id, &note).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
+/// Move to folder, drag and drop, reorder: one undo step (ITEM-16, FLD-07). Returns how
+/// many items moved.
+fn file_items(store: &mut Store, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
+    if folders.contains(&store::ROOT) {
+        return Err("The top folder can't move".into());
+    }
+    if store.folder(to).map_err(err)?.is_none() {
+        return Err(GONE.into());
+    }
+    let n = store.move_items(folders, bookmarks, to, beside).map_err(err)?;
+    if n == 0 && !folders.is_empty() {
+        return Err("A folder can't move into itself or one of its subfolders".into());
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+fn move_items(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>, to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
+    file_items(&mut db.lock().unwrap(), &folders, &bookmarks, to, beside)
+}
+
+/// Folder context menu: Set as New Item Folder (ITEM-04), one undo step.
+#[tauri::command]
+fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
+    db.lock().unwrap().set_new_item_folder(id).map_err(err)
+}
+
+#[tauri::command]
+fn delete_folder(db: State<Db>, id: i64) -> Result<(), String> {
+    remove_folder(&mut db.lock().unwrap(), id)
+}
+
+/// The tree's expand state, kept per folder (FLD-08).
+#[tauri::command]
+fn set_folder_folded(db: State<Db>, id: i64, folded: bool) -> Result<(), String> {
+    db.lock().unwrap().set_folded(id, folded).map(drop).map_err(err)
+}
+
+/// A note item (no URL), last in `folder`. Returns its id.
+#[tauri::command]
+fn add_note(db: State<Db>, folder: i64, title: String) -> Result<i64, String> {
+    let title = Some(title.trim()).filter(|t| !t.is_empty()).ok_or("Give the note a title")?;
+    db.lock().unwrap().add_note(folder, title, "").map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 #[tauri::command]
@@ -937,6 +1111,8 @@ fn main() {
             add_from_clipboard,
             copy_bookmarks,
             saved_items,
+            duplicate_groups,
+            merge_duplicates,
             save_item,
             delete_saved_item,
             move_saved_item,
@@ -944,7 +1120,18 @@ fn main() {
             open_bookmark_new_window,
             add_keywords,
             set_schedule,
-            schedule_names
+            schedule_names,
+            folders,
+            create_folder,
+            rename_folder,
+            set_folder_note,
+            sort_folder,
+            dead_links,
+            delete_folder,
+            set_new_item_folder,
+            move_items,
+            set_folder_folded,
+            add_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");
@@ -952,7 +1139,76 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, file_bookmarks, normalize_url, reg_sz};
+    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folder, rename};
+    use store::{ROOT, Store};
+
+    #[test]
+    fn folder_commands_check_names_and_targets() {
+        let mut s = Store::open(":memory:").unwrap();
+        assert_eq!(new_folder(&mut s, ROOT, "   ").unwrap_err(), "Give the folder a name");
+        assert_eq!(new_folder(&mut s, 9999, "X").unwrap_err(), "That folder no longer exists");
+        let f = new_folder(&mut s, ROOT, " Work ").unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "Work");
+        assert!(rename(&mut s, f, "").is_err());
+        rename(&mut s, f, "Jobs").unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "Jobs");
+        assert!(rename(&mut s, 9999, "Z").is_err());
+        assert_eq!(remove_folder(&mut s, ROOT).unwrap_err(), "The top folder can't be deleted");
+        remove_folder(&mut s, f).unwrap();
+        assert_eq!(s.folder(f).unwrap(), None);
+    }
+
+    #[test]
+    fn move_command_explains_refusals_and_is_one_undo_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.add("https://a.example/", "A", "", "").unwrap().0;
+        let b = s.add("https://b.example/", "B", "", "").unwrap().0;
+        let f = new_folder(&mut s, ROOT, "F").unwrap();
+        let g = new_folder(&mut s, f, "G").unwrap();
+        assert_eq!(file_items(&mut s, &[], &[a], 9999, None).unwrap_err(), "That folder no longer exists");
+        assert_eq!(file_items(&mut s, &[ROOT], &[], f, None).unwrap_err(), "The top folder can't move");
+        assert_eq!(file_items(&mut s, &[f], &[], g, None).unwrap_err(), "A folder can't move into itself or one of its subfolders");
+        assert_eq!(file_items(&mut s, &[], &[a, b], g, None).unwrap(), 2);
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Move 2 items to \u{201c}G\u{201d}"));
+        assert_eq!(s.get(a).unwrap().unwrap().folder_id, ROOT);
+        assert_eq!(s.undo().unwrap().as_deref(), Some("New folder \u{201c}G\u{201d}"));
+    }
+
+    #[test]
+    fn notes_save_without_a_url_and_bookmarks_do_not() {
+        let s = Store::open(":memory:").unwrap();
+        let n = s.add_note(ROOT, "Idea", "").unwrap().unwrap();
+        let (b, _) = s.add("https://a.example/", "A", "", "").unwrap();
+        let mut note = s.get(n).unwrap().unwrap();
+        note.kind = "bookmark".into(); // what the page sends can't turn a note into a bookmark
+        assert!(edit_allowed(&s, &note).is_ok());
+        let mut bm = s.get(b).unwrap().unwrap();
+        bm.url = " ".into();
+        bm.kind = "note".into(); // nor the other way round
+        assert_eq!(edit_allowed(&s, &bm).unwrap_err(), "URL can't be empty");
+    }
+
+    #[test]
+    fn the_page_search_options_scope_to_a_folder_and_search_its_path() {
+        let mut s = Store::open(":memory:").unwrap();
+        let f = new_folder(&mut s, ROOT, "Search engines").unwrap();
+        let (g, _) = s.add("https://g.example/", "G", "red", "").unwrap();
+        let (r, _) = s.add("https://r.example/", "R", "red", "").unwrap();
+        file_items(&mut s, &[], &[g], f, None).unwrap();
+        // What app.js sends (DEFAULT_OPTS plus the folder), as JSON.
+        let page = |in_folder: bool| -> store::SearchOptions {
+            serde_json::from_value(serde_json::json!({
+                "mode": "all", "partial": true, "fields": ["title", "url", "keywords", "description", "notes", "folder"],
+                "match_case": false, "sort": [], "in_folder": in_folder, "folder": f,
+            }))
+            .unwrap()
+        };
+        let mut all = s.search_ids("red", &page(false)).unwrap();
+        all.sort();
+        assert_eq!(all, [g, r]);
+        assert_eq!(s.search_ids("red", &page(true)).unwrap(), [g]);
+        assert_eq!(s.search_ids("sea eng", &page(false)).unwrap(), [g]);
+    }
 
     #[test]
     fn dropped_files_become_file_urls() {

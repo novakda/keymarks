@@ -4,6 +4,11 @@
 //! changes, the tagged-keyword set) before and after. Undo writes the "before" rows back,
 //! redo the "after" rows. Only those rows are touched, so bookmarks the browser extension
 //! adds meanwhile are never disturbed.
+//!
+//! Filing steps (folder create/rename/move/delete, moving items) snapshot the tree instead:
+//! the rows of the folders involved and their children, and where the bookmarks in them
+//! sit (folder and position only, so a visit or a link check is never rolled back).
+//! Imports record the bookmarks and folders they created: undo deletes them, redo restores them.
 
 use crate::{Result, Store, index_keywords};
 use rusqlite::{Connection, OpenFlags, backup::Backup, params_from_iter, types::Value};
@@ -19,15 +24,26 @@ pub(crate) struct History {
 struct Step {
     name: String,
     ids: Vec<i64>,
+    /// Folders a filing step touched (in either snapshot); empty for other steps.
+    folder_ids: Vec<i64>,
     before: Snapshot,
     after: Snapshot,
 }
 
 /// Full rows of the touched bookmarks (a missing id means it didn't exist) and, if the
 /// change can affect it, the whole tagged-keyword set.
+#[derive(PartialEq)]
 struct Snapshot {
     rows: Vec<Vec<Value>>,
     tagged: Option<Vec<String>>,
+    tree: Option<Tree>,
+}
+
+#[derive(PartialEq)]
+struct Tree {
+    folders: Vec<Vec<Value>>,
+    /// (bookmark id, folder_id, position)
+    places: Vec<(i64, i64, i64)>,
 }
 
 impl Store {
@@ -42,30 +58,81 @@ impl Store {
         let before = self.snapshot(ids, tags)?;
         let out = change(self)?;
         let after = self.snapshot(ids, tags)?;
-        let h = &mut self.history;
-        h.redo.clear();
-        h.undo.push(Step { name, ids: ids.to_vec(), before, after });
-        if h.undo.len() > MAX_STEPS {
-            h.undo.remove(0);
+        self.push(Step { name, ids: ids.to_vec(), folder_ids: Vec::new(), before, after });
+        Ok(out)
+    }
+
+    /// Run a filing `change` as one undo step covering `parents` (the folders whose children
+    /// it may reorder, add or remove) and those folders themselves. A change that changed
+    /// nothing (refused, or a no-op move) leaves no step. `name` sees the change's result.
+    pub(crate) fn record_tree<T>(
+        &mut self,
+        parents: &[i64],
+        change: impl FnOnce(&mut Store) -> Result<T>,
+        name: impl FnOnce(&Store, &T) -> String,
+    ) -> Result<T> {
+        let before = self.tree_snapshot(parents)?;
+        let out = change(self)?;
+        let after = self.tree_snapshot(parents)?;
+        if before != after {
+            let folder_ids = [&before, &after]
+                .iter()
+                .flat_map(|t| t.tree.as_ref().unwrap().folders.iter().map(|r| match r[0] { Value::Integer(id) => id, _ => unreachable!() }))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let name = name(self, &out);
+            self.push(Step { name, ids: Vec::new(), folder_ids, before, after });
         }
         Ok(out)
     }
 
-    /// Like `record`, for changes that create bookmarks: `change` returns the new ids, which
-    /// can't be known beforehand. Undo deletes them; redo puts them back.
-    pub(crate) fn record_created<T>(
-        &mut self,
-        name: String,
-        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>)>,
-    ) -> Result<T> {
-        let (out, ids) = change(self)?;
-        let after = self.snapshot(&ids, false)?;
+    fn push(&mut self, step: Step) {
         let h = &mut self.history;
         h.redo.clear();
-        h.undo.push(Step { name, ids, before: Snapshot { rows: Vec::new(), tagged: None }, after });
+        h.undo.push(step);
         if h.undo.len() > MAX_STEPS {
             h.undo.remove(0);
         }
+    }
+
+    fn tree_snapshot(&self, parents: &[i64]) -> Result<Snapshot> {
+        let json = serde_json::to_string(parents).expect("ids serialize");
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM folder WHERE id IN (SELECT value FROM json_each(?1)) OR parent_id IN (SELECT value FROM json_each(?1)) ORDER BY id",
+        )?;
+        let width = stmt.column_count();
+        let folders = stmt.query_map([&json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?.collect::<Result<_>>()?;
+        let places = self
+            .conn
+            .prepare("SELECT id, folder_id, position FROM bookmark WHERE folder_id IN (SELECT value FROM json_each(?1)) ORDER BY id")?
+            .query_map([&json], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_>>()?;
+        Ok(Snapshot { rows: Vec::new(), tagged: None, tree: Some(Tree { folders, places }) })
+    }
+
+    /// Like `record`, for changes that create bookmarks and folders (imports): `change`
+    /// returns the new bookmark and folder ids, which can't be known beforehand. Undo deletes
+    /// them; redo puts them back where they were.
+    /// `change` also returns, among the ids, existing bookmarks it changed, with their rows
+    /// as they were (`rows`, taken before changing them): undo puts those back.
+    pub(crate) fn record_created<T>(
+        &mut self,
+        name: String,
+        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>, Vec<i64>, Vec<Vec<Value>>)>,
+    ) -> Result<T> {
+        let (out, ids, folder_ids, rows) = change(self)?;
+        let mut after = self.snapshot(&ids, false)?;
+        let mut before = Snapshot { rows, tagged: None, tree: None };
+        if !folder_ids.is_empty() {
+            let json = serde_json::to_string(&folder_ids).expect("ids serialize");
+            let mut stmt = self.conn.prepare("SELECT * FROM folder WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")?;
+            let width = stmt.column_count();
+            let folders = stmt.query_map([&json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?.collect::<Result<_>>()?;
+            after.tree = Some(Tree { folders, places: Vec::new() });
+            before.tree = Some(Tree { folders: Vec::new(), places: Vec::new() });
+        }
+        self.push(Step { name, ids, folder_ids, before, after });
         Ok(out)
     }
 
@@ -89,7 +156,7 @@ impl Store {
         let popped = if undo { self.history.undo.pop() } else { self.history.redo.pop() };
         let Some(step) = popped else { return Ok(None) };
         let snap = if undo { &step.before } else { &step.after };
-        if let Err(e) = self.restore_rows(&step.ids, snap) {
+        if let Err(e) = self.restore_rows(&step.ids, &step.folder_ids, snap) {
             // Nothing was committed; keep the step so the user can try again.
             if undo { self.history.undo.push(step) } else { self.history.redo.push(step) }
             return Err(e);
@@ -100,27 +167,41 @@ impl Store {
     }
 
     fn snapshot(&self, ids: &[i64], tags: bool) -> Result<Snapshot> {
-        let json = serde_json::to_string(ids).expect("ids serialize");
-        let mut stmt = self.conn.prepare("SELECT * FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))")?;
-        let width = stmt.column_count();
-        let rows = stmt
-            .query_map([json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?
-            .collect::<Result<_>>()?;
+        let rows = rows(&self.conn, ids)?;
         let tagged = if tags {
             Some(self.conn.prepare("SELECT keyword FROM tagged_keyword")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?)
         } else {
             None
         };
-        Ok(Snapshot { rows, tagged })
+        Ok(Snapshot { rows, tagged, tree: None })
     }
 
     // ponytail: restores whole rows, so a visit counted between a change and its undo is
     // rolled back with it; track visits outside the snapshot if that ever matters.
-    fn restore_rows(&mut self, ids: &[i64], snap: &Snapshot) -> Result<()> {
+    fn restore_rows(&mut self, ids: &[i64], folder_ids: &[i64], snap: &Snapshot) -> Result<()> {
         let json = serde_json::to_string(ids).expect("ids serialize");
         let tx = self.conn.transaction()?;
         // Triggers keep the full-text index and keyword index in step with these writes.
         tx.execute("DELETE FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+        // Folders go back before bookmarks: a bookmark inserted into a missing folder lands in the root.
+        if let Some(tree) = &snap.tree {
+            let json = serde_json::to_string(folder_ids).expect("ids serialize");
+            // Parents and children are rewritten in no particular order; check at commit.
+            tx.pragma_update(None, "defer_foreign_keys", true)?;
+            // The expand state is the user's view, not part of the change: keep it as it is now.
+            let folded: Vec<(i64, bool)> = tx
+                .prepare("SELECT id, folded FROM folder WHERE id IN (SELECT value FROM json_each(?1))")?
+                .query_map([&json], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_>>()?;
+            tx.execute("DELETE FROM folder WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+            for row in &tree.folders {
+                let marks = vec!["?"; row.len()].join(", ");
+                tx.execute(&format!("INSERT INTO folder VALUES ({marks})"), params_from_iter(row))?;
+            }
+            for (id, f) in folded {
+                tx.execute("UPDATE folder SET folded = ?2 WHERE id = ?1", rusqlite::params![id, f])?;
+            }
+        }
         for row in &snap.rows {
             let marks = vec!["?"; row.len()].join(", ");
             tx.execute(&format!("INSERT INTO bookmark VALUES ({marks})"), params_from_iter(row))?;
@@ -137,6 +218,18 @@ impl Store {
             for k in tagged {
                 tx.execute("INSERT INTO tagged_keyword (keyword) VALUES (?1)", [k])?;
             }
+        }
+        if let Some(tree) = &snap.tree {
+            for (id, folder, position) in &tree.places {
+                tx.execute("UPDATE bookmark SET folder_id = ?2, position = ?3 WHERE id = ?1", [id, folder, position])?;
+            }
+            // Anything that arrived meanwhile in a folder the undo removed goes to the end of the root.
+            tx.execute(
+                "UPDATE bookmark SET folder_id = 1,
+                     position = (SELECT coalesce(max(position), 0) FROM bookmark WHERE folder_id = 1) + id
+                 WHERE folder_id NOT IN (SELECT id FROM folder)",
+                [],
+            )?;
         }
         tx.commit()
     }
@@ -248,4 +341,12 @@ mod tests {
             }
         }
     }
+}
+
+/// Full rows of bookmarks `ids` (missing ones left out), as undo snapshots them.
+pub(crate) fn rows(conn: &Connection, ids: &[i64]) -> Result<Vec<Vec<Value>>> {
+    let json = serde_json::to_string(ids).expect("ids serialize");
+    let mut stmt = conn.prepare("SELECT * FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))")?;
+    let width = stmt.column_count();
+    stmt.query_map([json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?.collect()
 }
