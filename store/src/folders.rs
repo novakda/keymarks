@@ -8,6 +8,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// The root folder's id. The schema allows exactly one folder without a parent: this one.
 pub const ROOT: i64 = 1;
 
+/// Stands for the New Item Folder (ITEM-04) where a folder id is asked for: adds from the
+/// browser, Fast Add and the clipboard land there. Never a real id (ids start at 1).
+pub const NEW_ITEMS: i64 = 0;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Folder {
     pub id: i64,
@@ -20,6 +24,41 @@ pub struct Folder {
     pub modified: i64,
     /// Collapsed in the tree (FLD-08).
     pub folded: bool,
+    /// The New Item Folder (ITEM-04): role `new_items`.
+    #[serde(default)]
+    pub new_items: bool,
+}
+
+/// v9 migration step: folder roles (`new_items`, ITEM-04). Kept on the row, so a rename
+/// keeps it and undo restores it with the folder. Idempotent.
+pub(crate) fn migrate_roles(tx: &Connection) -> Result<()> {
+    let have: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('folder') WHERE name = 'role')", [], |r| r.get(0))?;
+    if !have {
+        tx.execute_batch("ALTER TABLE folder ADD COLUMN role TEXT")?;
+    }
+    Ok(())
+}
+
+// ponytail: "one at most" is kept by `set_new_item_folder` and resolved oldest-first here, not
+// by a unique index: undo writes whole folder rows back, and a deleted inbox restored after a
+// new one was made would break such an index. Two marked folders can then exist; the oldest wins.
+fn find_inbox(tx: &Connection) -> Result<Option<i64>> {
+    tx.query_row("SELECT id FROM folder WHERE role = 'new_items' ORDER BY id LIMIT 1", [], |r| r.get(0)).optional()
+}
+
+/// The folder `folder` stands for: the New Item Folder for `NEW_ITEMS`, made as a root-level
+/// "New" if there is none (its id then goes in `created`, so the add's undo removes it too).
+pub(crate) fn resolve(tx: &Connection, folder: i64, created: &mut Vec<i64>) -> Result<i64> {
+    if folder != NEW_ITEMS {
+        return Ok(folder);
+    }
+    if let Some(id) = find_inbox(tx)? {
+        return Ok(id);
+    }
+    let id = insert_folder(tx, ROOT, "New", "", None)?;
+    tx.execute("UPDATE folder SET role = 'new_items' WHERE id = ?1", [id])?;
+    created.push(id);
+    Ok(id)
 }
 
 /// v8 migration step: folder names in their own full-text index (external content, kept by
@@ -162,7 +201,7 @@ fn place(tx: &Connection, item: Item, folder: i64, at: Option<i64>) -> Result<()
     set_order(tx, folder, &order)
 }
 
-pub(crate) const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded";
+pub(crate) const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded, coalesce(role = 'new_items', 0)";
 
 pub(crate) fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
     Ok(Folder {
@@ -174,6 +213,7 @@ pub(crate) fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
         added: r.get(5)?,
         modified: r.get(6)?,
         folded: r.get(7)?,
+        new_items: r.get(8)?,
     })
 }
 
@@ -409,6 +449,28 @@ impl Store {
         Ok(self.conn.query_row(sql, [id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten())
     }
 
+    /// The New Item Folder (ITEM-04), if one is set and still exists.
+    pub fn new_item_folder(&self) -> Result<Option<i64>> {
+        find_inbox(&self.conn)
+    }
+
+    /// Make `id` the New Item Folder (folder context menu), one undo step. False if it's missing.
+    pub fn set_new_item_folder(&mut self, id: i64) -> Result<bool> {
+        let Some(f) = self.folder(id)? else { return Ok(false) };
+        let old = find_inbox(&self.conn)?;
+        self.record_tree(
+            &[Some(id), old].into_iter().flatten().collect::<Vec<_>>(),
+            |s| {
+                s.conn.execute(
+                    "UPDATE folder SET role = CASE WHEN id = ?1 THEN 'new_items' END WHERE role = 'new_items' OR id = ?1",
+                    [id],
+                )?;
+                Ok(true)
+            },
+            |_, _| format!("Set New Item Folder \u{201c}{}\u{201d}", f.name),
+        )
+    }
+
     /// A note item without a URL (NOTE-03), last in `folder`. None if the folder is missing.
     pub fn add_note(&self, folder: i64, title: &str, notes: &str) -> Result<Option<i64>> {
         if !exists(&self.conn, folder)? {
@@ -437,7 +499,7 @@ mod tests {
             t
         }
         fn clean(&self) {
-            for ext in ["", "-wal", "-shm", ".v5.bak", ".v6.bak", ".v7.bak"] {
+            for ext in ["", "-wal", "-shm", ".v5.bak", ".v6.bak", ".v7.bak", ".v8.bak"] {
                 let _ = std::fs::remove_file(format!("{}{ext}", self.0));
             }
         }
@@ -900,5 +962,82 @@ mod tests {
         let o: SearchOptions = serde_json::from_str(r#"{"in_folder": true, "folder": 2}"#).unwrap();
         assert!(o.in_folder && o.folder == Some(2));
         assert!(!serde_json::from_str::<SearchOptions>("{}").unwrap().in_folder, "off unless chosen");
+    }
+
+    fn link(url: &str) -> crate::NewBookmark {
+        crate::NewBookmark { url: url.into(), title: url.into(), keywords: "new".into(), description: String::new(), notes: String::new(), added: None }
+    }
+
+    #[test]
+    fn new_item_folder_is_made_on_first_use_and_survives_rename() {
+        let mut s = Store::open(":memory:").unwrap();
+        assert_eq!(s.new_item_folder().unwrap(), None, "unset until first needed");
+        let r = s.import_bookmarks("Add 1 link from the clipboard", NEW_ITEMS, &[link("https://a.example/")]).unwrap();
+        let inbox = s.new_item_folder().unwrap().expect("created by the add");
+        let f = s.folder(inbox).unwrap().unwrap();
+        assert_eq!((f.name.as_str(), f.parent_id, f.new_items), ("New", Some(ROOT), true), "root-level \u{201c}New\u{201d} (ITEM-04)");
+        assert_eq!(s.get(r.ids[0]).unwrap().unwrap().folder_id, inbox);
+        // The role is the folder's, not its name: a rename keeps it.
+        s.rename_folder(inbox, "Inbox").unwrap();
+        let (b, _) = s.add_in(NEW_ITEMS, "https://b.example/", "B", "new", "").unwrap();
+        assert_eq!(s.get(b).unwrap().unwrap().folder_id, inbox, "extension adds land there too");
+        assert_eq!(s.folders().unwrap().len(), 2, "no second inbox");
+        // Undoing the add that made it takes the folder away with it.
+        s.undo().unwrap(); // rename
+        s.undo().unwrap(); // the clipboard add
+        assert_eq!(s.folder(inbox).unwrap(), None);
+    }
+
+    #[test]
+    fn set_new_item_folder_keeps_one_and_undoes() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.create_folder(ROOT, "A", None).unwrap().unwrap();
+        let p = s.create_folder(ROOT, "P", None).unwrap().unwrap();
+        let b = s.create_folder(p, "B", None).unwrap().unwrap();
+        assert!(s.set_new_item_folder(a).unwrap());
+        assert!(s.set_new_item_folder(b).unwrap());
+        assert_eq!(s.new_item_folder().unwrap(), Some(b));
+        assert!(!s.folder(a).unwrap().unwrap().new_items, "one at most");
+        assert_eq!(s.history_labels().0.as_deref(), Some("Set New Item Folder \u{201c}B\u{201d}"));
+        s.undo().unwrap();
+        assert_eq!(s.new_item_folder().unwrap(), Some(a));
+        assert!(!s.set_new_item_folder(999).unwrap(), "missing folder refused");
+        let (x, _) = s.add_in(NEW_ITEMS, "https://x.example/", "X", "", "").unwrap();
+        assert_eq!(s.get(x).unwrap().unwrap().folder_id, a);
+        let (y, _) = s.add_in(p, "https://y.example/", "Y", "", "").unwrap();
+        assert_eq!(s.get(y).unwrap().unwrap().folder_id, p, "a chosen folder (popup picker)");
+    }
+
+    #[test]
+    fn deleting_the_new_item_folder_falls_back_safely() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.create_folder(ROOT, "Reading", None).unwrap().unwrap();
+        s.set_new_item_folder(a).unwrap();
+        s.delete_folder(a).unwrap();
+        assert_eq!(s.new_item_folder().unwrap(), None);
+        // A folder picked in a stale popup that is gone: the root.
+        let (x, _) = s.add_in(a, "https://x.example/", "X", "", "").unwrap();
+        assert_eq!(s.get(x).unwrap().unwrap().folder_id, ROOT);
+        // The next inbox add recreates it.
+        let (y, _) = s.add_in(NEW_ITEMS, "https://y.example/", "Y", "", "").unwrap();
+        let again = s.new_item_folder().unwrap().unwrap();
+        let f = s.folder(again).unwrap().unwrap();
+        assert_eq!((f.name.as_str(), f.parent_id, s.get(y).unwrap().unwrap().folder_id), ("New", Some(ROOT), again));
+        // Undoing the delete brings the old one back as the inbox.
+        s.undo().unwrap();
+        let back = s.new_item_folder().unwrap().unwrap();
+        assert_eq!(s.folder(back).unwrap().unwrap().name, "Reading");
+    }
+
+    #[test]
+    fn v8_database_gains_folder_roles() {
+        let db = TempDb::new("v9");
+        {
+            let s = Store::open(&db.0).unwrap();
+            s.conn.execute_batch("ALTER TABLE folder DROP COLUMN role; PRAGMA user_version = 8;").unwrap();
+        }
+        let s = Store::open(&db.0).unwrap();
+        assert_eq!(version(&db.0), crate::SCHEMA_VERSION);
+        assert_eq!(s.new_item_folder().unwrap(), None);
     }
 }

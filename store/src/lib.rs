@@ -10,7 +10,7 @@ mod query;
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-pub use folders::{Beside, Folder, Node, ROOT};
+pub use folders::{Beside, Folder, NEW_ITEMS, Node, ROOT};
 pub use query::{FIELDS, Mode, PM_FIELD_BITS, SearchOptions, SortKey};
 pub use rusqlite::Result;
 
@@ -49,7 +49,7 @@ fn compile(query: &str, opts: &SearchOptions) -> std::result::Result<Option<quer
 }
 
 /// The `user_version` `migrate` brings a database to.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -433,6 +433,13 @@ impl Store {
             tx.pragma_update(None, "user_version", 8)?;
             tx.commit()?;
         }
+        // v9: folder roles, for the New Item Folder (ITEM-04).
+        if version < 9 {
+            let tx = store.conn.transaction()?;
+            folders::migrate_roles(&tx)?;
+            tx.pragma_update(None, "user_version", 9)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -440,8 +447,14 @@ impl Store {
         self.conn.query_row("SELECT count(*) FROM bookmark", [], |r| r.get(0))
     }
 
-    /// Add a bookmark unless its URL is already stored. Returns (id, already_existed).
+    /// Add a bookmark to the root unless its URL is already stored. Returns (id, already_existed).
     pub fn add(&self, url: &str, title: &str, keywords: &str, description: &str) -> Result<(i64, bool)> {
+        self.add_in(ROOT, url, title, keywords, description)
+    }
+
+    /// `add` into `folder`: `NEW_ITEMS` for the New Item Folder (made if needed), a missing
+    /// folder for the root. No undo step: the browser's host calls this from its own process.
+    pub fn add_in(&self, folder: i64, url: &str, title: &str, keywords: &str, description: &str) -> Result<(i64, bool)> {
         let existing = self
             .conn
             .query_row("SELECT id FROM bookmark WHERE url = ?1 AND kind = 'bookmark'", [url], |r| r.get(0))
@@ -451,10 +464,11 @@ impl Store {
         }
         let keywords = normalize_keywords(keywords);
         let tx = self.conn.unchecked_transaction()?;
+        let folder = folders::resolve(&tx, folder, &mut Vec::new())?;
         tx.execute(
-            "INSERT INTO bookmark (url, title, keywords, description, added)
-             VALUES (?1, ?2, ?3, ?4, unixepoch())",
-            params![url, title, keywords, description],
+            "INSERT INTO bookmark (url, title, keywords, description, added, folder_id)
+             VALUES (?1, ?2, ?3, ?4, unixepoch(), ?5)",
+            params![url, title, keywords, description, folder],
         )?;
         let id = tx.last_insert_rowid();
         index_keywords(&tx, id, &keywords)?;
@@ -462,11 +476,11 @@ impl Store {
         Ok((id, false))
     }
 
-    /// Merge bookmarks into the root, skipping URLs it already has (see `url_key`). One
-    /// undoable step called `step` (e.g. "Add bookmark").
-    pub fn import_bookmarks(&mut self, step: &str, items: &[NewBookmark]) -> Result<ImportReport> {
+    /// Merge bookmarks into folder `into` (`NEW_ITEMS`: the New Item Folder), skipping URLs
+    /// already stored (see `url_key`). One undoable step called `step` (e.g. "Add bookmark").
+    pub fn import_bookmarks(&mut self, step: &str, into: i64, items: &[NewBookmark]) -> Result<ImportReport> {
         let entries: Vec<Entry> = items.iter().cloned().map(Entry::Bookmark).collect();
-        self.import_tree(step, &entries, ROOT, None, false)
+        self.import_tree(step, &entries, into, None, false)
     }
 
     /// Import a tree (XFER-03, XFER-10) into folder `into`: inside a new folder `new_folder`
@@ -483,8 +497,9 @@ impl Store {
             for url in tx.prepare("SELECT url FROM bookmark WHERE kind = 'bookmark'")?.query_map([], |r| r.get::<_, String>(0))? {
                 seen.insert(url_key(&url?));
             }
-            let into = if folders::exists(&tx, into)? { into } else { ROOT };
             let mut created = Vec::new();
+            let into = folders::resolve(&tx, into, &mut created)?;
+            let into = if folders::exists(&tx, into)? { into } else { ROOT };
             // Open folders, innermost last: (id, made by this import).
             let mut open = vec![(into, false)];
             if let Some(name) = new_folder {
@@ -1767,7 +1782,7 @@ mod tests {
         let mut s = store(); // has http://example.com/?a=1&b=2 and http://example.com/u
         let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), notes: String::new(), added: None };
         let items = [nb("http://example.com/u", "dup"), nb("https://new.example/", "Dev Tools"), nb("https://new.example/", "again"), nb("https://two.example/", "")];
-        let r = s.import_bookmarks("Import from Chrome (Default)", &items).unwrap();
+        let r = s.import_bookmarks("Import from Chrome (Default)", ROOT, &items).unwrap();
         assert_eq!((r.added, r.duplicates, r.ids.len()), (2, 2, 2));
         // Fetch fills a placeholder title and empty description, merges keywords.
         s.apply_fetched(r.ids[1], &PageMeta { title: " Two ".into(), description: "About two".into(), keywords: "x, Dev".into() }).unwrap();
