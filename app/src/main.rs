@@ -457,10 +457,76 @@ fn open_link(app: AppHandle, url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn update_bookmark(db: State<Db>, bookmark: Bookmark) -> Result<bool, String> {
-    if bookmark.url.trim().is_empty() {
+    let mut store = db.lock().unwrap();
+    edit_allowed(&store, &bookmark)?;
+    store.update(&bookmark).map_err(err)
+}
+
+/// Bookmarks need a URL; notes have none. Judged by the stored kind, not what the page sent.
+fn edit_allowed(store: &Store, b: &Bookmark) -> Result<(), String> {
+    let note = store.get(b.id).map_err(err)?.is_some_and(|s| s.kind == "note");
+    if !note && b.url.trim().is_empty() {
         return Err("URL can't be empty".into());
     }
-    db.lock().unwrap().update(&bookmark).map_err(|e| e.to_string())
+    Ok(())
+}
+
+// ---- folders (Explorer style: the tree shows folders, the list one folder's items) ----
+
+#[tauri::command]
+fn folders(db: State<Db>) -> Result<Vec<store::Folder>, String> {
+    db.lock().unwrap().folders().map_err(err)
+}
+
+fn folder_name(name: &str) -> Result<&str, String> {
+    Some(name.trim()).filter(|n| !n.is_empty()).ok_or_else(|| "Give the folder a name".into())
+}
+
+const GONE: &str = "That folder no longer exists";
+
+fn new_folder(store: &mut Store, parent: i64, name: &str) -> Result<i64, String> {
+    store.create_folder(parent, folder_name(name)?, None).map_err(err)?.ok_or_else(|| GONE.into())
+}
+
+fn rename(store: &Store, id: i64, name: &str) -> Result<(), String> {
+    store.rename_folder(id, folder_name(name)?).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
+/// Its contents move up to the parent; nothing else is deleted.
+fn remove_folder(store: &mut Store, id: i64) -> Result<(), String> {
+    if id == store::ROOT {
+        return Err("The top folder can't be deleted".into());
+    }
+    store.delete_folder(id).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+}
+
+/// A new folder, last in `parent`. Returns its id.
+#[tauri::command]
+fn create_folder(db: State<Db>, parent: i64, name: String) -> Result<i64, String> {
+    new_folder(&mut db.lock().unwrap(), parent, &name)
+}
+
+#[tauri::command]
+fn rename_folder(db: State<Db>, id: i64, name: String) -> Result<(), String> {
+    rename(&db.lock().unwrap(), id, &name)
+}
+
+#[tauri::command]
+fn delete_folder(db: State<Db>, id: i64) -> Result<(), String> {
+    remove_folder(&mut db.lock().unwrap(), id)
+}
+
+/// The tree's expand state, kept per folder (FLD-08).
+#[tauri::command]
+fn set_folder_folded(db: State<Db>, id: i64, folded: bool) -> Result<(), String> {
+    db.lock().unwrap().set_folded(id, folded).map(drop).map_err(err)
+}
+
+/// A note item (no URL), last in `folder`. Returns its id.
+#[tauri::command]
+fn add_note(db: State<Db>, folder: i64, title: String) -> Result<i64, String> {
+    let title = Some(title.trim()).filter(|t| !t.is_empty()).ok_or("Give the note a title")?;
+    db.lock().unwrap().add_note(folder, title, "").map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 #[tauri::command]
@@ -944,7 +1010,13 @@ fn main() {
             open_bookmark_new_window,
             add_keywords,
             set_schedule,
-            schedule_names
+            schedule_names,
+            folders,
+            create_folder,
+            rename_folder,
+            delete_folder,
+            set_folder_folded,
+            add_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keymarks");
@@ -952,7 +1024,38 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, file_bookmarks, normalize_url, reg_sz};
+    use super::{browser_exe, edit_allowed, file_bookmarks, new_folder, normalize_url, reg_sz, remove_folder, rename};
+    use store::{ROOT, Store};
+
+    #[test]
+    fn folder_commands_check_names_and_targets() {
+        let mut s = Store::open(":memory:").unwrap();
+        assert_eq!(new_folder(&mut s, ROOT, "   ").unwrap_err(), "Give the folder a name");
+        assert_eq!(new_folder(&mut s, 9999, "X").unwrap_err(), "That folder no longer exists");
+        let f = new_folder(&mut s, ROOT, " Work ").unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "Work");
+        assert!(rename(&s, f, "").is_err());
+        rename(&s, f, "Jobs").unwrap();
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "Jobs");
+        assert!(rename(&s, 9999, "Z").is_err());
+        assert_eq!(remove_folder(&mut s, ROOT).unwrap_err(), "The top folder can't be deleted");
+        remove_folder(&mut s, f).unwrap();
+        assert_eq!(s.folder(f).unwrap(), None);
+    }
+
+    #[test]
+    fn notes_save_without_a_url_and_bookmarks_do_not() {
+        let s = Store::open(":memory:").unwrap();
+        let n = s.add_note(ROOT, "Idea", "").unwrap().unwrap();
+        let (b, _) = s.add("https://a.example/", "A", "", "").unwrap();
+        let mut note = s.get(n).unwrap().unwrap();
+        note.kind = "bookmark".into(); // what the page sends can't turn a note into a bookmark
+        assert!(edit_allowed(&s, &note).is_ok());
+        let mut bm = s.get(b).unwrap().unwrap();
+        bm.url = " ".into();
+        bm.kind = "note".into(); // nor the other way round
+        assert_eq!(edit_allowed(&s, &bm).unwrap_err(), "URL can't be empty");
+    }
 
     #[test]
     fn dropped_files_become_file_urls() {
