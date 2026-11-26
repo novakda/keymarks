@@ -10,7 +10,7 @@ mod query;
 use pm35::{Database, field};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-pub use folders::{Folder, Node, ROOT};
+pub use folders::{Beside, Folder, Node, ROOT};
 pub use query::{FIELDS, Mode, PM_FIELD_BITS, SearchOptions, SortKey};
 pub use rusqlite::Result;
 

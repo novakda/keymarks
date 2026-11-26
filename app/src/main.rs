@@ -488,7 +488,7 @@ fn new_folder(store: &mut Store, parent: i64, name: &str) -> Result<i64, String>
     store.create_folder(parent, folder_name(name)?, None).map_err(err)?.ok_or_else(|| GONE.into())
 }
 
-fn rename(store: &Store, id: i64, name: &str) -> Result<(), String> {
+fn rename(store: &mut Store, id: i64, name: &str) -> Result<(), String> {
     store.rename_folder(id, folder_name(name)?).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
 }
 
@@ -508,7 +508,28 @@ fn create_folder(db: State<Db>, parent: i64, name: String) -> Result<i64, String
 
 #[tauri::command]
 fn rename_folder(db: State<Db>, id: i64, name: String) -> Result<(), String> {
-    rename(&db.lock().unwrap(), id, &name)
+    rename(&mut db.lock().unwrap(), id, &name)
+}
+
+/// Move to folder, drag and drop, reorder: one undo step (ITEM-16, FLD-07). Returns how
+/// many items moved.
+fn file_items(store: &mut Store, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
+    if folders.contains(&store::ROOT) {
+        return Err("The top folder can't move".into());
+    }
+    if store.folder(to).map_err(err)?.is_none() {
+        return Err(GONE.into());
+    }
+    let n = store.move_items(folders, bookmarks, to, beside).map_err(err)?;
+    if n == 0 && !folders.is_empty() {
+        return Err("A folder can't move into itself or one of its subfolders".into());
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+fn move_items(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>, to: i64, beside: Option<store::Beside>) -> Result<usize, String> {
+    file_items(&mut db.lock().unwrap(), &folders, &bookmarks, to, beside)
 }
 
 #[tauri::command]
@@ -1015,6 +1036,7 @@ fn main() {
             create_folder,
             rename_folder,
             delete_folder,
+            move_items,
             set_folder_folded,
             add_note
         ])
@@ -1024,7 +1046,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, edit_allowed, file_bookmarks, new_folder, normalize_url, reg_sz, remove_folder, rename};
+    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folder, rename};
     use store::{ROOT, Store};
 
     #[test]
@@ -1034,13 +1056,29 @@ mod tests {
         assert_eq!(new_folder(&mut s, 9999, "X").unwrap_err(), "That folder no longer exists");
         let f = new_folder(&mut s, ROOT, " Work ").unwrap();
         assert_eq!(s.folder(f).unwrap().unwrap().name, "Work");
-        assert!(rename(&s, f, "").is_err());
-        rename(&s, f, "Jobs").unwrap();
+        assert!(rename(&mut s, f, "").is_err());
+        rename(&mut s, f, "Jobs").unwrap();
         assert_eq!(s.folder(f).unwrap().unwrap().name, "Jobs");
-        assert!(rename(&s, 9999, "Z").is_err());
+        assert!(rename(&mut s, 9999, "Z").is_err());
         assert_eq!(remove_folder(&mut s, ROOT).unwrap_err(), "The top folder can't be deleted");
         remove_folder(&mut s, f).unwrap();
         assert_eq!(s.folder(f).unwrap(), None);
+    }
+
+    #[test]
+    fn move_command_explains_refusals_and_is_one_undo_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.add("https://a.example/", "A", "", "").unwrap().0;
+        let b = s.add("https://b.example/", "B", "", "").unwrap().0;
+        let f = new_folder(&mut s, ROOT, "F").unwrap();
+        let g = new_folder(&mut s, f, "G").unwrap();
+        assert_eq!(file_items(&mut s, &[], &[a], 9999, None).unwrap_err(), "That folder no longer exists");
+        assert_eq!(file_items(&mut s, &[ROOT], &[], f, None).unwrap_err(), "The top folder can't move");
+        assert_eq!(file_items(&mut s, &[f], &[], g, None).unwrap_err(), "A folder can't move into itself or one of its subfolders");
+        assert_eq!(file_items(&mut s, &[], &[a, b], g, None).unwrap(), 2);
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Move 2 items to \u{201c}G\u{201d}"));
+        assert_eq!(s.get(a).unwrap().unwrap().folder_id, ROOT);
+        assert_eq!(s.undo().unwrap().as_deref(), Some("New folder \u{201c}G\u{201d}"));
     }
 
     #[test]

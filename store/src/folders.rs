@@ -157,12 +157,32 @@ fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
     })
 }
 
+/// Is `folder` the same as `target` or one of its ancestors (so `target` is in its subtree)?
+fn inside(tx: &Connection, folder: i64, target: i64) -> Result<bool> {
+    tx.query_row(
+        "WITH RECURSIVE up(id) AS (SELECT ?2 UNION SELECT f.parent_id FROM folder f JOIN up ON f.id = up.id WHERE f.parent_id IS NOT NULL)
+         SELECT EXISTS(SELECT 1 FROM up WHERE id = ?1)",
+        params![folder, target],
+        |r| r.get(0),
+    )
+}
+
+/// Where a move puts its items: next to this child of the target folder.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct Beside {
+    /// True if `id` is a folder, false for a bookmark or note.
+    pub folder: bool,
+    pub id: i64,
+    /// After it rather than before.
+    #[serde(default)]
+    pub after: bool,
+}
+
 fn exists(tx: &Connection, folder: i64) -> Result<bool> {
     tx.query_row("SELECT EXISTS(SELECT 1 FROM folder WHERE id = ?1)", [folder], |r| r.get(0))
 }
 
-// None of these are undoable yet (history snapshots bookmark rows only); import and export
-// don't know about folders yet.
+// Changes to the tree are undo steps (DATA-04); import and export don't know about folders yet.
 impl Store {
     pub fn folder(&self, id: i64) -> Result<Option<Folder>> {
         self.conn
@@ -199,71 +219,163 @@ impl Store {
             .collect()
     }
 
-    /// New folder in `parent` at index `at` (None: last). None if `parent` doesn't exist.
+    /// New folder in `parent` at index `at` (None: last), one undo step. None if `parent`
+    /// doesn't exist.
     pub fn create_folder(&mut self, parent: i64, name: &str, at: Option<i64>) -> Result<Option<i64>> {
-        let tx = self.conn.transaction()?;
-        if !exists(&tx, parent)? {
-            return Ok(None);
-        }
-        tx.execute("INSERT INTO folder (parent_id, name, position) VALUES (?1, ?2, 0)", params![parent, name.trim()])?;
-        let id = tx.last_insert_rowid();
-        place(&tx, Item::Folder(id), parent, at)?;
-        tx.commit()?;
-        Ok(Some(id))
+        let name = name.trim().to_string();
+        self.record_tree(
+            &[parent],
+            |s| {
+                let tx = s.conn.transaction()?;
+                if !exists(&tx, parent)? {
+                    return Ok(None);
+                }
+                tx.execute("INSERT INTO folder (parent_id, name, position) VALUES (?1, ?2, 0)", params![parent, name])?;
+                let id = tx.last_insert_rowid();
+                place(&tx, Item::Folder(id), parent, at)?;
+                tx.commit()?;
+                Ok(Some(id))
+            },
+            |_, _| format!("New folder \u{201c}{name}\u{201d}"),
+        )
     }
 
-    pub fn rename_folder(&self, id: i64, name: &str) -> Result<bool> {
-        let n = self.conn.execute("UPDATE folder SET name = ?2, modified = unixepoch() WHERE id = ?1", params![id, name.trim()])?;
-        Ok(n == 1)
+    /// Rename a folder, one undo step. False if it doesn't exist.
+    pub fn rename_folder(&mut self, id: i64, name: &str) -> Result<bool> {
+        let name = name.trim().to_string();
+        self.record_tree(
+            &[id],
+            |s| Ok(s.conn.execute("UPDATE folder SET name = ?2, modified = unixepoch() WHERE id = ?1", params![id, name])? == 1),
+            |_, _| format!("Rename folder \u{201c}{name}\u{201d}"),
+        )
     }
 
     /// Move a folder (with everything in it) into `parent` at index `at`. Refused (false)
     /// for the root, a missing folder or parent, or a parent inside the folder itself.
     pub fn move_folder(&mut self, id: i64, parent: i64, at: Option<i64>) -> Result<bool> {
-        let tx = self.conn.transaction()?;
-        let inside: bool = tx.query_row(
-            "WITH RECURSIVE up(id) AS (SELECT ?2 UNION SELECT f.parent_id FROM folder f JOIN up ON f.id = up.id WHERE f.parent_id IS NOT NULL)
-             SELECT EXISTS(SELECT 1 FROM up WHERE id = ?1)",
-            params![id, parent],
-            |r| r.get(0),
-        )?;
-        if id == ROOT || inside || !exists(&tx, id)? || !exists(&tx, parent)? {
-            return Ok(false);
-        }
-        place(&tx, Item::Folder(id), parent, at)?;
-        tx.execute("UPDATE folder SET modified = unixepoch() WHERE id = ?1", [id])?;
-        tx.commit()?;
-        Ok(true)
+        let parents = [self.parent_of(Item::Folder(id))?.unwrap_or(ROOT), parent];
+        self.record_tree(
+            &parents,
+            |s| {
+                let tx = s.conn.transaction()?;
+                if id == ROOT || inside(&tx, id, parent)? || !exists(&tx, id)? || !exists(&tx, parent)? {
+                    return Ok(false);
+                }
+                place(&tx, Item::Folder(id), parent, at)?;
+                tx.execute("UPDATE folder SET modified = unixepoch() WHERE id = ?1", [id])?;
+                tx.commit()?;
+                Ok(true)
+            },
+            |s, _| format!("Move folder \u{201c}{}\u{201d}", s.folder(id).ok().flatten().map(|f| f.name).unwrap_or_default()),
+        )
     }
 
-    /// Delete a folder. Nothing in it is deleted: its contents move up to the parent, in
-    /// their order, where the folder was. The root can't be deleted (false).
+    /// Delete a folder, one undo step. Nothing in it is deleted: its contents move up to the
+    /// parent, in their order, where the folder was. The root can't be deleted (false).
     pub fn delete_folder(&mut self, id: i64) -> Result<bool> {
-        let tx = self.conn.transaction()?;
-        let Some(parent) = tx.query_row("SELECT parent_id FROM folder WHERE id = ?1", [id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten()
-        else {
-            return Ok(false); // missing, or the root
-        };
-        let kids = siblings(&tx, id)?;
-        let order: Vec<Item> =
-            siblings(&tx, parent)?.into_iter().flat_map(|i| if i == Item::Folder(id) { kids.clone() } else { vec![i] }).collect();
-        set_order(&tx, parent, &order)?;
-        tx.execute("DELETE FROM folder WHERE id = ?1", [id])?;
-        tx.commit()?;
-        Ok(true)
+        let Some(gone) = self.folder(id)? else { return Ok(false) };
+        let Some(parent) = gone.parent_id else { return Ok(false) }; // the root
+        self.record_tree(
+            &[parent, id],
+            |s| {
+                let tx = s.conn.transaction()?;
+                let kids = siblings(&tx, id)?;
+                let order: Vec<Item> =
+                    siblings(&tx, parent)?.into_iter().flat_map(|i| if i == Item::Folder(id) { kids.clone() } else { vec![i] }).collect();
+                set_order(&tx, parent, &order)?;
+                tx.execute("DELETE FROM folder WHERE id = ?1", [id])?;
+                tx.commit()?;
+                Ok(true)
+            },
+            |_, _| format!("Delete folder \u{201c}{}\u{201d}", gone.name),
+        )
     }
 
-    /// Move a bookmark (or note) into `folder` at index `at` (None: last). False if either
-    /// is missing.
+    /// Move a bookmark (or note) into `folder` at index `at` (None: last), one undo step.
+    /// False if either is missing.
     pub fn move_bookmark(&mut self, id: i64, folder: i64, at: Option<i64>) -> Result<bool> {
-        let tx = self.conn.transaction()?;
-        let found: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE id = ?1)", [id], |r| r.get(0))?;
-        if !found || !exists(&tx, folder)? {
-            return Ok(false);
+        let parents = [self.parent_of(Item::Bookmark(id))?.unwrap_or(ROOT), folder];
+        self.record_tree(
+            &parents,
+            |s| {
+                let tx = s.conn.transaction()?;
+                let found: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE id = ?1)", [id], |r| r.get(0))?;
+                if !found || !exists(&tx, folder)? {
+                    return Ok(false);
+                }
+                place(&tx, Item::Bookmark(id), folder, at)?;
+                tx.commit()?;
+                Ok(true)
+            },
+            |_, _| "Move 1 item".into(),
+        )
+    }
+
+    /// Move folders and bookmarks (or notes) into `to`, in the order given (folders first),
+    /// at the end or next to `beside` (a child of `to`), as one undo step: Move to folder,
+    /// drag and drop, reorder (ITEM-16, FLD-07). Refused (0) if `to` is missing, or a folder
+    /// is the root, missing, or would go inside itself. Bookmarks gone meanwhile are skipped.
+    /// Returns how many items moved.
+    pub fn move_items(&mut self, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<Beside>) -> Result<usize> {
+        let mut parents = vec![to];
+        for item in folders.iter().map(|&f| Item::Folder(f)).chain(bookmarks.iter().map(|&b| Item::Bookmark(b))) {
+            parents.extend(self.parent_of(item)?);
         }
-        place(&tx, Item::Bookmark(id), folder, at)?;
-        tx.commit()?;
-        Ok(true)
+        parents.sort();
+        parents.dedup();
+        let moved = self.record_tree(
+            &parents,
+            |s| {
+                let tx = s.conn.transaction()?;
+                if !exists(&tx, to)? {
+                    return Ok(Vec::new());
+                }
+                for &f in folders {
+                    if f == ROOT || !exists(&tx, f)? || inside(&tx, f, to)? {
+                        return Ok(Vec::new());
+                    }
+                }
+                let mut items: Vec<Item> = folders.iter().map(|&f| Item::Folder(f)).collect();
+                for &b in bookmarks {
+                    if tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE id = ?1)", [b], |r| r.get(0))? {
+                        items.push(Item::Bookmark(b));
+                    }
+                }
+                items.dedup();
+                let mut order: Vec<Item> = siblings(&tx, to)?.into_iter().filter(|i| !items.contains(i)).collect();
+                let at = beside
+                    .and_then(|b| {
+                        let anchor = if b.folder { Item::Folder(b.id) } else { Item::Bookmark(b.id) };
+                        order.iter().position(|i| *i == anchor).map(|p| p + b.after as usize)
+                    })
+                    .unwrap_or(order.len());
+                order.splice(at..at, items.iter().copied());
+                set_order(&tx, to, &order)?;
+                for &f in folders {
+                    tx.execute("UPDATE folder SET modified = unixepoch() WHERE id = ?1", [f])?;
+                }
+                tx.commit()?;
+                Ok(items)
+            },
+            |s, items| match items.as_slice() {
+                [Item::Folder(f)] => format!("Move folder \u{201c}{}\u{201d}", s.folder(*f).ok().flatten().map(|f| f.name).unwrap_or_default()),
+                [Item::Bookmark(b)] => {
+                    let b = s.get(*b).ok().flatten().map(|b| if b.title.is_empty() { b.url } else { b.title }).unwrap_or_default();
+                    format!("Move \u{201c}{b}\u{201d}")
+                }
+                _ => format!("Move {} items to \u{201c}{}\u{201d}", items.len(), s.folder(to).ok().flatten().map(|f| f.name).unwrap_or_default()),
+            },
+        )?;
+        Ok(moved.len())
+    }
+
+    /// The folder an item sits in (None if it's missing or is the root).
+    fn parent_of(&self, item: Item) -> Result<Option<i64>> {
+        let (sql, id) = match item {
+            Item::Folder(id) => ("SELECT parent_id FROM folder WHERE id = ?1", id),
+            Item::Bookmark(id) => ("SELECT folder_id FROM bookmark WHERE id = ?1", id),
+        };
+        Ok(self.conn.query_row(sql, [id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten())
     }
 
     /// A note item without a URL (NOTE-03), last in `folder`. None if the folder is missing.
@@ -504,6 +616,87 @@ mod tests {
         s.delete(&[a]).unwrap();
         s.undo().unwrap();
         assert_eq!(s.get(a).unwrap().unwrap().folder_id, ROOT);
+    }
+
+    #[test]
+    fn move_items_files_reorders_and_refuses_cycles() {
+        let mut s = Store::open(":memory:").unwrap();
+        let ids: Vec<i64> = ["1", "2", "3", "4"].iter().map(|t| s.add(&format!("https://{t}.example/"), t, "", "").unwrap().0).collect();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        // Several at once, in the order given, at the end of the target.
+        assert_eq!(s.move_items(&[], &[ids[2], ids[0]], f, None).unwrap(), 2);
+        assert_eq!(names(&s, f), [("b", "3".into()), ("b", "1".into())]);
+        assert_eq!(s.history_labels().0.as_deref(), Some("Move 2 items to \u{201c}F\u{201d}"));
+        // Reorder within a folder: before or after a sibling (folder or bookmark).
+        assert_eq!(s.move_items(&[], &[ids[0]], f, Some(Beside { folder: false, id: ids[2], after: false })).unwrap(), 1);
+        assert_eq!(names(&s, f), [("b", "1".into()), ("b", "3".into())]);
+        assert_eq!(s.move_items(&[], &[ids[3]], ROOT, Some(Beside { folder: true, id: f, after: false })).unwrap(), 1);
+        assert_eq!(names(&s, ROOT), [("b", "2".into()), ("b", "4".into()), ("f", "F".into())]);
+        assert_eq!(s.move_items(&[], &[ids[1]], ROOT, Some(Beside { folder: true, id: f, after: true })).unwrap(), 1);
+        assert_eq!(names(&s, ROOT), [("b", "4".into()), ("f", "F".into()), ("b", "2".into())]);
+        assert_eq!(s.history_labels().0.as_deref(), Some("Move \u{201c}2\u{201d}"));
+        // Folders: never into their own subtree, the root never moves; refusals add no step.
+        let g = s.create_folder(f, "G", None).unwrap().unwrap();
+        let before = s.history_labels();
+        assert_eq!(s.move_items(&[f], &[], g, None).unwrap(), 0);
+        assert_eq!(s.move_items(&[f], &[], f, None).unwrap(), 0);
+        assert_eq!(s.move_items(&[ROOT], &[], f, None).unwrap(), 0);
+        assert_eq!(s.move_items(&[], &[ids[0]], 9999, None).unwrap(), 0);
+        assert_eq!(s.move_items(&[], &[9999], f, None).unwrap(), 0, "a bookmark gone elsewhere is skipped");
+        assert_eq!(s.history_labels(), before);
+        assert_eq!(s.move_items(&[g], &[], ROOT, Some(Beside { folder: false, id: ids[3], after: false })).unwrap(), 1);
+        assert_eq!(names(&s, ROOT)[0], ("f", "G".into()));
+        assert_eq!(s.history_labels().0.as_deref(), Some("Move folder \u{201c}G\u{201d}"));
+    }
+
+    #[test]
+    fn filing_is_undone_and_redone_step_by_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let ids: Vec<i64> = ["1", "2", "3"].iter().map(|t| s.add(&format!("https://{t}.example/"), t, "", "").unwrap().0).collect();
+        let start = names(&s, ROOT);
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        assert!(s.rename_folder(f, "Filed").unwrap());
+        s.move_items(&[], &[ids[2], ids[0]], f, None).unwrap();
+        let g = s.create_folder(ROOT, "G", Some(0)).unwrap().unwrap();
+        s.move_items(&[f], &[], g, None).unwrap();
+        assert!(s.delete_folder(g).unwrap());
+        let end = (names(&s, ROOT), names(&s, f));
+        // Changes the history doesn't own survive an undo of a move: a visit, the expand state.
+        s.conn.execute("UPDATE bookmark SET visits = 7 WHERE id = ?1", [ids[0]]).unwrap();
+        s.set_folded(f, false).unwrap();
+
+        let undo = |s: &mut Store| s.undo().unwrap().unwrap();
+        assert_eq!(undo(&mut s), "Delete folder \u{201c}G\u{201d}");
+        assert_eq!(s.folder(f).unwrap().unwrap().parent_id, Some(g));
+        assert_eq!(names(&s, ROOT), [("f", "G".into()), ("b", "2".into())]);
+        assert_eq!(undo(&mut s), "Move folder \u{201c}Filed\u{201d}");
+        assert_eq!(names(&s, ROOT), [("f", "G".into()), ("b", "2".into()), ("f", "Filed".into())]);
+        assert_eq!(undo(&mut s), "New folder \u{201c}G\u{201d}");
+        assert_eq!(s.folder(g).unwrap(), None);
+        assert_eq!(undo(&mut s), "Move 2 items to \u{201c}Filed\u{201d}");
+        assert!(names(&s, f).is_empty());
+        let b = s.get(ids[0]).unwrap().unwrap();
+        assert_eq!((b.folder_id, b.visits), (ROOT, 7));
+        assert_eq!(undo(&mut s), "Rename folder \u{201c}Filed\u{201d}");
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "F");
+        assert!(!s.folder(f).unwrap().unwrap().folded, "expand state kept");
+        assert_eq!(undo(&mut s), "New folder \u{201c}F\u{201d}");
+        assert_eq!(names(&s, ROOT), start);
+        assert_eq!(s.undo().unwrap(), None);
+
+        while s.redo().unwrap().is_some() {}
+        assert_eq!((names(&s, ROOT), names(&s, f)), end);
+    }
+
+    #[test]
+    fn undoing_a_new_folder_keeps_what_arrived_in_it_meanwhile() {
+        let mut s = Store::open(":memory:").unwrap();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        // The extension (not an undo step) adds into it, then the folder's creation is undone.
+        let n = s.add_note(f, "Arrived", "").unwrap().unwrap();
+        s.undo().unwrap();
+        assert_eq!(s.get(n).unwrap().unwrap().folder_id, ROOT, "lands in the root, not lost");
+        assert_eq!(names(&s, ROOT), [("b", "Arrived".into())]);
     }
 
     #[test]
