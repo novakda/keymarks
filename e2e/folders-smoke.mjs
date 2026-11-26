@@ -499,7 +499,7 @@ try {
     && JSON.stringify(await inboxMarked()) === JSON.stringify([made.id]), `deleted ${goneOk}, remade ${!!made}`);
 
   // 22. Merge with report (XFER-02, LINK-18): a link already here by the URL rules takes the
-  // import's description (it had none), a second copy is skipped, a new one is added; the
+  // import's <DD> as its note (it had none; XFER-03), a second copy is skipped, a new one is added; the
   // report shows 1 / 1 / 1 and one Ctrl+Z takes back both the fill and the add.
   const [seed] = hostSend({ type: 'add', url: 'https://www.kmzq-e2e-merge.example/a/', title: 'Kmzq merge A', folder: ROOT });
   fs.writeFileSync(importFile, `<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -510,7 +510,7 @@ try {
   <DT><A HREF="https://kmzq-e2e-merge.example/b">Kmzq merge B</A>
 </DL><p>
 `);
-  const mergeRows = () => sql("SELECT id, title, description FROM bookmark WHERE url LIKE '%kmzq-e2e-merge.example/%' COLLATE NOCASE ORDER BY id");
+  const mergeRows = () => sql("SELECT id, title, notes FROM bookmark WHERE url LIKE '%kmzq-e2e-merge.example/%' COLLATE NOCASE ORDER BY id");
   await menu('import');
   await page.waitForSelector('#import-dlg[open]');
   await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
@@ -524,12 +524,12 @@ try {
   const afterMerge = mergeRows();
   check('22 merge import: 1 added / 1 updated / 1 skipped, the match filled, listed in the report',
     seed?.ok && !seed.existed && report.open && /1 added.*\/ 1 updated \/ 1 skipped/.test(report.sum) && JSON.stringify(report.lists) === '[1,1,1]'
-    && afterMerge.length === 2 && afterMerge[0].id === seed.id && afterMerge[0].title === 'Kmzq merge A' && afterMerge[0].description === 'Kmzq filled from the import',
+    && afterMerge.length === 2 && afterMerge[0].id === seed.id && afterMerge[0].title === 'Kmzq merge A' && afterMerge[0].notes === 'Kmzq filled from the import',
     `${report.sum} ${JSON.stringify(afterMerge)}`);
   await page.click('#report-dlg button[value=close]');
   await key('Control+z');
   const undone = mergeRows();
-  check('22b one Ctrl+Z takes back the fill and the add', undone.length === 1 && undone[0].description === '', JSON.stringify(undone));
+  check('22b one Ctrl+Z takes back the fill and the add', undone.length === 1 && undone[0].notes === '', JSON.stringify(undone));
 
   // 23. The extension's add and lookup match by the same rules (ITEM-02): http vs https,
   // www., host case and the trailing / don't make a new bookmark.
@@ -637,6 +637,7 @@ try {
     check('27b Esc leaves the Dead Links view', !(await status()).startsWith('Dead Links'), await status());
   }
 } catch (e) {
+  log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);
 } finally {
   await browser?.close().catch(() => {});
