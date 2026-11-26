@@ -516,16 +516,16 @@ try {
   await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
   await page.click('#import-html');
   await idle();
-  const shown = await page.evaluate(() => ({
+  const report = await page.evaluate(() => ({
     open: document.getElementById('report-dlg').open,
     sum: document.getElementById('report-sum').textContent,
     lists: [...document.querySelectorAll('#report-lists details')].map((d) => d.querySelectorAll('li').length),
   }));
   const afterMerge = mergeRows();
   check('22 merge import: 1 added / 1 updated / 1 skipped, the match filled, listed in the report',
-    seed?.ok && !seed.existed && shown.open && /1 added.*\/ 1 updated \/ 1 skipped/.test(shown.sum) && JSON.stringify(shown.lists) === '[1,1,1]'
+    seed?.ok && !seed.existed && report.open && /1 added.*\/ 1 updated \/ 1 skipped/.test(report.sum) && JSON.stringify(report.lists) === '[1,1,1]'
     && afterMerge.length === 2 && afterMerge[0].id === seed.id && afterMerge[0].title === 'Kmzq merge A' && afterMerge[0].description === 'Kmzq filled from the import',
-    `${shown.sum} ${JSON.stringify(afterMerge)}`);
+    `${report.sum} ${JSON.stringify(afterMerge)}`);
   await page.click('#report-dlg button[value=close]');
   await key('Control+z');
   const undone = mergeRows();
