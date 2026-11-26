@@ -1,5 +1,8 @@
 # Keymarks
 
+
+> Keymarks is a personal project, shared as is. No support is promised. It is not affiliated with Kaylon or the original Powermarks.
+
 **A keyword-first bookmark manager for Windows and today's browsers, rebuilt from the ideas of Powermarks 3.5.**
 
 Type a few words, see the bookmarks that match, press Enter. No folders to file things in, no
