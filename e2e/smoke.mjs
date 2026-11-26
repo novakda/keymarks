@@ -145,6 +145,8 @@ async function visibleCells(column) {
 
 try {
   const total = Number((await statusText()).match(/· (\d+) bookmarks/)[1]);
+  // An empty search lists the selected folder (FLD-04); Esc goes back to that listing.
+  const startListing = (await statusText()).match(/^\d+ matching in “[^”]*”/)?.[0];
 
   // 1. Operators (All fields)
   const sql = await count('sql');
@@ -208,7 +210,7 @@ try {
   check('valid search clears the error', (await count('sql')) === good && (await page.getAttribute('#q', 'aria-invalid')) === null);
   await page.press('#q', 'Escape');
   await idle();
-  check('Esc clears the search', (await page.inputValue('#q')) === '' && (await statusText()).startsWith(`${total} matching`));
+  check('Esc clears the search', (await page.inputValue('#q')) === '' && !!startListing && (await statusText()).startsWith(startListing), startListing);
   await search('sql');
   const before = await count('sql');
   const kw = await page.textContent('#kwlist li span:nth-child(2)');
