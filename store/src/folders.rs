@@ -18,6 +18,8 @@ pub struct Folder {
     pub note: String,
     pub added: i64,
     pub modified: i64,
+    /// Collapsed in the tree (FLD-08).
+    pub folded: bool,
 }
 
 /// One child of a folder, in display order.
@@ -87,6 +89,15 @@ pub(crate) fn migrate(tx: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v7 migration step: the tree's expand state, kept per folder (FLD-08). Collapsed by default.
+pub(crate) fn migrate_folded(tx: &Connection) -> Result<()> {
+    let have: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('folder') WHERE name = 'folded')", [], |r| r.get(0))?;
+    if !have {
+        tx.execute_batch("ALTER TABLE folder ADD COLUMN folded INTEGER NOT NULL DEFAULT 1")?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Item {
     Folder(i64),
@@ -131,21 +142,46 @@ fn place(tx: &Connection, item: Item, folder: i64, at: Option<i64>) -> Result<()
     set_order(tx, folder, &order)
 }
 
+const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded";
+
 fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
-    Ok(Folder { id: r.get(0)?, parent_id: r.get(1)?, name: r.get(2)?, position: r.get(3)?, note: r.get(4)?, added: r.get(5)?, modified: r.get(6)? })
+    Ok(Folder {
+        id: r.get(0)?,
+        parent_id: r.get(1)?,
+        name: r.get(2)?,
+        position: r.get(3)?,
+        note: r.get(4)?,
+        added: r.get(5)?,
+        modified: r.get(6)?,
+        folded: r.get(7)?,
+    })
 }
 
 fn exists(tx: &Connection, folder: i64) -> Result<bool> {
     tx.query_row("SELECT EXISTS(SELECT 1 FROM folder WHERE id = ?1)", [folder], |r| r.get(0))
 }
 
-// Hooks for later steps: none of these are undoable yet (history snapshots bookmark rows
-// only), and the tree UI, import and export don't call them.
+// None of these are undoable yet (history snapshots bookmark rows only); import and export
+// don't know about folders yet.
 impl Store {
     pub fn folder(&self, id: i64) -> Result<Option<Folder>> {
         self.conn
-            .query_row("SELECT id, parent_id, name, position, note, added, modified FROM folder WHERE id = ?1", [id], folder_row)
+            .query_row(&format!("SELECT {FOLDER_COLS} FROM folder WHERE id = ?1"), [id], folder_row)
             .optional()
+    }
+
+    /// Every folder, the root first, then by parent and position: enough to draw the tree.
+    // ponytail: the whole tree in one call; page it by parent if folders run to tens of thousands.
+    pub fn folders(&self) -> Result<Vec<Folder>> {
+        self.conn
+            .prepare(&format!("SELECT {FOLDER_COLS} FROM folder ORDER BY parent_id IS NOT NULL, parent_id, position, id"))?
+            .query_map([], folder_row)?
+            .collect()
+    }
+
+    /// Expand (false) or collapse (true) a folder in the tree. False if it doesn't exist.
+    pub fn set_folded(&self, id: i64, folded: bool) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE folder SET folded = ?2 WHERE id = ?1", params![id, folded])? == 1)
     }
 
     /// A folder's subfolders and bookmarks in stored order.
@@ -242,56 +278,11 @@ impl Store {
         Ok(Some(self.conn.last_insert_rowid()))
     }
 
-    /// NOT run by the migration (Q2): Keymarks' imports kept no record of which keywords
-    /// came from browser folders, so the database alone can't say. Given the browser's
-    /// folder paths (e.g. read again from its bookmarks file), builds those folders and moves
-    /// each root bookmark whose keywords begin with a path's words (as `folder_keywords`
-    /// writes them) into the deepest such folder. Keywords are untouched. Typed keywords that
-    /// happen to read like a folder path match too. Returns bookmarks moved.
-    pub fn assign_folders_from_browser_paths(&mut self, paths: &[Vec<String>]) -> Result<usize> {
-        let tx = self.conn.transaction()?;
-        let mut targets: Vec<(Vec<String>, i64)> = Vec::new(); // (lowercased words, folder)
-        for path in paths.iter().filter(|p| !p.is_empty()) {
-            let mut at = ROOT;
-            for name in path {
-                let found = tx
-                    .query_row("SELECT id FROM folder WHERE parent_id = ?1 AND name = ?2", params![at, name.trim()], |r| r.get(0))
-                    .optional()?;
-                at = match found {
-                    Some(id) => id,
-                    None => {
-                        tx.execute("INSERT INTO folder (parent_id, name, position) VALUES (?1, ?2, 0)", params![at, name.trim()])?;
-                        let id = tx.last_insert_rowid();
-                        place(&tx, Item::Folder(id), at, None)?;
-                        id
-                    }
-                };
-            }
-            let words = crate::browsers::folder_keywords(path, "").split_whitespace().map(str::to_lowercase).collect();
-            targets.push((words, at));
-        }
-        targets.sort_by_key(|(w, _)| std::cmp::Reverse(w.len())); // deepest match wins
-        let root: Vec<(i64, String)> = tx
-            .prepare("SELECT id, keywords FROM bookmark WHERE folder_id = 1 AND kind = 'bookmark' ORDER BY position, id")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_>>()?;
-        let mut moved = 0;
-        for (id, keywords) in root {
-            let kws: Vec<String> = keywords.split_whitespace().map(str::to_lowercase).collect();
-            if let Some((_, folder)) = targets.iter().find(|(w, _)| !w.is_empty() && kws.starts_with(w)) {
-                place(&tx, Item::Bookmark(id), *folder, None)?;
-                moved += 1;
-            }
-        }
-        tx.commit()?;
-        Ok(moved)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NewBookmark;
     use rusqlite::Connection;
 
     struct TempDb(String);
@@ -303,7 +294,7 @@ mod tests {
             t
         }
         fn clean(&self) {
-            for ext in ["", "-wal", "-shm", ".v5.bak"] {
+            for ext in ["", "-wal", "-shm", ".v5.bak", ".v6.bak"] {
                 let _ = std::fs::remove_file(format!("{}{ext}", self.0));
             }
         }
@@ -516,25 +507,65 @@ mod tests {
     }
 
     #[test]
-    fn keyword_pass_builds_folders_from_known_browser_paths() {
+    fn folder_list_and_expand_state_persist() {
+        let db = TempDb::new("fold");
+        let (p, c) = {
+            let mut s = Store::open(&db.0).unwrap();
+            let p = s.create_folder(ROOT, "P", None).unwrap().unwrap();
+            let a = s.create_folder(ROOT, "A", Some(0)).unwrap().unwrap();
+            let c = s.create_folder(p, "C", None).unwrap().unwrap();
+            let all = s.folders().unwrap();
+            assert_eq!(all.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Bookmarks", "A", "P", "C"], "root, then by parent and position");
+            assert!(all.iter().all(|f| f.folded), "new folders start collapsed");
+            assert!(s.set_folded(p, false).unwrap());
+            assert!(!s.set_folded(9999, false).unwrap());
+            let _ = a;
+            (p, c)
+        };
+        let s = Store::open(&db.0).unwrap();
+        assert!(!s.folder(p).unwrap().unwrap().folded, "kept across restarts");
+        assert!(s.folder(c).unwrap().unwrap().folded);
+    }
+
+    #[test]
+    fn v6_database_gains_expand_state() {
+        let db = TempDb::new("v7");
+        {
+            let mut s = Store::open(&db.0).unwrap();
+            s.create_folder(ROOT, "Old", None).unwrap();
+            s.conn.execute_batch("ALTER TABLE folder DROP COLUMN folded; PRAGMA user_version = 6;").unwrap();
+        }
+        let s = Store::open(&db.0).unwrap();
+        assert_eq!(version(&db.0), crate::SCHEMA_VERSION);
+        assert!(s.folders().unwrap().iter().all(|f| f.folded));
+        assert_eq!(version(&format!("{}.v6.bak", db.0)), 6);
+    }
+
+    #[test]
+    fn empty_search_lists_the_folder_in_folder_order() {
+        use crate::query::{SearchOptions, SortKey};
         let mut s = Store::open(":memory:").unwrap();
-        let kw = |path: &[&str], extra: &str| crate::browsers::folder_keywords(&path.iter().map(|p| p.to_string()).collect::<Vec<_>>(), extra);
-        let nb = |url: &str, keywords: String| NewBookmark { url: url.into(), title: url.into(), keywords, description: String::new(), added: None };
-        s.import_bookmarks("Import", &[
-            nb("https://tokio.rs/", kw(&["Dev Tools", "Async/IO"], "rust")),
-            nb("https://crates.io/", kw(&["Dev Tools"], "")),
-            nb("https://news.example/", kw(&[], "news")),
-            // Typed by hand, but reads exactly like the "Dev Tools" folder: why this pass
-            // can't run on its own at migration time.
-            nb("https://typed.example/", "dev tools".into()),
-        ]).unwrap();
-        assert!(names(&s, ROOT).iter().all(|(k, _)| *k == "b"), "opening never builds keyword folders");
-        let paths = [vec!["Dev Tools".to_string()], vec!["Dev Tools".to_string(), "Async/IO".to_string()]];
-        assert_eq!(s.assign_folders_from_browser_paths(&paths).unwrap(), 3);
-        assert_eq!(names(&s, ROOT), [("b", "https://news.example/".into()), ("f", "Dev Tools".into())]);
-        let dev = s.children(ROOT).unwrap().into_iter().find_map(|n| if let Node::Folder(f) = n { Some(f.id) } else { None }).unwrap();
-        assert_eq!(names(&s, dev), [("f", "Async/IO".into()), ("b", "https://crates.io/".into()), ("b", "https://typed.example/".into())]);
-        assert_eq!(s.find_url("https://tokio.rs/").unwrap().unwrap().keywords, "Dev Tools Async IO rust", "keywords untouched");
-        assert_eq!(s.assign_folders_from_browser_paths(&paths).unwrap(), 0, "only root bookmarks move; folders reused");
+        let (a, _) = s.add("https://a.example/", "A", "red", "").unwrap();
+        let (b, _) = s.add("https://b.example/", "B", "blue", "").unwrap();
+        let (z, _) = s.add("https://z.example/", "Z", "red", "").unwrap();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        s.create_folder(f, "Sub", None).unwrap();
+        let n = s.add_note(f, "Note", "remember").unwrap().unwrap();
+        s.move_bookmark(z, f, Some(0)).unwrap();
+        s.move_bookmark(b, f, None).unwrap();
+        let in_f = SearchOptions { folder: Some(f), ..Default::default() };
+        assert_eq!(s.search_ids("", &in_f).unwrap(), [z, n, b], "bookmarks and notes, folders left out, stored order");
+        assert_eq!(s.search_ids("", &SearchOptions { folder: Some(ROOT), ..Default::default() }).unwrap(), [a]);
+        let by_title = SearchOptions { sort: vec![SortKey { column: "title".into(), desc: false }], ..in_f.clone() };
+        assert_eq!(s.search_ids("", &by_title).unwrap(), [b, n, z], "a header sort is only a view");
+        assert_eq!(s.search_ids("", &in_f).unwrap(), [z, n, b], "stored order untouched");
+        // A search still covers the whole collection (folder scope is a later step).
+        let mut found = s.search_ids("red", &in_f).unwrap();
+        found.sort();
+        assert_eq!(found, [a, z]);
+        // The keyword pane follows the folder while the search is empty.
+        let kws: Vec<String> = s.keywords_with("", &in_f).unwrap().into_iter().map(|k| k.keyword).collect();
+        assert_eq!(kws, ["blue", "red"]);
+        assert_eq!(s.keywords_with("", &SearchOptions::default()).unwrap().len(), 2);
     }
 }

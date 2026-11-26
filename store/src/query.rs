@@ -35,6 +35,8 @@ pub struct SearchOptions {
     pub match_case: bool,
     /// Column sort, most significant first (the original kept the previous key as tiebreak).
     pub sort: Vec<SortKey>,
+    /// The folder shown when the search is empty (Explorer style); None: the whole collection.
+    pub folder: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -67,6 +69,7 @@ impl Default for SearchOptions {
             fields: FIELDS.map(String::from).to_vec(),
             match_case: false,
             sort: Vec::new(),
+            folder: None,
         }
     }
 }

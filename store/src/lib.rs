@@ -39,7 +39,7 @@ impl std::fmt::Display for SearchError {
 impl std::error::Error for SearchError {}
 
 /// The `user_version` `migrate` brings a database to.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS bookmark (
@@ -378,6 +378,13 @@ impl Store {
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
+        // v7: the tree's expand state per folder.
+        if version < 7 {
+            let tx = store.conn.transaction()?;
+            folders::migrate_folded(&tx)?;
+            tx.pragma_update(None, "user_version", 7)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -570,7 +577,13 @@ impl Store {
         let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
         let mut params: Vec<Value> = Vec::new();
         let (with, join, cond, default_order) = match &filter {
+            // An empty search inside a folder lists it in its stored order (VIEW-01, VIEW-03).
+            None if opts.folder.is_some() => {
+                params.push(Value::Integer(opts.folder.unwrap_or(ROOT)));
+                (String::new(), "", "b.folder_id = ?".to_string(), "b.position")
+            }
             None => (String::new(), "", "1".to_string(), "b.added DESC"),
+            // ponytail: a search always covers the whole collection; folder scope is FIND-08 (step 6).
             Some(f) => {
                 // MATERIALIZED: rank the matches once, not once per bookmark row.
                 let (with, join) = match &f.rank {
@@ -613,7 +626,13 @@ impl Store {
         opts: &SearchOptions,
     ) -> std::result::Result<Vec<KeywordCount>, SearchError> {
         let filter = query::compile(query, opts).map_err(SearchError::Syntax)?;
-        Ok(self.keywords_where(filter.as_ref())?)
+        // The pane follows the selected folder while the search is empty (KEY-02).
+        let in_folder = opts.folder.filter(|_| filter.is_none()).map(|f| query::Filter {
+            sql: "b.folder_id = ?".into(),
+            params: vec![f.to_string()],
+            rank: None,
+        });
+        Ok(self.keywords_where(filter.as_ref().or(in_folder.as_ref()))?)
     }
 
     fn keywords_where(&self, filter: Option<&query::Filter>) -> Result<Vec<KeywordCount>> {
