@@ -1,4 +1,4 @@
-// The folder features in the real app (the folders test plan, 21 checks), driven through the
+// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8), driven through the
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
@@ -418,6 +418,8 @@ try {
   const want = { name: 'kmzq-import', links: 1, folders: [{ name: 'Kmzq Top', links: 1, folders: [{ name: 'Kmzq Sub', links: 1, folders: [{ name: 'Kmzq Deep', links: 2, folders: [] }] }] }] };
   check('12 import nested folders: the tree appears under a new folder', intoNew && imported?.parent_id === ROOT && JSON.stringify(dbTree(imported.id, 'kmzq-import')) === JSON.stringify(want)
     && (await treeSelected()) === imported.id && (await page.isVisible(`${treeLi(imported.id)}`)));
+  // Every import ends on its merge report (XFER-02); close it so the menus are reachable again.
+  await page.click('#report-dlg button[value=close]');
 
   // 15. Export everything to HTML: a valid Netscape file with the same folder tree.
   const exportNow = async (scope) => {
@@ -495,6 +497,76 @@ try {
     goneOk && again?.ok && made?.name === 'New' && made.parent_id === ROOT
     && sql('SELECT folder_id FROM bookmark WHERE id = ?', again.id)[0]?.folder_id === made.id && (await waitInboxShown(made.id))
     && JSON.stringify(await inboxMarked()) === JSON.stringify([made.id]), `deleted ${goneOk}, remade ${!!made}`);
+
+  // 22. Merge with report (XFER-02, LINK-18): a link already here by the URL rules takes the
+  // import's description (it had none), a second copy is skipped, a new one is added; the
+  // report shows 1 / 1 / 1 and one Ctrl+Z takes back both the fill and the add.
+  const [seed] = hostSend({ type: 'add', url: 'https://www.kmzq-e2e-merge.example/a/', title: 'Kmzq merge A', folder: ROOT });
+  fs.writeFileSync(importFile, `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<DL><p>
+  <DT><A HREF="http://kmzq-e2e-merge.example/a">Kmzq merge A (import)</A>
+  <DD>Kmzq filled from the import
+  <DT><A HREF="https://KMZQ-E2E-MERGE.example/a">Kmzq merge A again</A>
+  <DT><A HREF="https://kmzq-e2e-merge.example/b">Kmzq merge B</A>
+</DL><p>
+`);
+  const mergeRows = () => sql("SELECT id, title, description FROM bookmark WHERE url LIKE '%kmzq-e2e-merge.example/%' COLLATE NOCASE ORDER BY id");
+  await menu('import');
+  await page.waitForSelector('#import-dlg[open]');
+  await page.waitForFunction(() => !document.getElementById('import-sources').textContent.includes('Looking for browsers'), null, { timeout: 20000 });
+  await page.click('#import-html');
+  await idle();
+  const shown = await page.evaluate(() => ({
+    open: document.getElementById('report-dlg').open,
+    sum: document.getElementById('report-sum').textContent,
+    lists: [...document.querySelectorAll('#report-lists details')].map((d) => d.querySelectorAll('li').length),
+  }));
+  const afterMerge = mergeRows();
+  check('22 merge import: 1 added / 1 updated / 1 skipped, the match filled, listed in the report',
+    seed?.ok && !seed.existed && shown.open && /1 added.*\/ 1 updated \/ 1 skipped/.test(shown.sum) && JSON.stringify(shown.lists) === '[1,1,1]'
+    && afterMerge.length === 2 && afterMerge[0].id === seed.id && afterMerge[0].title === 'Kmzq merge A' && afterMerge[0].description === 'Kmzq filled from the import',
+    `${shown.sum} ${JSON.stringify(afterMerge)}`);
+  await page.click('#report-dlg button[value=close]');
+  await key('Control+z');
+  const undone = mergeRows();
+  check('22b one Ctrl+Z takes back the fill and the add', undone.length === 1 && undone[0].description === '', JSON.stringify(undone));
+
+  // 23. The extension's add and lookup match by the same rules (ITEM-02): http vs https,
+  // www., host case and the trailing / don't make a new bookmark.
+  const [again2, look] = hostSend({ type: 'add', url: 'http://KMZQ-E2E-MERGE.example/a', title: 'Kmzq dup add' }, { type: 'lookup', url: 'https://kmzq-e2e-merge.example/a' });
+  check('23 extension add and lookup find the existing bookmark by the URL rules', again2?.ok && again2.existed && again2.id === seed.id && look?.found && look.title === 'Kmzq merge A'
+    && mergeRows().length === 1, `${JSON.stringify(again2)} ${JSON.stringify(look)}`);
+
+  // 24. Duplicate URLs view (SAVD-10): copies made before LINK-18 (written straight into the
+  // database) are grouped; Ctrl+D shows them, Merge keeps the focused one, Ctrl+Z restores.
+  {
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      const ins = db.prepare("INSERT INTO bookmark (url, title, keywords, added, folder_id) VALUES (?, ?, ?, unixepoch(), ?)");
+      ins.run('http://kmzq-e2e-dup.example/x', 'Kmzq dup 1', 'kmzqone', ROOT);
+      ins.run('https://www.kmzq-e2e-dup.example/x/', 'Kmzq dup 2', 'kmzqtwo', ROOT);
+    } finally { db.close(); }
+  }
+  const dupRows = () => sql("SELECT id, keywords FROM bookmark WHERE url LIKE '%kmzq-e2e-dup.example/%' ORDER BY id");
+  await key('Control+d');
+  // The copy of real data may hold other groups too: ask the page's list (ids, in view order),
+  // then scroll the virtual list to the older copy and click it like a user would.
+  const [first, second] = dupRows();
+  const viewIds = await page.evaluate(() => ids);
+  const viewOk = !(await page.isHidden('#dup-bar')) && viewIds.includes(first.id) && viewIds.indexOf(second.id) === viewIds.indexOf(first.id) + 1
+    && (await page.textContent('#dup-view')).startsWith('⧉Duplicate URLs [');
+  await page.evaluate((id) => { scroller().scrollTop = ids.indexOf(id) * ROW_H[view]; }, first.id);
+  await page.waitForSelector(`#table-body tr.vrow:has-text("Kmzq dup 1"), #list li.vrow:has-text("Kmzq dup 1")`);
+  await page.click(`#table-body tr.vrow:has-text("Kmzq dup 1"), #list li.vrow:has-text("Kmzq dup 1")`);
+  await page.click('#dup-merge');
+  await idle();
+  const mergedRows = dupRows();
+  check('24 Ctrl+D lists the pre-LINK-18 copies; Merge keeps the focused one with both keywords',
+    viewOk && mergedRows.length === 1 && mergedRows[0].id === first.id && mergedRows[0].keywords.split(' ').includes('kmzqtwo'), `${viewOk} ${JSON.stringify(mergedRows)}`);
+  await key('Control+z');
+  check('24b Ctrl+Z brings the merged copy back', dupRows().length === 2, JSON.stringify(dupRows()));
+  await key('Control+d');
 } catch (e) {
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);
 } finally {
