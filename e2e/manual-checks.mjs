@@ -1,6 +1,7 @@
 // The two checks no script can do, with the machine doing the recording: Dan only acts.
 //   (a) physical key presses reach the page (CDP key events skip WebView2's accelerator
-//       filter, so only a real keyboard proves the 8 shortcuts get through);
+//       filter, so only a real keyboard proves the 8 shortcuts get through; `npm run keys` now
+//       covers this with Windows SendInput, so this part is for checking a keyboard itself);
 //   (b) the real native file pickers, for one Import and one Export.
 // It starts the ISOLATED e2e build (own identifier, so beside Dan's own Keymarks, which is never
 // touched) on a COPY of the data, in front, with the debug port. A listener in the page reports
@@ -135,6 +136,8 @@ ws.onmessage = ({ data }) => {
   if (ev.t === 'key') {
     const hit = checks.find((c) => c.test?.(ev));
     if (hit) capture(hit, `arrived at the page${ev.trusted ? '' : ' (synthetic)'}, target ${ev.target}`);
+    // A key no step matches (named keys only, never typed text): shows what a missing F1 really sent.
+    else if (ev.key.length > 1 && !/^(Control|Shift|Alt|Meta|Escape|Enter|Tab)$/.test(ev.key)) log(`key ${ev.key} reached the page; no step matches it`);
   } else if (ev.t === 'status') {
     const hit = checks.find((c) => c.status?.(ev.text));
     if (!hit) return;

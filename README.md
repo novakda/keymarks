@@ -185,6 +185,9 @@ A few decisions worth noting:
   - Its checks compare results to each other rather than to fixed numbers (for example,
     `a b` returns no more than `a`), so they pass on anyone's collection.
   - Its output contains counts only, never bookmark text.
+  - `npm run keys` presses the shortcut keys through Windows SendInput, the path a real
+    keyboard takes after its driver (CDP key events don't). It needs the isolated
+    build in `KEYMARKS_EXE`, an empty data folder, and takes focus for about 15 s.
 
 ### 5. Working with an AI assistant
 

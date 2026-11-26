@@ -6,7 +6,8 @@
     "smoke": "node smoke.mjs",
     "tree": "node tree.mjs",
     "folders": "node folders-smoke.mjs",
-    "manual": "node manual-checks.mjs"
+    "manual": "node manual-checks.mjs",
+    "keys": "node os-keys.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.64.1"
