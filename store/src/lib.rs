@@ -225,21 +225,112 @@ pub fn bookmarks(entries: &[Entry]) -> Vec<&NewBookmark> {
     entries.iter().filter_map(|e| if let Entry::Bookmark(b) = e { Some(b) } else { None }).collect()
 }
 
-/// How a URL is compared for duplicates (LINK-18, Q3): the protocol, a leading `www.`, a
-/// trailing `/` and the host's case don't make a different link. Stored URLs are never rewritten.
+/// The one rule set for "same URL" (LINK-18, Q3), used by every add, import, merge and the
+/// Duplicates view: the protocol, a leading `www.`, a trailing `/` on the path and the host's
+/// case don't make a different link; the port, the path's case, the query and the fragment do.
+/// Stored URLs are never rewritten.
 pub fn url_key(url: &str) -> String {
     let s = url.trim();
     let s = s.split_once("://").map_or(s, |(_, rest)| rest);
     let (host, rest) = s.split_at(s.find(['/', '?', '#']).unwrap_or(s.len()));
+    let (path, tail) = rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len()));
     let host = host.to_ascii_lowercase();
-    format!("{}{}", host.strip_prefix("www.").unwrap_or(&host), rest.strip_suffix('/').unwrap_or(rest))
+    format!("{}{}{tail}", host.strip_prefix("www.").unwrap_or(&host), path.strip_suffix('/').unwrap_or(path))
+}
+
+/// XFER-02's "updated" case: an existing bookmark takes each field it has empty (a title
+/// that is just its URL counts as empty) from a matching import. Returns whether it changed.
+fn fill_empty(conn: &Connection, id: i64, title: &str, keywords: &str, description: &str, notes: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE bookmark SET title = iif(title = '' OR title = url, ?2, title), keywords = iif(keywords = '', ?3, keywords),
+            description = iif(description = '', ?4, description), notes = iif(notes = '', ?5, notes)
+         WHERE id = ?1 AND (((title = '' OR title = url) AND ?2 NOT IN ('', url)) OR (keywords = '' AND ?3 <> '')
+            OR (description = '' AND ?4 <> '') OR (notes = '' AND ?5 <> ''))",
+        params![id, title.trim(), normalize_keywords(keywords), description.trim(), notes.trim()],
+    )?;
+    if n > 0 {
+        let kw: String = conn.query_row("SELECT keywords FROM bookmark WHERE id = ?1", [id], |r| r.get(0))?;
+        index_keywords(conn, id, &kw)?;
+    }
+    Ok(n > 0)
+}
+
+/// An import matched against what's here (XFER-02): every link goes through `existing`
+/// first; only those it doesn't take are inserted, then passed to `added`.
+struct Merge {
+    /// `url_key` of every link here or added so far, to the bookmark's id.
+    seen: std::collections::HashMap<String, i64>,
+    /// Bookmarks that were here before the import and took fields from it, and their rows
+    /// as they were (for undo).
+    touched: Vec<i64>,
+    before: Vec<Vec<rusqlite::types::Value>>,
+}
+
+impl Merge {
+    fn new(conn: &Connection) -> Result<Merge> {
+        let mut seen = std::collections::HashMap::new();
+        // ponytail: every stored URL's key in memory (13k is nothing); index a key column if collections reach millions.
+        for row in conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' ORDER BY id")?.query_map([], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))? {
+            let (id, url) = row?;
+            seen.entry(url_key(&url)).or_insert(id);
+        }
+        Ok(Merge { seen, touched: Vec::new(), before: Vec::new() })
+    }
+
+    /// A link already here (or earlier in the import) fills that bookmark's empty fields
+    /// ("updated") or is "skipped"; a link without a URL is skipped. True if it was taken.
+    #[allow(clippy::too_many_arguments)]
+    fn existing(&mut self, conn: &Connection, report: &mut ImportReport, url: &str, title: &str, keywords: &str, description: &str, notes: &str) -> Result<bool> {
+        if url.trim().is_empty() {
+            report.skipped += 1;
+            return Ok(true);
+        }
+        let Some(&id) = self.seen.get(&url_key(url)) else { return Ok(false) };
+        let was_here = !report.ids.contains(&id) && !self.touched.contains(&id);
+        let old = if was_here { history::rows(conn, &[id])? } else { Vec::new() };
+        let filled = fill_empty(conn, id, title, keywords, description, notes)?;
+        if filled && was_here {
+            self.touched.push(id);
+            self.before.extend(old);
+        }
+        let outcome = if filled { report.updated += 1; "updated" } else { report.skipped += 1; "skipped" };
+        report.items.push(ReportItem { outcome, id, url: url.to_string(), title: title.to_string() });
+        Ok(true)
+    }
+
+    fn added(&mut self, report: &mut ImportReport, id: i64, url: &str, title: &str) {
+        self.seen.insert(url_key(url), id);
+        report.ids.push(id);
+        report.added += 1;
+        report.items.push(ReportItem { outcome: "added", id, url: url.to_string(), title: title.to_string() });
+    }
+}
+
+/// One bookmark by id, inside a transaction.
+fn s_get(conn: &Connection, id: i64) -> Result<Bookmark> {
+    conn.query_row(&format!("SELECT {COLS} FROM bookmark b WHERE b.id = ?1"), [id], bookmark)
+}
+
+/// One line of an import's merge report.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ReportItem {
+    /// "added", "updated" (took empty fields from the import) or "skipped" (already here).
+    pub outcome: &'static str,
+    /// The bookmark added, or the one already here that it matched.
+    pub id: i64,
+    pub url: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
 pub struct ImportReport {
     pub added: usize,
-    /// Already in the collection (same URL), or repeated within the import.
-    pub duplicates: usize,
+    /// Already here (same URL by `url_key`) and took empty fields from the import (XFER-02).
+    pub updated: usize,
+    /// Already here, or repeated within the import, with nothing to fill; or without a URL.
+    pub skipped: usize,
+    /// Every imported link and what became of it, in the source's order.
+    pub items: Vec<ReportItem>,
     /// Ids of the bookmarks added.
     pub ids: Vec<i64>,
     /// Folders created.
@@ -455,12 +546,8 @@ impl Store {
     /// `add` into `folder`: `NEW_ITEMS` for the New Item Folder (made if needed), a missing
     /// folder for the root. No undo step: the browser's host calls this from its own process.
     pub fn add_in(&self, folder: i64, url: &str, title: &str, keywords: &str, description: &str) -> Result<(i64, bool)> {
-        let existing = self
-            .conn
-            .query_row("SELECT id FROM bookmark WHERE url = ?1 AND kind = 'bookmark'", [url], |r| r.get(0))
-            .optional()?;
-        if let Some(id) = existing {
-            return Ok((id, true));
+        if let Some(b) = self.find_url(url)? {
+            return Ok((b.id, true));
         }
         let keywords = normalize_keywords(keywords);
         let tx = self.conn.unchecked_transaction()?;
@@ -493,10 +580,7 @@ impl Store {
             let tx = s.conn.transaction()?;
             let mut report = ImportReport::default();
             // ponytail: every stored URL's key in memory (13k is nothing); index a key column if collections reach millions.
-            let mut seen = std::collections::HashSet::new();
-            for url in tx.prepare("SELECT url FROM bookmark WHERE kind = 'bookmark'")?.query_map([], |r| r.get::<_, String>(0))? {
-                seen.insert(url_key(&url?));
-            }
+            let mut merge = Merge::new(&tx)?;
             let mut created = Vec::new();
             let into = folders::resolve(&tx, into, &mut created)?;
             let into = if folders::exists(&tx, into)? { into } else { ROOT };
@@ -539,8 +623,7 @@ impl Store {
                         }
                     }
                     Entry::Bookmark(b) => {
-                        if b.url.trim().is_empty() || !seen.insert(url_key(&b.url)) {
-                            report.duplicates += 1;
+                        if merge.existing(&tx, &mut report, &b.url, &b.title, &b.keywords, &b.description, &b.notes)? {
                             continue;
                         }
                         let keywords =
@@ -552,14 +635,12 @@ impl Store {
                         )?;
                         let id = tx.last_insert_rowid();
                         index_keywords(&tx, id, &keywords)?;
-                        report.ids.push(id);
-                        report.added += 1;
+                        merge.added(&mut report, id, &b.url, &b.title);
                     }
                     Entry::Row(r) => {
                         // A Keymarks JSON row: URL-less notes are kept, links checked for duplicates.
                         let note = r.kind == "note";
-                        if !note && (r.url.trim().is_empty() || !seen.insert(url_key(&r.url))) {
-                            report.duplicates += 1;
+                        if !note && merge.existing(&tx, &mut report, &r.url, &r.title, &r.keywords, &r.description, &r.notes)? {
                             continue;
                         }
                         let keywords =
@@ -574,22 +655,29 @@ impl Store {
                         )?;
                         let id = tx.last_insert_rowid();
                         index_keywords(&tx, id, &keywords)?;
-                        report.ids.push(id);
-                        report.added += 1;
+                        if note {
+                            report.ids.push(id);
+                            report.added += 1;
+                        } else {
+                            merge.added(&mut report, id, &r.url, &r.title);
+                        }
                     }
                 }
             }
             tx.commit()?;
             report.folders = created.len();
-            let ids = report.ids.clone();
-            Ok((report, ids, created))
+            let ids = [report.ids.clone(), merge.touched].concat();
+            Ok((report, ids, created, merge.before))
         })
     }
 
-    /// Import every Powermarks entry in one transaction. Returns the number imported.
-    pub fn import_pm35(&mut self, db: &Database) -> Result<usize> {
+    /// Import every Powermarks entry in one transaction. A link repeated in the file (by
+    /// `url_key`) fills the first one's empty fields instead (XFER-02).
+    pub fn import_pm35(&mut self, db: &Database) -> Result<ImportReport> {
         let tx = self.conn.transaction()?;
+        let mut report = ImportReport::default();
         {
+            let mut merge = Merge::new(&tx)?;
             let mut insert = tx.prepare(
                 "INSERT INTO bookmark (url, title, keywords, description, notes, user_field,
                     added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata, schedule)
@@ -600,9 +688,13 @@ impl Store {
                 let time = |i| e.num(i).filter(|&t| t != 0);
                 let num = |i| e.num(i).unwrap_or(0);
                 let keywords = text("keywords");
+                let (url, title) = (decode_text(&e.url), decode_text(&e.title));
+                if merge.existing(&tx, &mut report, &url, &title, &keywords, &text("desc"), &text("notes"))? {
+                    continue;
+                }
                 insert.execute(params![
-                    decode_text(&e.url),
-                    decode_text(&e.title),
+                    url,
+                    title,
                     keywords,
                     text("desc"),
                     text("notes"),
@@ -622,6 +714,7 @@ impl Store {
                     tx.execute("UPDATE bookmark SET check_enabled = 0 WHERE id = ?1", [id])?;
                 }
                 index_keywords(&tx, id, &keywords)?;
+                merge.added(&mut report, id, &url, &title);
             }
         }
         // Tagged keywords (tail) and macros (head), as Saved searches and links.
@@ -639,7 +732,7 @@ impl Store {
             )?;
         }
         tx.commit()?;
-        Ok(db.entries.len())
+        Ok(report)
     }
 
     /// Search with default options (all fields, prefix matching, keyword hits first).
@@ -1034,10 +1127,63 @@ impl Store {
         tx.commit()
     }
 
-    /// The bookmark with exactly this URL, if any.
+    /// The bookmark whose URL is the same link as `url` by the duplicate rules (`url_key`):
+    /// the exact URL first, else the oldest match.
     pub fn find_url(&self, url: &str) -> Result<Option<Bookmark>> {
-        let sql = format!("SELECT {COLS} FROM bookmark b WHERE b.url = ?1 AND b.kind = 'bookmark'");
-        self.conn.query_row(&sql, [url], bookmark).optional()
+        if url.trim().is_empty() {
+            return Ok(None);
+        }
+        let key = url_key(url);
+        // ponytail: scans every URL per lookup (13k: about a millisecond); a stored key column with an index if collections reach millions.
+        let mut stmt = self.conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' ORDER BY url <> ?1, id")?;
+        let mut rows = stmt.query([url])?;
+        while let Some(r) = rows.next()? {
+            if url_key(&r.get::<_, String>(1)?) == key {
+                return self.get(r.get(0)?);
+            }
+        }
+        Ok(None)
+    }
+
+    /// The Duplicates view (SAVD-10): bookmarks whose URLs are the same link by `url_key`,
+    /// across folders, in groups of two or more. Oldest first in a group; groups in the
+    /// order of their oldest bookmark.
+    pub fn duplicate_groups(&self) -> Result<Vec<Vec<i64>>> {
+        let mut index = std::collections::HashMap::new();
+        let mut groups: Vec<Vec<i64>> = Vec::new();
+        for row in self.conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' AND url <> '' ORDER BY added, id")?.query_map([], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))? {
+            let (id, url) = row?;
+            let n = *index.entry(url_key(&url)).or_insert_with(|| { groups.push(Vec::new()); groups.len() - 1 });
+            groups[n].push(id);
+        }
+        groups.retain(|g| g.len() > 1);
+        Ok(groups)
+    }
+
+    /// Resolve `keep`'s duplicate group (SAVD-10) as one undo step: the other copies are
+    /// deleted. With `merge`, `keep` first takes their keywords and, for each field it has
+    /// empty, the first copy's value (the XFER-02 rule). Returns how many were deleted.
+    pub fn merge_duplicates(&mut self, keep: i64, merge: bool) -> Result<usize> {
+        let Some(group) = self.duplicate_groups()?.into_iter().find(|g| g.contains(&keep)) else { return Ok(0) };
+        let others: Vec<i64> = group.iter().copied().filter(|&id| id != keep).collect();
+        let name = format!("{} {} duplicate{}", if merge { "Merge" } else { "Delete" }, others.len(), if others.len() == 1 { "" } else { "s" });
+        self.record(name, &group, false, |s| {
+            let tx = s.conn.transaction()?;
+            if merge {
+                for &id in &others {
+                    let o = s_get(&tx, id)?;
+                    fill_empty(&tx, keep, &o.title, "", &o.description, &o.notes)?;
+                    let mine: String = tx.query_row("SELECT keywords FROM bookmark WHERE id = ?1", [keep], |r| r.get(0))?;
+                    let keywords = normalize_keywords(&format!("{mine} {}", o.keywords));
+                    tx.execute("UPDATE bookmark SET keywords = ?2 WHERE id = ?1", params![keep, keywords])?;
+                    index_keywords(&tx, keep, &keywords)?;
+                }
+            }
+            let json = serde_json::to_string(&others).expect("ids serialize");
+            let n = tx.execute("DELETE FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))", [json])?;
+            tx.commit()?;
+            Ok(n)
+        })
     }
 
     /// Put bookmarks on a link-check schedule (None: checked only on request), one undo step.
@@ -1473,7 +1619,7 @@ mod tests {
 
     fn store() -> Store {
         let mut s = Store::open(":memory:").unwrap();
-        assert_eq!(s.import_pm35(&pm35::parse(SAMPLE).unwrap()).unwrap(), 2);
+        assert_eq!(s.import_pm35(&pm35::parse(SAMPLE).unwrap()).unwrap().added, 2);
         s
     }
 
@@ -1783,7 +1929,7 @@ mod tests {
         let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), notes: String::new(), added: None };
         let items = [nb("http://example.com/u", "dup"), nb("https://new.example/", "Dev Tools"), nb("https://new.example/", "again"), nb("https://two.example/", "")];
         let r = s.import_bookmarks("Import from Chrome (Default)", ROOT, &items).unwrap();
-        assert_eq!((r.added, r.duplicates, r.ids.len()), (2, 2, 2));
+        assert_eq!((r.added, r.skipped, r.ids.len()), (2, 2, 2));
         // Fetch fills a placeholder title and empty description, merges keywords.
         s.apply_fetched(r.ids[1], &PageMeta { title: " Two ".into(), description: "About two".into(), keywords: "x, Dev".into() }).unwrap();
         let two = s.get(r.ids[1]).unwrap().unwrap();
@@ -1840,7 +1986,7 @@ mod tests {
         let mut s = store();
         let before = tree_of(&s, ROOT);
         let r = s.import_tree("Import from nested.html", &browsers::read_netscape_html(NESTED), ROOT, Some("nested"), false).unwrap();
-        assert_eq!((r.added, r.duplicates, r.folders), (5, 0, 4));
+        assert_eq!((r.added, r.skipped, r.folders), (5, 0, 4));
         let new = r.folder.unwrap();
         assert_eq!(tree_of(&s, ROOT), format!("{before} [nested First [Work Wiki [Clients & Partners Client] Tracker] [Empty ] Last]"), "order, nesting and empty folders kept, last in the root");
         assert_eq!(s.folder(new).unwrap().unwrap().name, "nested");
@@ -1869,7 +2015,7 @@ mod tests {
             <DT><A HREF="https://dup.example/other">Other page</A>
         </DL><p>"#;
         let r = s.import_tree("Import", &browsers::read_netscape_html(html), ROOT, Some("dups"), false).unwrap();
-        assert_eq!((r.added, r.duplicates), (2, 2));
+        assert_eq!((r.added, r.skipped), (2, 2));
         assert_eq!(tree_of(&s, r.folder.unwrap()), "Twice [Sub ] Other page", "the folder stays though its link was a duplicate");
         assert_eq!(url_key("HTTPS://WWW.Example.com/A/"), "example.com/A", "the path keeps its case");
     }
@@ -1957,9 +2103,9 @@ mod tests {
         let db = pm35::parse(&bytes).unwrap();
         let mut s = Store::open(":memory:").unwrap();
         let t = std::time::Instant::now();
-        let n = s.import_pm35(&db).unwrap();
-        eprintln!("imported {n} in {:?}", t.elapsed());
-        assert_eq!(n, db.entries.len());
+        let r = s.import_pm35(&db).unwrap();
+        eprintln!("imported {} ({} repeats updated, {} skipped) in {:?}", r.added, r.updated, r.skipped, t.elapsed());
+        assert_eq!(r.added + r.updated + r.skipped, db.entries.len());
         let t = std::time::Instant::now();
         let hits = s.search("a", 50).unwrap().len();
         eprintln!("search 'a': {hits} hits in {:?}", t.elapsed());
@@ -2056,5 +2202,105 @@ mod tests {
             assert!(missing.is_empty() && changed == 0 && rows_diff == 0, "undo did not restore the dictionary exactly");
         }
         eprintln!("undid cleanup in {:?}; dictionary back to {}", t.elapsed(), s.keywords("").unwrap().len());
+    }
+
+    #[test]
+    fn url_key_rules_table() {
+        // (a, b, same link?) — LINK-18 with Dan's Q3 defaults: protocol, www., trailing /, host case ignored;
+        // port, path case, query and fragment kept.
+        let table = [
+            ("http://example.com/a", "https://example.com/a", true),
+            ("https://www.example.com/a", "https://example.com/a", true),
+            ("https://example.com/a/", "https://example.com/a", true),
+            ("https://example.com/", "https://example.com", true),
+            ("https://EXAMPLE.Com/a", "https://example.com/a", true),
+            ("  https://example.com/a  ", "https://example.com/a", true),
+            ("https://example.com/a/?q=1", "https://example.com/a?q=1", true),
+            ("https://example.com/#top", "https://example.com#top", true),
+            ("https://example.com/A", "https://example.com/a", false),
+            ("https://example.com:8080/a", "https://example.com/a", false),
+            ("https://example.com/a?q=1", "https://example.com/a?q=2", false),
+            ("https://example.com/a?q=1", "https://example.com/a", false),
+            ("https://example.com/a#x", "https://example.com/a", false),
+            ("https://www2.example.com/", "https://example.com/", false),
+            ("https://wwwexample.com/", "https://example.com/", false),
+            ("file:///C:/Docs/a.pdf", "file:///C:/Docs/a.pdf", true),
+        ];
+        for (a, b, same) in table {
+            assert_eq!(url_key(a) == url_key(b), same, "{a} vs {b}: {} / {}", url_key(a), url_key(b));
+        }
+    }
+
+    #[test]
+    fn single_adds_and_lookups_match_by_the_url_rules() {
+        let s = Store::open(":memory:").unwrap();
+        let (id, existed) = s.add("https://www.example.com/page/", "Page", "", "").unwrap();
+        assert!(!existed);
+        assert_eq!(s.add_in(NEW_ITEMS, "http://example.com/page", "Again", "", "").unwrap(), (id, true), "extension add finds it");
+        assert_eq!(s.find_url("HTTP://EXAMPLE.com/page").unwrap().map(|b| b.id), Some(id), "popup lookup finds it");
+        assert_eq!(s.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn merge_import_fills_empty_fields_reports_and_undoes_as_one_step() {
+        let mut s = Store::open(":memory:").unwrap();
+        let (a, _) = s.add("https://a.example/", "A", "", "").unwrap(); // no keywords or description
+        let (b, _) = s.add("https://b.example/", "B", "kept", "B desc").unwrap();
+        let nb = |url: &str, title: &str, kw: &str, desc: &str| NewBookmark { url: url.into(), title: title.into(), keywords: kw.into(), description: desc.into(), notes: String::new(), added: None };
+        let items = [
+            nb("http://www.a.example", "Other title", "alpha", "About A"), // updated: keywords and description filled, title kept
+            nb("https://b.example", "B2", "new", "other"),                // skipped: nothing of B's is empty
+            nb("https://c.example/", "C", "", ""),                         // added
+        ];
+        let r = s.import_bookmarks("Import from file", ROOT, &items).unwrap();
+        assert_eq!((r.added, r.updated, r.skipped), (1, 1, 1));
+        let outcome: Vec<_> = r.items.iter().map(|i| (i.outcome, i.id)).collect();
+        assert_eq!(outcome, [("updated", a), ("skipped", b), ("added", r.ids[0])]);
+        let got = s.get(a).unwrap().unwrap();
+        assert_eq!((got.title.as_str(), got.keywords.as_str(), got.description.as_str()), ("A", "alpha", "About A"));
+        assert_eq!(s.search("alpha", 5).unwrap().len(), 1, "filled keywords are searchable");
+        assert_eq!(s.get(b).unwrap().unwrap().keywords, "kept");
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Import from file"));
+        let got = s.get(a).unwrap().unwrap();
+        assert_eq!((got.keywords.as_str(), got.description.as_str(), s.count().unwrap()), ("", "", 2), "one undo takes back the fill and the add");
+        s.redo().unwrap();
+        assert_eq!((s.get(a).unwrap().unwrap().description.as_str(), s.count().unwrap()), ("About A", 3));
+    }
+
+    #[test]
+    fn pm35_repeats_merge_by_the_url_rules() {
+        let file: &[u8] = b"<HTML><BODY><DL>\r\n\
+<DT><A HREF=\"http://a.example/\">A</A>\r\n<DD><!--mdata=[][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
+<DT><A HREF=\"https://www.a.example\">A again</A>\r\n<DD><!--keywords-->food\r\n<!--mdata=[][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
+<DT><A HREF=\"http://b.example/\">B</A>\r\n<DD><!--mdata=[][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
+</DL><p>\r\n</BODY>\r\n</HTML>";
+        let mut s = Store::open(":memory:").unwrap();
+        let r = s.import_pm35(&pm35::parse(file).unwrap()).unwrap();
+        assert_eq!((r.added, r.updated, r.skipped, s.count().unwrap()), (2, 1, 0, 2));
+        assert_eq!(s.find_url("http://a.example/").unwrap().unwrap().keywords, "food", "the repeat filled the empty keywords");
+    }
+
+    #[test]
+    fn duplicates_view_groups_merges_and_keeps_undoably() {
+        let mut s = Store::open(":memory:").unwrap();
+        // Made before LINK-18: rows written straight in, as an old collection would have them.
+        for (url, title, kw, desc) in [("http://a.example/", "A", "one", ""), ("https://www.a.example", "", "two", "About"), ("https://b.example/", "B", "", ""),
+            ("https://A.example/", "A3", "", ""), ("https://c.example/", "C", "", ""), ("http://c.example", "C2", "", "")] {
+            s.conn.execute("INSERT INTO bookmark (url, title, keywords, description, added, folder_id) VALUES (?1, ?2, ?3, ?4, unixepoch(), 1)", params![url, title, kw, desc]).unwrap();
+        }
+        let groups = s.duplicate_groups().unwrap();
+        assert_eq!(groups, vec![vec![1, 2, 4], vec![5, 6]]);
+        assert_eq!(s.merge_duplicates(1, true).unwrap(), 2);
+        let a = s.get(1).unwrap().unwrap();
+        assert_eq!((a.title.as_str(), a.keywords.as_str(), a.description.as_str()), ("A", "one two", "About"));
+        assert_eq!(s.duplicate_groups().unwrap(), vec![vec![5, 6]]);
+        assert_eq!(s.merge_duplicates(6, false).unwrap(), 1, "keep this one: the others go as they are");
+        assert_eq!((s.count().unwrap(), s.get(6).unwrap().unwrap().title.as_str()), (3, "C2"));
+        assert!(s.duplicate_groups().unwrap().is_empty());
+        s.undo().unwrap();
+        s.undo().unwrap();
+        assert_eq!(s.duplicate_groups().unwrap(), vec![vec![1, 2, 4], vec![5, 6]], "both undone");
+        assert_eq!(s.get(1).unwrap().unwrap().keywords, "one");
+        assert_eq!(s.merge_duplicates(3, true).unwrap(), 0, "no duplicates: nothing to do");
     }
 }

@@ -114,14 +114,16 @@ impl Store {
     /// Like `record`, for changes that create bookmarks and folders (imports): `change`
     /// returns the new bookmark and folder ids, which can't be known beforehand. Undo deletes
     /// them; redo puts them back where they were.
+    /// `change` also returns, among the ids, existing bookmarks it changed, with their rows
+    /// as they were (`rows`, taken before changing them): undo puts those back.
     pub(crate) fn record_created<T>(
         &mut self,
         name: String,
-        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>, Vec<i64>)>,
+        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>, Vec<i64>, Vec<Vec<Value>>)>,
     ) -> Result<T> {
-        let (out, ids, folder_ids) = change(self)?;
+        let (out, ids, folder_ids, rows) = change(self)?;
         let mut after = self.snapshot(&ids, false)?;
-        let mut before = Snapshot { rows: Vec::new(), tagged: None, tree: None };
+        let mut before = Snapshot { rows, tagged: None, tree: None };
         if !folder_ids.is_empty() {
             let json = serde_json::to_string(&folder_ids).expect("ids serialize");
             let mut stmt = self.conn.prepare("SELECT * FROM folder WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")?;
@@ -165,12 +167,7 @@ impl Store {
     }
 
     fn snapshot(&self, ids: &[i64], tags: bool) -> Result<Snapshot> {
-        let json = serde_json::to_string(ids).expect("ids serialize");
-        let mut stmt = self.conn.prepare("SELECT * FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))")?;
-        let width = stmt.column_count();
-        let rows = stmt
-            .query_map([json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?
-            .collect::<Result<_>>()?;
+        let rows = rows(&self.conn, ids)?;
         let tagged = if tags {
             Some(self.conn.prepare("SELECT keyword FROM tagged_keyword")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?)
         } else {
@@ -344,4 +341,12 @@ mod tests {
             }
         }
     }
+}
+
+/// Full rows of bookmarks `ids` (missing ones left out), as undo snapshots them.
+pub(crate) fn rows(conn: &Connection, ids: &[i64]) -> Result<Vec<Vec<Value>>> {
+    let json = serde_json::to_string(ids).expect("ids serialize");
+    let mut stmt = conn.prepare("SELECT * FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))")?;
+    let width = stmt.column_count();
+    stmt.query_map([json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?.collect()
 }

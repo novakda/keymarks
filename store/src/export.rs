@@ -641,9 +641,9 @@ mod tests {
         assert_eq!(back.rows, rows);
         let mut fresh = Store::open(":memory:").unwrap();
         let report = fresh.import_tree("Import JSON", &back.entries(), ROOT, None, false).unwrap();
-        assert_eq!((report.added, report.duplicates), (2, 0));
+        assert_eq!((report.added, report.skipped), (2, 0));
         assert_eq!(export_rows_all(&fresh), rows, "every field, Powermarks record included");
-        assert_eq!(fresh.import_tree("again", &back.entries(), ROOT, None, false).unwrap().duplicates, 2);
+        assert_eq!(fresh.import_tree("again", &back.entries(), ROOT, None, false).unwrap().skipped, 2);
         fresh.undo().unwrap();
         fresh.undo().unwrap();
         assert_eq!(fresh.count().unwrap(), 0);

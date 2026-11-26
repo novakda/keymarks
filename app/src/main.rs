@@ -51,7 +51,7 @@ fn count(db: State<Db>) -> Result<i64, String> {
 
 /// Pick a pm35.htm and import it. Only into an empty store, so re-importing can't duplicate.
 #[tauri::command]
-async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<usize>, String> {
+async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<ImportReport>, String> {
     let picked = app
         .dialog()
         .file()
@@ -64,7 +64,7 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, Sett
     if store.count().map_err(|e| e.to_string())? > 0 {
         return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
-    let n = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
+    let report = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
     // The file's check schedules join Settings, so its bookmarks' schedule names mean something.
     let mut current = settings.current.lock().unwrap();
     let known = desktop::parse_schedules(&current.schedules).unwrap_or_default();
@@ -84,7 +84,7 @@ async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, Sett
             *current = new;
         }
     }
-    Ok(Some(n))
+    Ok(Some(report))
 }
 
 #[derive(serde::Serialize)]
@@ -463,6 +463,18 @@ fn open_checked<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<(), String>
         return Err(format!("not opening {url}: unsupported scheme"));
     }
     app.opener().open_url(url, None::<&str>).map_err(err)
+}
+
+/// The Duplicates view (SAVD-10): ids grouped by `store::url_key`, each group oldest first.
+#[tauri::command]
+fn duplicate_groups(db: State<Db>) -> Result<Vec<Vec<i64>>, String> {
+    db.lock().unwrap().duplicate_groups().map_err(err)
+}
+
+/// Resolve `keep`'s duplicate group: merge the others into it, or just delete them. One undo step.
+#[tauri::command]
+fn merge_duplicates(db: State<Db>, keep: i64, merge: bool) -> Result<usize, String> {
+    db.lock().unwrap().merge_duplicates(keep, merge).map_err(err)
 }
 
 #[tauri::command]
@@ -1081,6 +1093,8 @@ fn main() {
             add_from_clipboard,
             copy_bookmarks,
             saved_items,
+            duplicate_groups,
+            merge_duplicates,
             save_item,
             delete_saved_item,
             move_saved_item,
