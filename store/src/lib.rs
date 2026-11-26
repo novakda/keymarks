@@ -194,8 +194,33 @@ pub struct NewBookmark {
     pub title: String,
     pub keywords: String,
     pub description: String,
+    pub notes: String,
     /// Unix seconds; None means "now".
     pub added: Option<i64>,
+}
+
+/// One step through an imported tree, in the source's order: a folder opens (what follows
+/// is inside it, up to its `Close`), or a bookmark sits in the innermost open folder.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Entry {
+    Folder { name: String, note: String, added: Option<i64> },
+    Close,
+    Bookmark(NewBookmark),
+}
+
+/// The bookmarks among `entries`.
+pub fn bookmarks(entries: &[Entry]) -> Vec<&NewBookmark> {
+    entries.iter().filter_map(|e| if let Entry::Bookmark(b) = e { Some(b) } else { None }).collect()
+}
+
+/// How a URL is compared for duplicates (LINK-18, Q3): the protocol, a leading `www.`, a
+/// trailing `/` and the host's case don't make a different link. Stored URLs are never rewritten.
+pub fn url_key(url: &str) -> String {
+    let s = url.trim();
+    let s = s.split_once("://").map_or(s, |(_, rest)| rest);
+    let (host, rest) = s.split_at(s.find(['/', '?', '#']).unwrap_or(s.len()));
+    let host = host.to_ascii_lowercase();
+    format!("{}{}", host.strip_prefix("www.").unwrap_or(&host), rest.strip_suffix('/').unwrap_or(rest))
 }
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
@@ -205,6 +230,10 @@ pub struct ImportReport {
     pub duplicates: usize,
     /// Ids of the bookmarks added.
     pub ids: Vec<i64>,
+    /// Folders created.
+    pub folders: usize,
+    /// The new folder the import went into, if it made one.
+    pub folder: Option<i64>,
 }
 
 /// What a page says about itself (title, meta description and keywords).
@@ -414,32 +443,90 @@ impl Store {
         Ok((id, false))
     }
 
-    /// Merge bookmarks into the collection, skipping URLs it already has (exact match, as
-    /// Powermarks did). One undoable step called `step` (e.g. "Import from Chrome").
+    /// Merge bookmarks into the root, skipping URLs it already has (see `url_key`). One
+    /// undoable step called `step` (e.g. "Add bookmark").
     pub fn import_bookmarks(&mut self, step: &str, items: &[NewBookmark]) -> Result<ImportReport> {
+        let entries: Vec<Entry> = items.iter().cloned().map(Entry::Bookmark).collect();
+        self.import_tree(step, &entries, ROOT, None, false)
+    }
+
+    /// Import a tree (XFER-03, XFER-10) into folder `into`: inside a new folder `new_folder`
+    /// (Compass's "Add"), or straight in, reusing folders of the same name (XFER-05).
+    /// Folders and order are kept; URLs already here, or repeated, are skipped (`url_key`).
+    /// With `folder_words`, every folder name on an item's path (below `into`/`new_folder`)
+    /// also becomes a keyword (KEY-09, Q4). One undoable step called `step`.
+    pub fn import_tree(&mut self, step: &str, entries: &[Entry], into: i64, new_folder: Option<&str>, folder_words: bool) -> Result<ImportReport> {
         self.record_created(step.to_string(), |s| {
             let tx = s.conn.transaction()?;
             let mut report = ImportReport::default();
-            let mut ids = Vec::new();
-            for b in items {
-                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bookmark WHERE url = ?1)", [&b.url], |r| r.get(0))?;
-                if exists || b.url.trim().is_empty() {
-                    report.duplicates += 1;
-                    continue;
+            // ponytail: every stored URL's key in memory (13k is nothing); index a key column if collections reach millions.
+            let mut seen = std::collections::HashSet::new();
+            for url in tx.prepare("SELECT url FROM bookmark WHERE kind = 'bookmark'")?.query_map([], |r| r.get::<_, String>(0))? {
+                seen.insert(url_key(&url?));
+            }
+            let into = if folders::exists(&tx, into)? { into } else { ROOT };
+            let mut created = Vec::new();
+            // Open folders, innermost last: (id, made by this import).
+            let mut open = vec![(into, false)];
+            if let Some(name) = new_folder {
+                let id = folders::insert_folder(&tx, into, name, "", None)?;
+                created.push(id);
+                report.folder = Some(id);
+                open = vec![(id, true)];
+            }
+            let mut path: Vec<String> = Vec::new();
+            for e in entries {
+                let (parent, fresh) = *open.last().expect("never empty");
+                match e {
+                    Entry::Folder { name, note, added } => {
+                        // Only a folder that was already here is merged into; new ones keep the source's tree as is.
+                        let reuse: Option<i64> = if fresh {
+                            None
+                        } else {
+                            tx.query_row("SELECT id FROM folder WHERE parent_id = ?1 AND name = ?2 ORDER BY position, id", params![parent, name.trim()], |r| r.get(0))
+                                .optional()?
+                                .filter(|id| !created.contains(id))
+                        };
+                        let id = match reuse {
+                            Some(id) => id,
+                            None => {
+                                let id = folders::insert_folder(&tx, parent, name, note, *added)?;
+                                created.push(id);
+                                id
+                            }
+                        };
+                        open.push((id, reuse.is_none()));
+                        path.push(name.clone());
+                    }
+                    Entry::Close => {
+                        if open.len() > 1 {
+                            open.pop();
+                            path.pop();
+                        }
+                    }
+                    Entry::Bookmark(b) => {
+                        if b.url.trim().is_empty() || !seen.insert(url_key(&b.url)) {
+                            report.duplicates += 1;
+                            continue;
+                        }
+                        let keywords =
+                            if folder_words { browsers::folder_keywords(&path, &b.keywords) } else { normalize_keywords(&b.keywords) };
+                        tx.execute(
+                            "INSERT INTO bookmark (url, title, keywords, description, notes, added, folder_id)
+                             VALUES (?1, ?2, ?3, ?4, ?5, coalesce(?6, unixepoch()), ?7)",
+                            params![b.url, b.title, keywords, b.description, b.notes, b.added, parent],
+                        )?;
+                        let id = tx.last_insert_rowid();
+                        index_keywords(&tx, id, &keywords)?;
+                        report.ids.push(id);
+                        report.added += 1;
+                    }
                 }
-                let keywords = normalize_keywords(&b.keywords);
-                tx.execute(
-                    "INSERT INTO bookmark (url, title, keywords, description, added) VALUES (?1, ?2, ?3, ?4, coalesce(?5, unixepoch()))",
-                    params![b.url, b.title, keywords, b.description, b.added],
-                )?;
-                let id = tx.last_insert_rowid();
-                index_keywords(&tx, id, &keywords)?;
-                ids.push(id);
-                report.added += 1;
             }
             tx.commit()?;
-            report.ids = ids.clone();
-            Ok((report, ids))
+            report.folders = created.len();
+            let ids = report.ids.clone();
+            Ok((report, ids, created))
         })
     }
 
@@ -470,7 +557,7 @@ impl Store {
             }
             tx.commit()?;
             let ids = report.ids.clone();
-            Ok((report, ids))
+            Ok((report, ids, Vec::new()))
         })
     }
 
@@ -1669,7 +1756,7 @@ mod tests {
     #[test]
     fn browser_import_merges_skips_duplicates_and_undoes() {
         let mut s = store(); // has http://example.com/?a=1&b=2 and http://example.com/u
-        let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), added: None };
+        let nb = |url: &str, kw: &str| NewBookmark { url: url.into(), title: url.into(), keywords: kw.into(), description: String::new(), notes: String::new(), added: None };
         let items = [nb("http://example.com/u", "dup"), nb("https://new.example/", "Dev Tools"), nb("https://new.example/", "again"), nb("https://two.example/", "")];
         let r = s.import_bookmarks("Import from Chrome (Default)", &items).unwrap();
         assert_eq!((r.added, r.duplicates, r.ids.len()), (2, 2, 2));
@@ -1687,6 +1774,131 @@ mod tests {
         assert!(s.search("tools", 5).unwrap().is_empty());
         s.redo().unwrap();
         assert_eq!(s.count().unwrap(), 4);
+    }
+
+    /// The tree under `folder` as text: `[name ... ]` for folders, titles for bookmarks.
+    fn tree_of(s: &Store, folder: i64) -> String {
+        s.children(folder)
+            .unwrap()
+            .into_iter()
+            .map(|n| match n {
+                Node::Folder(f) => format!("[{} {}]", f.name, tree_of(s, f.id)).replace("  ]", " ]"),
+                Node::Bookmark(b) => b.title,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    const NESTED: &str = r#"<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<DL><p>
+    <DT><A HREF="https://first.example/">First</A>
+    <DT><H3>Work</H3>
+    <DL><p>
+        <DT><A HREF="https://wiki.example/" TAGS="docs">Wiki</A>
+        <DT><H3>Clients &amp; Partners</H3>
+        <DL><p>
+            <DT><A HREF="https://client.example/">Client</A>
+        </DL><p>
+        <DT><A HREF="https://tracker.example/">Tracker</A>
+    </DL><p>
+    <DT><H3>Empty</H3>
+    <DL><p>
+    </DL><p>
+    <DT><A HREF="https://last.example/">Last</A>
+</DL><p>"#;
+
+    fn by_title(s: &Store, title: &str) -> Bookmark {
+        s.search("", usize::MAX).unwrap().into_iter().find(|b| b.title == title).unwrap()
+    }
+
+    #[test]
+    fn html_import_keeps_the_tree_in_a_new_folder() {
+        let mut s = store();
+        let before = tree_of(&s, ROOT);
+        let r = s.import_tree("Import from nested.html", &browsers::read_netscape_html(NESTED), ROOT, Some("nested"), false).unwrap();
+        assert_eq!((r.added, r.duplicates, r.folders), (5, 0, 4));
+        let new = r.folder.unwrap();
+        assert_eq!(tree_of(&s, ROOT), format!("{before} [nested First [Work Wiki [Clients & Partners Client] Tracker] [Empty ] Last]"), "order, nesting and empty folders kept, last in the root");
+        assert_eq!(s.folder(new).unwrap().unwrap().name, "nested");
+        assert_eq!(by_title(&s, "Wiki").keywords, "docs", "folder names are not keywords by default (KEY-09)");
+        assert_eq!(by_title(&s, "Client").keywords, "");
+    }
+
+    #[test]
+    fn folder_names_as_keywords_when_asked() {
+        let mut s = store();
+        s.import_tree("Import", &browsers::read_netscape_html(NESTED), ROOT, Some("nested"), true).unwrap();
+        assert_eq!(by_title(&s, "Wiki").keywords, "Work docs");
+        assert_eq!(by_title(&s, "Client").keywords, "Work Clients Partners", "every word of every folder below the new one");
+        assert_eq!(by_title(&s, "First").keywords, "");
+        assert_eq!(s.search("partners", 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn import_skips_duplicates_by_the_url_rules() {
+        let mut s = Store::open(":memory:").unwrap();
+        s.add("https://www.dup.example/page/", "Dup", "", "").unwrap();
+        let html = r#"<DL><p>
+            <DT><A HREF="http://dup.example/page">same page: protocol, www. and the slash differ</A>
+            <DT><A HREF="https://twice.example/">Twice</A>
+            <DT><H3>Sub</H3><DL><p><DT><A HREF="https://TWICE.example">Twice again</A></DL><p>
+            <DT><A HREF="https://dup.example/other">Other page</A>
+        </DL><p>"#;
+        let r = s.import_tree("Import", &browsers::read_netscape_html(html), ROOT, Some("dups"), false).unwrap();
+        assert_eq!((r.added, r.duplicates), (2, 2));
+        assert_eq!(tree_of(&s, r.folder.unwrap()), "Twice [Sub ] Other page", "the folder stays though its link was a duplicate");
+        assert_eq!(url_key("HTTPS://WWW.Example.com/A/"), "example.com/A", "the path keeps its case");
+    }
+
+    #[test]
+    fn compass_file_imports_notes_meta_and_status() {
+        let mut s = Store::open(":memory:").unwrap();
+        let html = r#"<!-- Created by Compass v.2.83 -->
+<TITLE>Compass Bookmarks</TITLE><H1>Compass</H1>
+<DL><p>
+<DT><H3 FOLDED ADD_DATE="1000000000">Comics</H3><DD>Daily reads
+<DL><p>
+<DT><A HREF="http://comic.example/" ADD_DATE="1000000001" LAST_VISIT="1000000002" LAST_MODIFIED="" STATUS="3">A comic</A><DD>mine<BR>two<meta><BR>Fetched</meta>
+</DL><p>
+</DL><p>"#;
+        let r = s.import_tree("Import from compass.htm", &browsers::read_netscape_html(html), ROOT, Some("compass"), false).unwrap();
+        let comics = s.children(r.folder.unwrap()).unwrap();
+        let Node::Folder(comics) = &comics[0] else { panic!("folder first") };
+        assert_eq!((comics.name.as_str(), comics.note.as_str(), comics.added), ("Comics", "Daily reads", 1_000_000_000), "folder note (NOTE-02)");
+        let b = by_title(&s, "A comic");
+        assert_eq!((b.notes.as_str(), b.description.as_str(), b.added), ("mine\ntwo", "Fetched", Some(1_000_000_001)));
+        assert_eq!((b.check_status, b.folder_id), (None, comics.id), "STATUS numbers are unknown: never checked (XFER-04)");
+    }
+
+    #[test]
+    fn import_into_the_tree_reuses_folders_of_the_same_name() {
+        let mut s = Store::open(":memory:").unwrap();
+        let work = s.create_folder(ROOT, "Work", None).unwrap().unwrap();
+        s.import_tree("Import", &browsers::read_netscape_html(NESTED), ROOT, None, false).unwrap();
+        assert_eq!(tree_of(&s, ROOT), "[Work Wiki [Clients & Partners Client] Tracker] First [Empty ] Last");
+        assert_eq!(s.folders().unwrap().iter().filter(|f| f.name == "Work").count(), 1);
+        assert_eq!(by_title(&s, "Wiki").folder_id, work);
+        // Again: everything is a duplicate, and no folder is made twice.
+        let r = s.import_tree("Import", &browsers::read_netscape_html(NESTED), ROOT, None, false).unwrap();
+        assert_eq!((r.added, r.folders), (0, 0));
+    }
+
+    #[test]
+    fn a_tree_import_is_one_undo_step() {
+        let mut s = store();
+        let before = tree_of(&s, ROOT);
+        let (folders, count) = (s.folders().unwrap().len(), s.count().unwrap());
+        let r = s.import_tree("Import from nested.html", &browsers::read_netscape_html(NESTED), ROOT, Some("nested"), true).unwrap();
+        let after = tree_of(&s, ROOT);
+        assert_eq!(s.undo().unwrap().as_deref(), Some("Import from nested.html"));
+        assert_eq!((tree_of(&s, ROOT), s.folders().unwrap().len(), s.count().unwrap()), (before.clone(), folders, count));
+        assert!(s.search("partners", 5).unwrap().is_empty(), "keyword index follows");
+        assert_eq!(s.redo().unwrap().as_deref(), Some("Import from nested.html"));
+        assert_eq!(tree_of(&s, ROOT), after, "redo puts folders and bookmarks back in place");
+        assert_eq!(s.folder(r.folder.unwrap()).unwrap().unwrap().name, "nested");
+        assert_eq!(s.search("partners", 5).unwrap().len(), 1);
+        s.undo().unwrap();
+        assert_eq!(tree_of(&s, ROOT), before);
     }
 
     #[test]
@@ -1739,7 +1951,7 @@ mod tests {
             let mut a = Store::open(":memory:").unwrap();
             a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses")).unwrap();
             let mut b = Store::open(":memory:").unwrap();
-            b.import_bookmarks("Import from html", &browsers::read_netscape_html(&html)).unwrap();
+            b.import_tree("Import from html", &browsers::read_netscape_html(&html), ROOT, None, false).unwrap();
             let key = |st: &Store| {
                 let mut v: Vec<(String, String, String)> =
                     st.search("", usize::MAX).unwrap().into_iter().map(|x| (x.url, x.title, normalize_keywords(&x.keywords))).collect();

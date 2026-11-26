@@ -178,11 +178,22 @@ pub struct Beside {
     pub after: bool,
 }
 
-fn exists(tx: &Connection, folder: i64) -> Result<bool> {
+pub(crate) fn exists(tx: &Connection, folder: i64) -> Result<bool> {
     tx.query_row("SELECT EXISTS(SELECT 1 FROM folder WHERE id = ?1)", [folder], |r| r.get(0))
 }
 
-// Changes to the tree are undo steps (DATA-04); import and export don't know about folders yet.
+/// A new folder last in `parent` (an import's; no undo step of its own).
+pub(crate) fn insert_folder(tx: &Connection, parent: i64, name: &str, note: &str, added: Option<i64>) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO folder (parent_id, name, note, added, position) VALUES (?1, ?2, ?3, coalesce(?4, unixepoch()),
+             1 + coalesce((SELECT max(p) FROM (SELECT position AS p FROM bookmark WHERE folder_id = ?1
+                                               UNION ALL SELECT position FROM folder WHERE parent_id = ?1)), 0))",
+        params![parent, name.trim(), note, added],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+// Changes to the tree are undo steps (DATA-04). Imports build trees in `Store::import_tree`.
 impl Store {
     pub fn folder(&self, id: i64) -> Result<Option<Folder>> {
         self.conn

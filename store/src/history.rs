@@ -8,6 +8,7 @@
 //! Filing steps (folder create/rename/move/delete, moving items) snapshot the tree instead:
 //! the rows of the folders involved and their children, and where the bookmarks in them
 //! sit (folder and position only, so a visit or a link check is never rolled back).
+//! Imports record the bookmarks and folders they created: undo deletes them, redo restores them.
 
 use crate::{Result, Store, index_keywords};
 use rusqlite::{Connection, OpenFlags, backup::Backup, params_from_iter, types::Value};
@@ -110,16 +111,26 @@ impl Store {
         Ok(Snapshot { rows: Vec::new(), tagged: None, tree: Some(Tree { folders, places }) })
     }
 
-    /// Like `record`, for changes that create bookmarks: `change` returns the new ids, which
-    /// can't be known beforehand. Undo deletes them; redo puts them back.
+    /// Like `record`, for changes that create bookmarks and folders (imports): `change`
+    /// returns the new bookmark and folder ids, which can't be known beforehand. Undo deletes
+    /// them; redo puts them back where they were.
     pub(crate) fn record_created<T>(
         &mut self,
         name: String,
-        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>)>,
+        change: impl FnOnce(&mut Store) -> Result<(T, Vec<i64>, Vec<i64>)>,
     ) -> Result<T> {
-        let (out, ids) = change(self)?;
-        let after = self.snapshot(&ids, false)?;
-        self.push(Step { name, ids, folder_ids: Vec::new(), before: Snapshot { rows: Vec::new(), tagged: None, tree: None }, after });
+        let (out, ids, folder_ids) = change(self)?;
+        let mut after = self.snapshot(&ids, false)?;
+        let mut before = Snapshot { rows: Vec::new(), tagged: None, tree: None };
+        if !folder_ids.is_empty() {
+            let json = serde_json::to_string(&folder_ids).expect("ids serialize");
+            let mut stmt = self.conn.prepare("SELECT * FROM folder WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")?;
+            let width = stmt.column_count();
+            let folders = stmt.query_map([&json], |r| (0..width).map(|i| r.get::<_, Value>(i)).collect())?.collect::<Result<_>>()?;
+            after.tree = Some(Tree { folders, places: Vec::new() });
+            before.tree = Some(Tree { folders: Vec::new(), places: Vec::new() });
+        }
+        self.push(Step { name, ids, folder_ids, before, after });
         Ok(out)
     }
 
@@ -175,6 +186,25 @@ impl Store {
         let tx = self.conn.transaction()?;
         // Triggers keep the full-text index and keyword index in step with these writes.
         tx.execute("DELETE FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+        // Folders go back before bookmarks: a bookmark inserted into a missing folder lands in the root.
+        if let Some(tree) = &snap.tree {
+            let json = serde_json::to_string(folder_ids).expect("ids serialize");
+            // Parents and children are rewritten in no particular order; check at commit.
+            tx.pragma_update(None, "defer_foreign_keys", true)?;
+            // The expand state is the user's view, not part of the change: keep it as it is now.
+            let folded: Vec<(i64, bool)> = tx
+                .prepare("SELECT id, folded FROM folder WHERE id IN (SELECT value FROM json_each(?1))")?
+                .query_map([&json], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_>>()?;
+            tx.execute("DELETE FROM folder WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+            for row in &tree.folders {
+                let marks = vec!["?"; row.len()].join(", ");
+                tx.execute(&format!("INSERT INTO folder VALUES ({marks})"), params_from_iter(row))?;
+            }
+            for (id, f) in folded {
+                tx.execute("UPDATE folder SET folded = ?2 WHERE id = ?1", rusqlite::params![id, f])?;
+            }
+        }
         for row in &snap.rows {
             let marks = vec!["?"; row.len()].join(", ");
             tx.execute(&format!("INSERT INTO bookmark VALUES ({marks})"), params_from_iter(row))?;
@@ -193,22 +223,6 @@ impl Store {
             }
         }
         if let Some(tree) = &snap.tree {
-            let json = serde_json::to_string(folder_ids).expect("ids serialize");
-            // Parents and children are rewritten in no particular order; check at commit.
-            tx.pragma_update(None, "defer_foreign_keys", true)?;
-            // The expand state is the user's view, not part of the change: keep it as it is now.
-            let folded: Vec<(i64, bool)> = tx
-                .prepare("SELECT id, folded FROM folder WHERE id IN (SELECT value FROM json_each(?1))")?
-                .query_map([&json], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<Result<_>>()?;
-            tx.execute("DELETE FROM folder WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
-            for row in &tree.folders {
-                let marks = vec!["?"; row.len()].join(", ");
-                tx.execute(&format!("INSERT INTO folder VALUES ({marks})"), params_from_iter(row))?;
-            }
-            for (id, f) in folded {
-                tx.execute("UPDATE folder SET folded = ?2 WHERE id = ?1", rusqlite::params![id, f])?;
-            }
             for (id, folder, position) in &tree.places {
                 tx.execute("UPDATE bookmark SET folder_id = ?2, position = ?3 WHERE id = ?1", [id, folder, position])?;
             }

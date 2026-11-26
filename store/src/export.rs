@@ -388,9 +388,11 @@ mod tests {
         let s = store();
         let rows = s.export_rows(None).unwrap();
         let back = read_netscape_html(&to_netscape(&rows));
+        let back = crate::bookmarks(&back);
         assert_eq!(back.len(), 2);
         assert_eq!((back[0].title.as_str(), back[0].keywords.as_str()), ("Caf\u{e9} & Bar", "food paris"));
-        assert_eq!(back[1].description, "a \"quoted\" <desc>");
+        // ponytail: <DD> reads back as notes (XFER-03); step 5's export (XFER-16) should write the description in Compass's <meta> part.
+        assert_eq!(back[1].notes, "a \"quoted\" <desc>");
         assert_eq!(back[1].keywords, "tag1 tag2");
         assert_eq!(back[0].added, Some(0x634DF1F5));
     }
