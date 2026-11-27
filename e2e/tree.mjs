@@ -338,6 +338,12 @@ await page.keyboard.press('Control+v');
 await idle();
 check('Ctrl+V on a tree folder moves the cut bookmark there in one call', await lastMove() === '{"folders":[],"bookmarks":[14],"to":4,"beside":null}'
   && (await titles()).includes('Client wiki'), `${await lastMove()} ${JSON.stringify(await titles())}`);
+await page.locator('#list li.vrow', { hasText: 'Client wiki' }).click();
+await idle();
+check('the properties panel shows the bookmark\'s folder path (ITEM-11)', (await page.textContent('#f-folder')) === 'Bookmarks › Home', await page.textContent('#f-folder'));
+await page.click('#f-folder-pick');
+check('its Change… button opens the folder picker for that bookmark', await page.isVisible('#move-dlg') && (await page.textContent('#move-title')) === 'Move “Client wiki” to', await page.textContent('#move-title'));
+await page.keyboard.press('Escape');
 await item('Clients').click();
 await page.focus('#tree');
 await page.keyboard.press('Control+x');

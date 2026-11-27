@@ -2023,6 +2023,8 @@ function renderPanel() {
     $('f-url').required = false;
     for (const el of [$('f-url'), document.querySelector('label[for=f-url]'), $('pin-link'), ...form.querySelectorAll('.check-line')]) el.style.display = 'none';
   }
+  $('f-folder').textContent = folderPath(editing.folder_id);
+  $('f-folder-pick').onclick = () => openMovePicker({ bookmarks: [editing.id] });
   chips = words(editing.keywords);
   renderChips();
   const date = (t) => (t ? new Date(t * 1000).toLocaleString() : 'never');
