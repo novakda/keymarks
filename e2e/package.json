@@ -5,6 +5,7 @@
   "scripts": {
     "smoke": "node smoke.mjs",
     "tree": "node tree.mjs",
+    "perf": "node perf.mjs",
     "folders": "node folders-smoke.mjs",
     "manual": "node manual-checks.mjs",
     "keys": "node os-keys.mjs"

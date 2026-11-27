@@ -1357,7 +1357,8 @@ async function refreshFolders() {
 }
 
 /** The folders the tree shows, in order, with their depth: the root is always open. */
-// ponytail: renders every visible folder (no virtual scrolling); fine for hundreds, virtualise if trees get huge.
+// ponytail: renders every visible folder (no virtual scrolling): 500 open folders draw in one
+// frame (~17 ms, e2e/perf.mjs, SYS-22); virtualise if trees reach thousands.
 function visibleFolders(all = false) {
   const out = [];
   const walk = (f, depth) => {
