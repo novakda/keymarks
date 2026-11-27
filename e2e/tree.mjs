@@ -476,6 +476,24 @@ await page.check('#cols-menu input[value=folder]');
 await idle();
 const folderCells = await page.$$eval('#table-body tr.vrow', (trs) => trs.map((tr) => tr.lastElementChild.textContent));
 check('the Folder column shows each result\'s folder path', folderCells.includes('Bookmarks › Work › Clients') && folderCells.includes('Bookmarks › Work'), JSON.stringify(folderCells));
+// VIEW-02: the Folder column sorts by path; double-clicking its divider fits it to the widest cell.
+await page.evaluate(() => { document.getElementById('cols').open = false; });
+await page.click('#table-head th[data-col=folder] button');
+await idle();
+check('clicking the Folder header sorts by folder path', JSON.stringify((await calls('search_ids')).at(-1).opts.sort[0]) === '{"column":"folder","desc":false}'
+  && (await page.getAttribute('#table-head th[data-col=folder]', 'aria-sort')) === 'ascending', JSON.stringify((await calls('search_ids')).at(-1).opts.sort));
+await page.dblclick('#table-head th[data-col=folder] .grip');
+const fit = await page.evaluate(() => {
+  const n = [...document.querySelectorAll('#table-head th')].findIndex((th) => th.dataset.col === 'folder');
+  const widest = Math.max(...[...document.querySelectorAll('#table-body tr.vrow')].map((tr) => tr.children[n].scrollWidth));
+  const th = document.querySelectorAll('#table-head th')[n];
+  return { widest, col: th.offsetWidth, cellsFit: [...document.querySelectorAll('#table-body tr.vrow')].every((tr) => tr.children[n].scrollWidth <= tr.children[n].clientWidth) };
+});
+check('double-clicking the Folder divider fits the column to its widest cell', fit.cellsFit && fit.col >= fit.widest && fit.col < fit.widest + 40, JSON.stringify(fit));
+await page.click('#table-head th[data-col=folder] button');
+await page.click('#table-head th[data-col=folder] button');
+await idle();
+check('(sort cleared again)', (await calls('search_ids')).at(-1).opts.sort.length === 0);
 await page.click('#view-cards');
 
 await item('Work').locator('.twisty').click();

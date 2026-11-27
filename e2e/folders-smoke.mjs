@@ -716,6 +716,27 @@ try {
     const off = (await page.getAttribute('#track-tree', 'aria-checked')) === 'false';
     check('30 F10 tracking: the tree follows the selected result only while on', stayed && followed && off, `stayed ${stayed}, followed ${followed}, off ${off}`);
   }
+
+  // 31. Folder column (VIEW-02): the header sorts by path (root items first); double-clicking
+  // its divider fits it so no shown path is cut off. Sort cleared after.
+  {
+    await openFolder(ROOT);
+    await search('kmzq');
+    await page.click('#cols summary');
+    if (!(await page.isChecked('#cols-menu input[value=folder]'))) await page.check('#cols-menu input[value=folder]');
+    await page.evaluate(() => { document.getElementById('cols').open = false; });
+    await page.click('#table-head th[data-col=folder] button');
+    await idle();
+    const n = await page.$$eval('#table-head th', (ths) => ths.findIndex((th) => th.dataset.col === 'folder'));
+    const paths = await page.$$eval('#table-body tr.vrow', (trs, i) => trs.map((tr) => tr.children[i].textContent), n);
+    const inOrder = paths.every((p, i) => !i || paths[i - 1].localeCompare(p, undefined, { sensitivity: 'base' }) <= 0);
+    await page.dblclick('#table-head th[data-col=folder] .grip');
+    const fits = await page.$$eval('#table-body tr.vrow', (trs, i) => trs.every((tr) => tr.children[i].scrollWidth <= tr.children[i].clientWidth), n);
+    await page.click('#table-head th[data-col=folder] button');
+    await page.click('#table-head th[data-col=folder] button');
+    await idle();
+    check('31 Folder column sorts by path; divider double-click fits it', paths.length > 1 && inOrder && fits, `${paths.length} rows, in order ${inOrder}, fits ${fits}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

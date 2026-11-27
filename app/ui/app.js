@@ -106,8 +106,7 @@ const COLUMNS = [
   { id: 'rating', label: 'Rating', width: '4.5em', cell: (b) => (b.rating ? String(b.rating) : 'NR'), num: true, desc: true },
   { id: 'check_status', label: 'Status', width: '9em', cell: checkLabel },
   { id: 'schedule', label: 'Schedule', width: '7em', cell: (b) => b.schedule ?? 'Manual' },
-  // ponytail: not sortable (the store has no path to sort by); add a SortKey when asked for.
-  { id: 'folder', label: 'Folder', width: '14%', cell: (b) => folderPath(b.folder_id), nosort: true },
+  { id: 'folder', label: 'Folder', width: '14%', cell: (b) => folderPath(b.folder_id) },
 ];
 let view = 'cards';
 let shownCols = ['title', 'url', 'keywords', 'added', 'visits', 'rating'];
@@ -353,6 +352,19 @@ function startColResize(e, cols, c) {
   addEventListener('pointerup', up);
 }
 
+// Double-click a divider (VIEW-02): the column fits its widest cell.
+// ponytail: measures the rendered rows only (the list is virtualised); fine for a glance-fit.
+function fitColumn(cols, c) {
+  const n = cols.indexOf(c);
+  const ths = [...$('table-head').children];
+  ths.forEach((th, i) => { colWidths[cols[i].id] = th.offsetWidth; });
+  const cells = [...$('table-body').querySelectorAll('tr.vrow')].map((tr) => tr.children[n]).filter(Boolean);
+  const btn = ths[n].querySelector('button');
+  colWidths[c.id] = Math.max(40, btn.scrollWidth + 16, ...cells.map((td) => td.scrollWidth + 2));
+  applyColWidths(cols);
+  try { localStorage.setItem('col-widths', JSON.stringify(colWidths)); savePrefs(); } catch {}
+}
+
 // Drag a header onto another to move the column there (order kept with the shown columns).
 // Pointer events rather than HTML drag and drop, which the webview keeps for dropped files.
 function startColMove(e, c) {
@@ -405,9 +417,10 @@ function renderTable() {
     if (!c.nosort) btn.onclick = () => sortBy(c);
     const grip = document.createElement('span');
     grip.className = 'grip';
-    grip.title = 'Drag to resize; double-click to reset all columns';
+    grip.title = 'Drag to resize; double-click to fit the widest cell; Ctrl+double-click to reset all columns';
     grip.onpointerdown = (e) => startColResize(e, cols, c);
-    grip.ondblclick = () => {
+    grip.ondblclick = (e) => {
+      if (!e.ctrlKey) { fitColumn(cols, c); return; }
       colWidths = {};
       try { localStorage.removeItem('col-widths'); savePrefs(); } catch {}
       applyColWidths(cols);

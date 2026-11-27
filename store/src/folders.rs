@@ -1096,6 +1096,18 @@ mod tests {
     }
 
     #[test]
+    fn folder_column_sorts_by_path() {
+        use crate::query::{SearchOptions, SortKey};
+        let mut s = Store::open(":memory:").unwrap();
+        let (_, _, [g, d, e, r]) = search_tree(&mut s);
+        let by = |desc| SearchOptions { sort: vec![SortKey { column: "folder".into(), desc }], ..Default::default() };
+        // Root items have no path and come first; "Search engines" before "Search engines › Web" (VIEW-02).
+        assert_eq!(s.search_ids("", &by(false)).unwrap(), [r, d, g, e]);
+        assert_eq!(s.search_ids("", &by(true)).unwrap(), [e, g, d, r]);
+        assert_eq!(s.search_ids("red", &by(false)).unwrap(), [r, d, g], "with a search (ranked CTE) too");
+    }
+
+    #[test]
     fn folder_path_is_searchable() {
         use crate::query::{Mode, SearchOptions};
         let mut s = Store::open(":memory:").unwrap();

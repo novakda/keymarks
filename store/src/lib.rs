@@ -815,6 +815,13 @@ impl Store {
                 (with, join, f.sql.clone(), order)
             }
         };
+        let (with, join) = if opts.sort.iter().any(|k| k.column == "folder") {
+            let cte = query::FOLDER_PATH_CTE;
+            let with = if with.is_empty() { format!("WITH RECURSIVE {cte}") } else { with.replacen("WITH ", &format!("WITH RECURSIVE {cte}, "), 1) };
+            (with, format!("{join} LEFT JOIN fp ON fp.id = b.folder_id"))
+        } else {
+            (with, join.to_string())
+        };
         params.push(Value::Integer(limit.min(i64::MAX as usize) as i64));
         // Chosen column sorts first; relevance / newest break the remaining ties.
         let mut order: Vec<String> = opts.sort.iter().filter_map(SortKey::sql).collect();
