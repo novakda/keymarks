@@ -746,6 +746,18 @@ try {
     const name = sql('SELECT f.name FROM folder f JOIN bookmark b ON b.folder_id = f.id WHERE b.id = ?', id)[0]?.name;
     check('32 the popup lookup returns the existing bookmark\'s folder path', t?.found === true && t.folder === name, `${t?.folder} vs ${name}`);
   }
+
+  // 33. Import dialog (XFER-05): "Replace the collection" is shown but disabled while the
+  // collection has items; a new folder stays the default. (pm35 into a new folder needs an
+  // empty collection and the native file dialog: covered by store's pm35_import_into_a_new_folder.)
+  {
+    await page.evaluate(() => document.getElementById('import').click());
+    await page.waitForSelector('#import-dlg[open]');
+    const off = await page.isDisabled('input[name=import-into][value=replace]');
+    const dflt = await page.isChecked('input[name=import-into][value=new]');
+    await page.click('#import-dlg button[value=close]');
+    check('33 Import offers "replace an empty collection", disabled while not empty', off && dflt, `disabled ${off}, new folder default ${dflt}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

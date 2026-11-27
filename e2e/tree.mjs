@@ -409,6 +409,11 @@ await page.evaluate(() => document.getElementById('import').click());
 await page.waitForSelector('#import-sources button');
 check('the import dialog pre-fills "folder names as keywords" from Options', await page.isChecked('#import-folder-words'));
 check('a new folder named after the source is the default destination', await page.isChecked('input[name=import-into][value=new]'));
+check('"replace an empty collection" is offered but off while the collection has items (XFER-05)',
+  (await page.isDisabled('input[name=import-into][value=replace]')) && /empty/i.test(await page.textContent('#import-replace-label')));
+await page.click('#import-pm35');
+await idle();
+check('a Powermarks import follows the dialog: into a new folder by default', (await calls('import_pm35')).at(-1)?.newFolder === true, JSON.stringify((await calls('import_pm35')).at(-1)));
 await page.uncheck('#import-folder-words');
 await page.click('#import-sources button');
 await idle();

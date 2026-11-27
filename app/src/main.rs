@@ -51,20 +51,22 @@ fn count(db: State<Db>) -> Result<i64, String> {
 
 /// Pick a pm35.htm and import it. Only into an empty store, so re-importing can't duplicate.
 #[tauri::command]
-async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<ImportReport>, String> {
+async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>, new_folder: bool) -> Result<Option<ImportReport>, String> {
     let picked = app
         .dialog()
         .file()
         .add_filter("Powermarks database", &["htm", "html", "ba0"])
         .blocking_pick_file();
     let Some(path) = picked else { return Ok(None) };
-    let bytes = std::fs::read(path.into_path().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Powermarks".into());
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let parsed = pm35::parse(&bytes)?;
     let mut store = db.lock().unwrap();
     if store.count().map_err(|e| e.to_string())? > 0 {
         return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
-    let report = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
+    let report = store.import_pm35(&parsed, new_folder.then_some(name.as_str())).map_err(|e| e.to_string())?;
     // The file's check schedules join Settings, so its bookmarks' schedule names mean something.
     let mut current = settings.current.lock().unwrap();
     let known = desktop::parse_schedules(&current.schedules).unwrap_or_default();

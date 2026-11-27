@@ -679,16 +679,25 @@ impl Store {
     }
 
     /// Import every Powermarks entry in one transaction. A link repeated in the file (by
-    /// `url_key`) fills the first one's empty fields instead (XFER-02).
-    pub fn import_pm35(&mut self, db: &Database) -> Result<ImportReport> {
+    /// `url_key`) fills the first one's empty fields instead (XFER-02). pm35 has no folders:
+    /// the items go into a new root folder `new_folder` (XFER-05), else into the root.
+    pub fn import_pm35(&mut self, db: &Database, new_folder: Option<&str>) -> Result<ImportReport> {
         let tx = self.conn.transaction()?;
         let mut report = ImportReport::default();
+        let into = match new_folder {
+            Some(name) => {
+                let id = folders::insert_folder(&tx, ROOT, name, "", None)?;
+                report.folder = Some(id);
+                id
+            }
+            None => ROOT,
+        };
         {
             let mut merge = Merge::new(&tx)?;
             let mut insert = tx.prepare(
                 "INSERT INTO bookmark (url, title, keywords, description, notes, user_field,
-                    added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata, schedule)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata, schedule, folder_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?;
             for e in &db.entries {
                 let text = |name| e.extra(name).map(decode_text).unwrap_or_default();
@@ -715,6 +724,7 @@ impl Store {
                     num(field::STATUS),
                     e.mdata.join("]["),
                     e.mdata.get(field::SCHEDULE).filter(|s| !s.is_empty()),
+                    into,
                 ])?;
                 let id = tx.last_insert_rowid();
                 if e.mdata.get(field::CHECK_ENABLED).map(String::as_str) == Some("0") {
@@ -1598,7 +1608,7 @@ mod tests {
 <DT><A HREF=\"http://a.example/\">A</A>\r\n<DD><!--keywords-->food\r\n<!--mdata=[Weekly][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
 </DL><p>\r\n<!--kword=[food][1][0]-->\r\n</BODY></HTML>";
         let mut s = Store::open(":memory:").unwrap();
-        s.import_pm35(&pm35::parse(file).unwrap()).unwrap();
+        s.import_pm35(&pm35::parse(file).unwrap(), None).unwrap();
         let saved = s.saved_items().unwrap();
         assert_eq!(saved.iter().map(|i| (i.name.as_str(), i.kind.as_str())).collect::<Vec<_>>(), [("Docs", "link"), ("Rust stuff", "search"), ("Exact", "search")]);
         assert_eq!(saved[0].url, "http://x.example/");
@@ -1646,8 +1656,19 @@ mod tests {
 
     fn store() -> Store {
         let mut s = Store::open(":memory:").unwrap();
-        assert_eq!(s.import_pm35(&pm35::parse(SAMPLE).unwrap()).unwrap().added, 2);
+        assert_eq!(s.import_pm35(&pm35::parse(SAMPLE).unwrap(), None).unwrap().added, 2);
         s
+    }
+
+    #[test]
+    fn pm35_import_into_a_new_folder() {
+        let mut s = Store::open(":memory:").unwrap();
+        let r = s.import_pm35(&pm35::parse(SAMPLE).unwrap(), Some("pm35")).unwrap();
+        let f = r.folder.expect("the new folder is reported (XFER-05)");
+        assert_eq!(s.folder(f).unwrap().unwrap().name, "pm35");
+        let homes: Vec<i64> = r.ids.iter().map(|&id| s.get(id).unwrap().unwrap().folder_id).collect();
+        assert_eq!(homes, [f, f]);
+        assert_eq!(s.search_ids("", &SearchOptions { folder: Some(f), ..Default::default() }).unwrap(), r.ids, "file order kept");
     }
 
     #[test]
@@ -2130,7 +2151,7 @@ mod tests {
         let db = pm35::parse(&bytes).unwrap();
         let mut s = Store::open(":memory:").unwrap();
         let t = std::time::Instant::now();
-        let r = s.import_pm35(&db).unwrap();
+        let r = s.import_pm35(&db, None).unwrap();
         eprintln!("imported {} ({} repeats updated, {} skipped) in {:?}", r.added, r.updated, r.skipped, t.elapsed());
         assert_eq!(r.added + r.updated + r.skipped, db.entries.len());
         let t = std::time::Instant::now();
@@ -2146,7 +2167,7 @@ mod tests {
             let html = export::to_netscape(&export::Tree::flat(rows.clone()));
             eprintln!("exported {} rows ({} KB pm35, {} KB html) in {:?}", rows.len(), pm.len() / 1024, html.len() / 1024, t.elapsed());
             let mut a = Store::open(":memory:").unwrap();
-            a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses")).unwrap();
+            a.import_pm35(&pm35::parse(&pm).expect("exported pm35 parses"), None).unwrap();
             let mut b = Store::open(":memory:").unwrap();
             b.import_tree("Import from html", &browsers::read_netscape_html(&html), ROOT, None, false).unwrap();
             let key = |st: &Store| {
@@ -2302,7 +2323,7 @@ mod tests {
 <DT><A HREF=\"http://b.example/\">B</A>\r\n<DD><!--mdata=[][0][0][0][0][0][0][0][1][][0][0][][][0]-->\r\n<BR>\r\n\
 </DL><p>\r\n</BODY>\r\n</HTML>";
         let mut s = Store::open(":memory:").unwrap();
-        let r = s.import_pm35(&pm35::parse(file).unwrap()).unwrap();
+        let r = s.import_pm35(&pm35::parse(file).unwrap(), None).unwrap();
         assert_eq!((r.added, r.updated, r.skipped, s.count().unwrap()), (2, 1, 0, 2));
         assert_eq!(s.find_url("http://a.example/").unwrap().unwrap().keywords, "food", "the repeat filled the empty keywords");
     }

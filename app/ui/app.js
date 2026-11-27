@@ -2458,10 +2458,18 @@ const importChoices = () => ({
   folderWords: $('import-folder-words').checked,
   newFolder: document.querySelector('input[name=import-into]:checked').value === 'new',
 });
+// "Replace an empty collection" (XFER-05, Compass's Replace, limited to an empty one so nothing
+// is lost): the import goes straight into the root. Offered only while nothing is stored.
+function offerReplace() {
+  const box = document.querySelector('input[name=import-into][value=replace]');
+  box.disabled = total > 0;
+  if (box.disabled && box.checked) document.querySelector('input[name=import-into][value=new]').checked = true;
+}
 
 importBtn.onclick = busyAware(async () => {
   if (!(await confirmDiscard())) return;
   $('import-sources').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'Looking for browsers…' }));
+  offerReplace();
   $('import-dlg').showModal();
   // Folder names as keywords: the Options setting, changeable here for this import (Q4).
   try { $('import-folder-words').checked = !!(await invoke('get_settings')).folder_keywords; } catch { $('import-folder-words').checked = false; }
@@ -2499,7 +2507,7 @@ $('import-html').onclick = busyAware(async () => {
 
 $('import-pm35').onclick = busyAware(async () => {
   try {
-    const report = await invoke('import_pm35');
+    const report = await invoke('import_pm35', { newFolder: importChoices().newFolder });
     if (report !== null) await afterImport(report, 'Powermarks');
   } catch (e) { fail('Import')(e); }
 });
