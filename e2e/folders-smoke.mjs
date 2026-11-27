@@ -835,6 +835,22 @@ try {
       has && shown === String(inbox?.id ?? '') && marked === Number(target) && inboxRows()[0]?.id === inbox?.id,
       `controls ${has}, shown ${shown} vs ${inbox?.id}, set ${marked} vs ${target}`);
   }
+
+  // 38. The real host refuses malformed folder-list and folder-pick messages (SYS-23).
+  {
+    const replies = hostSend(
+      { type: 'folders', folder: '../x' },
+      ['folders'],
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: 999999 },
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: '1' },
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: 0 },
+      { type: 'folders' },
+    );
+    const stored = sql("SELECT count(*) AS n FROM bookmark WHERE url LIKE '%kmzq-e2e-badpick%'")[0].n;
+    check('38 the host refuses bad folder-list and folder-pick messages, stores nothing',
+      replies.length === 6 && replies.slice(0, 5).every((r) => r.ok === false) && replies[5].ok === true && stored === 0,
+      JSON.stringify(replies.map((r) => r.ok)) + ` stored ${stored}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);
