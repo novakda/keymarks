@@ -672,6 +672,30 @@ try {
     await key('Control+z');
     check('28b one Ctrl+Z puts both back in the top folder', named('Kmzq sel A').parent_id === 1 && named('Kmzq sel B').parent_id === 1, JSON.stringify([named('Kmzq sel A'), named('Kmzq sel B')]));
   }
+
+  // 29. Explorer-style Cut (ITEM-15): Ctrl+X dims the row and removes nothing; Esc clears it;
+  // Ctrl+X again, then Ctrl+V on another tree folder moves it there; one Ctrl+Z puts it back.
+  {
+    const [c] = hostSend({ type: 'add', url: 'https://kmzq-e2e-cut.example/', title: 'Kmzq cut', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0].folder_id;
+    const target = sql('SELECT id FROM folder WHERE name = ?', 'Kmzq sel target')[0].id;
+    await openFolder(home);
+    const rowSel = async () => `#table-body tr.vrow >> nth=${(await shown()).ids.indexOf(c.id)}`;
+    await page.click(await rowSel());
+    await key('Control+x');
+    const dimmed = (await page.getAttribute(await rowSel(), 'class')).includes('cut');
+    const kept = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home;
+    await key('Escape');
+    const cleared = !(await page.getAttribute(await rowSel(), 'class')).includes('cut');
+    check('29 Ctrl+X dims the row and removes nothing; Esc clears the mark', dimmed && kept && cleared, `dimmed ${dimmed}, kept ${kept}, cleared ${cleared}`);
+    await key('Control+x');
+    await openFolder(target);
+    await key('Control+v', '#tree');
+    const moved = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === target;
+    await key('Control+z');
+    check('29b Ctrl+V on a folder moves the cut bookmark there; one Ctrl+Z puts it back', moved && sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home,
+      `moved ${moved}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

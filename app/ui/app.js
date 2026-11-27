@@ -425,6 +425,7 @@ function renderTable() {
     tr.className = 'vrow';
     tr.ariaSelected = String(selected.has(ids[i]));
     tr.classList.toggle('sel', selected.has(ids[i]));
+    tr.classList.toggle('cut', isCut('bookmarks', ids[i]));
     tr.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     tr.classList.toggle('cursor', i === cursor);
     tr.classList.toggle('note', isNote(b));
@@ -472,6 +473,7 @@ function renderCards() {
     li.role = 'option';
     li.ariaSelected = String(selected.has(ids[i]));
     li.classList.toggle('sel', selected.has(ids[i]));
+    li.classList.toggle('cut', isCut('bookmarks', ids[i]));
     li.classList.toggle('dupodd', dupView && dupGroup.get(ids[i]) % 2 === 1);
     li.classList.toggle('cursor', i === cursor);
     li.classList.toggle('note', isNote(b));
@@ -584,7 +586,8 @@ function onListKeys(e) {
   } else if (e.key === 'x' && (e.ctrlKey || e.metaKey) && inList) {
     cut(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'v' && (e.ctrlKey || e.metaKey) && inList) {
-    addFromClipboard();
+    if (cutMark) pasteCut(folder);
+    else addFromClipboard();
   } else if (e.key.toLowerCase() === 'l' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
     if (ids[cursor] !== undefined) reveal(ids[cursor], { inFolder: true });
   } else if (e.key === 'Delete' && inList) {
@@ -724,12 +727,41 @@ async function copyUrls(chosen) {
   return true;
 }
 
-// Powermarks' Cut: copy, then delete without asking (Ctrl+Z brings them back).
+// Explorer-style Cut (ITEM-15): Ctrl+X marks (dims) the items, Paste (Ctrl+V) on a folder
+// moves them there as one undo step; nothing is removed without a Paste. Esc clears the mark.
+// Bookmarks cut also go on the clipboard as URLs, for pasting into other apps.
+let cutMark = null; // { folders: [...], bookmarks: [...] }
+const isCut = (kind, id) => !!cutMark?.[kind].includes(id);
 async function cut(chosen) {
-  if (!(await confirmDiscard()) || !(await copyUrls(chosen))) return;
-  await remove(chosen, { ask: false });
-  say(`Cut ${chosen.length} bookmark${chosen.length === 1 ? '' : 's'}. (Ctrl+Z undoes)`);
+  if (!chosen.length) return;
+  await copyUrls(chosen);
+  markCut({ folders: [], bookmarks: chosen });
 }
+function markCut(what) {
+  cutMark = what;
+  render();
+  renderTree();
+  say(`Cut ${describe(what)}: Paste (Ctrl+V) on a folder moves ${what.folders.length + what.bookmarks.length === 1 ? 'it' : 'them'} there; Esc cancels.`);
+}
+function clearCut() {
+  if (!cutMark) return false;
+  cutMark = null;
+  render();
+  renderTree();
+  say('Cut cancelled.');
+  return true;
+}
+async function pasteCut(to) {
+  const what = cutMark;
+  cutMark = null;
+  await moveItems(what, to);
+  renderTree();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !cutMark || document.querySelector('dialog[open]') || e.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (!$('bctx').hidden || !$('fctx').hidden) return; // Esc closes the menu first
+  clearCut();
+}, true);
 
 // Right-click a bookmark: it joins the selection (or replaces it, like Explorer).
 async function showBookmarkMenu(e, i) {
@@ -1293,6 +1325,7 @@ function renderTree() {
     name.textContent = f.name;
     li.title = f.new_items ? `${f.name}: the New Item Folder (browser and clipboard adds land here)` : f.name;
     li.classList.toggle('inbox', !!f.new_items);
+    li.classList.toggle('cut', isCut('folders', f.id));
     li.append(twisty, name);
     if (f.id !== ROOT) li.onpointerdown = (e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey) startDrag(e, () => ({ folders: treeSel.has(f.id) ? treeChosen() : [f.id] }), f.parent_id); };
     li.onclick = (e) => { treeClick(f, e); tree.focus(); };
@@ -1373,6 +1406,13 @@ $('tree').addEventListener('keydown', (e) => {
     else openMovePicker({ folders: chosen });
   } else if (e.key === 'Delete') {
     deleteFolders(treeChosen());
+  } else if (e.key.toLowerCase() === 'x' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    const chosen = treeChosen();
+    if (chosen.includes(ROOT)) say('The top folder can’t move.');
+    else markCut({ folders: chosen, bookmarks: [] });
+  } else if (e.key.toLowerCase() === 'v' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    if (cutMark) pasteCut(folder);
+    else addFromClipboard();
   } else if (e.key === 'Enter') {
     list.focus();
   } else return;
@@ -1641,6 +1681,9 @@ function showFolderMenu(e, f) {
   $('fctx-title').textContent = many ? `${treeSel.size} folders` : f.name;
   for (const act of ['rename', 'move']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
   ctx.querySelector('[data-act=delete]').disabled = treeChosen().includes(ROOT);
+  ctx.querySelector('[data-act=cut]').disabled = treeChosen().includes(ROOT);
+  ctx.querySelector('[data-act=paste]').disabled = !cutMark;
+  ctx.querySelector('[data-act=paste]').hidden = many;
   ctx.querySelector('[data-act=inbox]').disabled = !!f.new_items;
   // A multi-selection offers only what applies to all of it (FLD-06).
   for (const act of ['new', 'note', 'rename', 'sort', 'inbox']) ctx.querySelector(`[data-act=${act}]`).hidden = many;
@@ -1660,6 +1703,8 @@ $('fctx').addEventListener('click', (e) => {
   else if (act === 'rename') renameFolder(f);
   else if (act === 'move') openMovePicker({ folders: treeChosen() });
   else if (act === 'delete') deleteFolders(treeChosen());
+  else if (act === 'cut') markCut({ folders: treeChosen(), bookmarks: [] });
+  else if (act === 'paste') pasteCut(f.id);
   else if (['openall', 'check', 'addkw', 'rmkw'].includes(act)) folderBookmarks(act);
   else if (act === 'inbox') setInbox(f);
   else if (act === 'sort') openSort(f);

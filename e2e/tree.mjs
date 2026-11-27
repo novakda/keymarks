@@ -315,6 +315,40 @@ await page.keyboard.press('Enter');
 await idle();
 check('Enter moves both in one call', await lastMove() === '{"folders":[],"bookmarks":[12,13],"to":3,"beside":null}' && (await titles()).length === 0, await lastMove());
 
+// ---- Explorer-style Cut (ITEM-15): Ctrl+X marks, Paste moves, Esc clears ----
+if (!(await tree()).includes('Clients')) await item('Work').locator('.twisty').click();
+await item('Clients').click();
+await idle();
+await row(0).click();
+await page.focus('#list');
+const movesBefore = await moves();
+const clientTitles = JSON.stringify(await titles());
+await page.keyboard.press('Control+x');
+await idle();
+check('Ctrl+X dims the bookmark and removes nothing', (await row(0).getAttribute('class')).includes('cut') && JSON.stringify(await titles()) === clientTitles
+  && (await calls('delete_bookmarks')).length === 0 && (await moves()) === movesBefore, await row(0).getAttribute('class'));
+await page.keyboard.press('Escape');
+await idle();
+check('Esc clears the cut mark', !(await row(0).getAttribute('class')).includes('cut'), await row(0).getAttribute('class'));
+await page.keyboard.press('Control+x');
+await item('Home').click();
+await idle();
+await page.focus('#tree');
+await page.keyboard.press('Control+v');
+await idle();
+check('Ctrl+V on a tree folder moves the cut bookmark there in one call', await lastMove() === '{"folders":[],"bookmarks":[14],"to":4,"beside":null}'
+  && (await titles()).includes('Client wiki'), `${await lastMove()} ${JSON.stringify(await titles())}`);
+await item('Clients').click();
+await page.focus('#tree');
+await page.keyboard.press('Control+x');
+await idle();
+check('Ctrl+X in the tree dims the folder', (await item('Clients').getAttribute('class')).includes('cut'), await item('Clients').getAttribute('class'));
+await item('Home').click();
+await item('Home').click({ button: 'right' });
+await page.click('#fctx [data-act=paste]');
+await idle();
+check('folder menu Paste here moves the cut folder', await lastMove() === '{"folders":[3],"bookmarks":[],"to":4,"beside":null}', await lastMove());
+
 await page.reload();
 await idle();
 const before = await moves();
