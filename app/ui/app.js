@@ -1056,6 +1056,12 @@ $('settings-open').onclick = async () => {
     $('s-hideopen').checked = s.hide_after_open;
     $('s-hidemin').checked = s.hide_when_minimized;
     $('s-folderkw').checked = s.folder_keywords;
+    $('s-track').checked = tracking;
+    // The store's New Item Folder is the oldest marked one; none yet means a root-level "New" on the first add.
+    const inbox = Math.min(...folders.filter((f) => f.new_items).map((f) => f.id));
+    $('s-newitems').replaceChildren(
+      ...(inbox === Infinity ? [new Option('(none yet: a “New” folder is made at the top on the first add)', '', true, true)] : []),
+      ...visibleFolders(true).map(([f]) => new Option(folderPath(f.id), f.id, f.id === inbox, f.id === inbox)));
     for (const [k, id] of URL_RULES) $(id).checked = !!s.url_rules?.[k];
     $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
@@ -1098,6 +1104,10 @@ $('s-save').onclick = busyAware(async () => {
   try {
     await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
     $('settings').close();
+    if ($('s-track').checked !== tracking) setTracking($('s-track').checked);
+    const inbox = Number($('s-newitems').value);
+    const f = folders.find((x) => x.id === inbox);
+    if (f && $('s-newitems').selectedOptions[0]?.defaultSelected === false) await setInbox(f);
     await refreshScheduleNames();
     if (dupView) await refresh(); // the duplicate rules may have changed
     say('Settings saved.');

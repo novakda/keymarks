@@ -610,10 +610,15 @@
         <label for="s-cliphotkey">Hotkey to add the links on the clipboard, from anywhere</label>
         <input id="s-cliphotkey" placeholder="Press a key combination (empty = none)">
       </fieldset>
+      <fieldset id="s-folders"><legend>Folders</legend>
+        <label><input type="checkbox" id="s-track"> Tree tracking: the tree follows the selected bookmark's folder (F10)</label>
+        <label for="s-newitems">New Item Folder: browser, clipboard and fast adds land in</label>
+        <select id="s-newitems"></select>
+        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
+      </fieldset>
       <fieldset><legend>Adding and importing</legend>
         <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
         <input id="s-fast" placeholder="e.g. new">
-        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
       </fieldset>
       <fieldset id="s-dups"><legend>Duplicates</legend>
         <p class="help">Two URLs are the same link (so an add or import doesn’t make a second copy, and Duplicate URLs groups them) when they differ only in what is ticked here. Stored URLs are never changed.</p>

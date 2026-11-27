@@ -815,6 +815,26 @@ try {
     await page.keyboard.press('Escape');
     check('36 F1 lists every built folder key', !missing.length, `missing ${missing.join(', ') || 'none'}`);
   }
+
+  // 37. Settings > Folders (SYS-12, Q19): tracking, the New Item Folder (from the database)
+  // and folder-name keywords; choosing another folder there marks it in the database.
+  {
+    await menu('settings-open');
+    await page.waitForSelector('#settings[open]');
+    const inbox = inboxRows()[0];
+    const has = await page.evaluate(() => ['s-track', 's-newitems', 's-folderkw'].every((id) => document.querySelector(`#s-folders #${id}`)));
+    const shown = await page.inputValue('#s-newitems');
+    const target = await page.$$eval('#s-newitems option', (os, cur) => os.map((o) => o.value).find((v) => v && v !== cur), shown);
+    await page.selectOption('#s-newitems', target);
+    await page.click('#s-save');
+    await idle();
+    const marked = inboxRows()[0]?.id;
+    await page.keyboard.press('Control+z');
+    await idle();
+    check('37 Settings > Folders shows and sets the New Item Folder (Ctrl+Z undoes)',
+      has && shown === String(inbox?.id ?? '') && marked === Number(target) && inboxRows()[0]?.id === inbox?.id,
+      `controls ${has}, shown ${shown} vs ${inbox?.id}, set ${marked} vs ${target}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

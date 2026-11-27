@@ -682,6 +682,40 @@ await idle();
 const saved = (await calls('save_settings')).at(-1)?.settings?.url_rules;
 check('Save sends every switch as url_rules', JSON.stringify(saved) === '{"protocol":false,"www":true,"trailing_slash":true,"host_case":true,"port":true}', JSON.stringify(saved));
 
+// Settings > Folders (SYS-12, Q19): tree tracking, the New Item Folder and folder-name
+// keywords in one place; Save applies only what changed.
+{
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  const shown = await page.evaluate(() => ({
+    track: document.querySelector('#s-folders #s-track').checked,
+    inbox: document.querySelector('#s-folders #s-newitems').value,
+    label: document.querySelector('#s-newitems').selectedOptions[0]?.textContent,
+    kw: document.querySelector('#s-folders #s-folderkw').checked,
+  }));
+  check('Settings > Folders shows tracking off, the New Item Folder and the folder-keywords switch', JSON.stringify(shown) === '{"track":false,"inbox":"","label":"(none yet: a “New” folder is made at the top on the first add)","kw":true}', JSON.stringify(shown));
+  const before = (await calls('set_new_item_folder')).length;
+  await page.click('#s-save');
+  await idle();
+  check('Save with the New Item Folder unchanged does not set it again', (await calls('set_new_item_folder')).length === before);
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  await page.setChecked('#s-track', true);
+  await page.selectOption('#s-newitems', '1');
+  await page.click('#s-save');
+  await idle();
+  check('Save sets the chosen New Item Folder', JSON.stringify((await calls('set_new_item_folder')).at(-1)) === '{"id":1}');
+  check('Save turns tree tracking on (as F10)', (await page.getAttribute('#track-tree', 'aria-checked')) === 'true');
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  check('Settings then shows that folder and tracking on', (await page.inputValue('#s-newitems')) === '1' && (await page.isChecked('#s-track')), await page.inputValue('#s-newitems'));
+  const n = (await calls('set_new_item_folder')).length;
+  await page.click('#s-save');
+  await idle();
+  check('Save again leaves the New Item Folder alone', (await calls('set_new_item_folder')).length === n);
+  await page.keyboard.press('F10');
+}
+
 // F1 list (SYS-09, Q18): every folder key that works now is listed.
 {
   const keys = await page.$$eval('#keys-dlg td:first-child', (els) => els.map((e) => e.textContent));
