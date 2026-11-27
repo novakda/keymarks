@@ -632,7 +632,7 @@ function onListKeys(e) {
   } else if (e.key === 'x' && (e.ctrlKey || e.metaKey) && inList) {
     cut(ids.filter((id) => selected.has(id)));
   } else if (e.key === 'v' && (e.ctrlKey || e.metaKey) && inList) {
-    if (cutMark) pasteCut(folder);
+    if (cutMark) pasteCut(folder, afterSel());
     else addFromClipboard();
   } else if (e.key.toLowerCase() === 'l' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
     if (ids[cursor] !== undefined) reveal(ids[cursor], { inFolder: true });
@@ -797,10 +797,13 @@ function clearCut() {
   say('Cut cancelled.');
   return true;
 }
-async function pasteCut(to) {
+// FLD-03: new bookmarks, notes and pastes land right after the selected bookmark (the store
+// ignores an anchor outside the target folder: the item goes last).
+const afterSel = () => (selected.has(ids[cursor]) ? ids[cursor] : null);
+async function pasteCut(to, after = null) {
   const what = cutMark;
   cutMark = null;
-  await moveItems(what, to);
+  await moveItems(what, to, after === null ? null : { folder: false, id: after, after: true });
   renderTree();
 }
 document.addEventListener('keydown', (e) => {
@@ -1713,7 +1716,7 @@ const newNote = busyAware(async (inFolder) => {
   const title = prompt(`New note in “${folderName(inFolder)}” (title):`);
   if (!title?.trim()) return;
   try {
-    const id = await invoke('add_note', { folder: inFolder, title });
+    const id = await invoke('add_note', { folder: inFolder, title, after: afterSel() });
     await reveal(id);
     say('Note added. Write it in the Notes field.');
   } catch (e) { fail('New note')(e); }
@@ -2298,7 +2301,7 @@ async function newBookmark() {
 async function addNewBookmark() {
   $('n-error').textContent = '';
   try {
-    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value, folder });
+    const report = await invoke('add_bookmark', { url: $('n-url').value, title: $('n-title').value, folder, after: afterSel() });
     $('new-dlg').close();
     await refreshDictionary();
     if (report.added) {

@@ -228,6 +228,22 @@ fn place(tx: &Connection, item: Item, folder: i64, at: Option<i64>) -> Result<()
     set_order(tx, folder, &order)
 }
 
+/// FLD-03: move `ids` that sit in bookmark `after`'s folder to right after it, in their
+/// order. Anything else (anchor gone, items elsewhere) stays where it is.
+pub(crate) fn put_after(tx: &Connection, after: i64, ids: &[i64]) -> Result<()> {
+    let Some(folder) = tx.query_row("SELECT folder_id FROM bookmark WHERE id = ?1", [after], |r| r.get::<_, i64>(0)).optional()? else {
+        return Ok(());
+    };
+    let (new, mut order): (Vec<Item>, Vec<Item>) =
+        siblings(tx, folder)?.into_iter().partition(|i| matches!(i, Item::Bookmark(b) if ids.contains(b) && *b != after));
+    if new.is_empty() {
+        return Ok(());
+    }
+    let at = order.iter().position(|i| *i == Item::Bookmark(after)).expect("anchor is a sibling") + 1;
+    order.splice(at..at, new);
+    set_order(tx, folder, &order)
+}
+
 pub(crate) const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded, coalesce(role = 'new_items', 0)";
 
 pub(crate) fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
@@ -644,14 +660,25 @@ impl Store {
 
     /// A note item without a URL (NOTE-03), last in `folder`. None if the folder is missing.
     pub fn add_note(&self, folder: i64, title: &str, notes: &str) -> Result<Option<i64>> {
+        self.add_note_after(folder, title, notes, None)
+    }
+
+    /// `add_note`, right after bookmark `after` if it is in `folder` (FLD-03).
+    pub fn add_note_after(&self, folder: i64, title: &str, notes: &str, after: Option<i64>) -> Result<Option<i64>> {
         if !exists(&self.conn, folder)? {
             return Ok(None);
         }
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO bookmark (kind, url, title, notes, folder_id, added) VALUES ('note', '', ?1, ?2, ?3, unixepoch())",
             params![title, notes, folder],
         )?;
-        Ok(Some(self.conn.last_insert_rowid()))
+        let id = tx.last_insert_rowid();
+        if let Some(a) = after {
+            put_after(&tx, a, &[id])?;
+        }
+        tx.commit()?;
+        Ok(Some(id))
     }
 
 }
@@ -1309,5 +1336,30 @@ mod tests {
         s.sort_folder(f, SortBy::LastVisit, true, FoldersAt::Mixed, false).unwrap();
         assert_eq!(names(&s, f)[..2], n(&[("b", "Bravo"), ("b", "charlie")])[..], "most recently visited first");
         assert_eq!(s.sort_folder(9999, SortBy::Title, false, FoldersAt::First, true).unwrap(), None, "missing folder");
+    }
+
+    #[test]
+    fn new_items_land_after_the_selection() {
+        // FLD-03: an add, a note or a paste lands right after the selected item; an anchor
+        // elsewhere (or none) leaves it last in the folder.
+        let mut s = Store::open(":memory:").unwrap();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        let a = s.add_after("Add", f, None, &[link("https://a.example/")]).unwrap().ids[0];
+        let b = s.add_after("Add", f, None, &[link("https://b.example/")]).unwrap().ids[0];
+        let ids = |s: &Store| siblings(&s.conn, f).unwrap().into_iter().map(|i| match i { Item::Folder(x) | Item::Bookmark(x) => x }).collect::<Vec<_>>();
+        let c = s.add_after("Add", f, Some(a), &[link("https://c.example/")]).unwrap().ids[0];
+        assert_eq!(ids(&s), [a, c, b], "after the selected one");
+        let n = s.add_note_after(f, "N", "", Some(a)).unwrap().unwrap();
+        assert_eq!(ids(&s), [a, n, c, b], "a note too");
+        let elsewhere = s.add_after("Add", ROOT, None, &[link("https://x.example/")]).unwrap().ids[0];
+        let d = s.add_after("Add", f, Some(elsewhere), &[link("https://d.example/")]).unwrap().ids[0];
+        assert_eq!(ids(&s), [a, n, c, b, d], "an anchor in another folder: last");
+        s.undo().unwrap();
+        s.undo().unwrap();
+        s.redo().unwrap();
+        assert_eq!(ids(&s), [a, n, c, b], "undo and redo keep the place");
+        // Paste is a move beside the selection (ITEM-15 with FLD-03).
+        s.move_items(&[], &[elsewhere], f, Some(Beside { folder: false, id: a, after: true })).unwrap();
+        assert_eq!(ids(&s)[..2], [a, elsewhere]);
     }
 }

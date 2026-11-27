@@ -758,6 +758,32 @@ try {
     await page.click('#import-dlg button[value=close]');
     check('33 Import offers "replace an empty collection", disabled while not empty', off && dflt, `disabled ${off}, new folder default ${dflt}`);
   }
+
+  // 34. New items land after the selection (FLD-03): Insert adds right after the selected
+  // bookmark, and a cut bookmark pasted with Ctrl+V in the list lands right after it too.
+  {
+    const [a] = hostSend({ type: 'add', url: 'https://kmzq-e2e-after-a.example/', title: 'Kmzq after A', fast: true });
+    const [b] = hostSend({ type: 'add', url: 'https://kmzq-e2e-after-b.example/', title: 'Kmzq after B', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', a.id)[0].folder_id;
+    const order = () => sql('SELECT id FROM bookmark WHERE folder_id = ? ORDER BY position', home).map((r) => r.id);
+    const rowOf = async (id) => `#table-body tr.vrow >> nth=${(await shown()).ids.indexOf(id)}`;
+    await openFolder(home);
+    await page.click(await rowOf(a.id));
+    await key('Insert');
+    await page.fill('#n-url', 'https://kmzq-e2e-after-new.example/');
+    await page.fill('#n-title', 'Kmzq after new');
+    await page.click('#new-form button[type=submit]');
+    await idle();
+    const added = sql('SELECT id FROM bookmark WHERE url = ?', 'https://kmzq-e2e-after-new.example/')[0]?.id;
+    const addOk = order().indexOf(added) === order().indexOf(a.id) + 1;
+    await openFolder(home);
+    await page.click(await rowOf(b.id));
+    await key('Control+x');
+    await page.click(await rowOf(a.id));
+    await key('Control+v');
+    const pasteOk = order().indexOf(b.id) === order().indexOf(a.id) + 1;
+    check('34 Insert and Ctrl+V put the new item right after the selected bookmark', addOk && pasteOk, `add ${addOk}, paste ${pasteOk}: ${order()}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

@@ -370,6 +370,17 @@ await item('Home').click({ button: 'right' });
 await page.click('#fctx [data-act=paste]');
 await idle();
 check('folder menu Paste here moves the cut folder', await lastMove() === '{"folders":[3],"bookmarks":[],"to":4,"beside":null}', await lastMove());
+await item('Home').click();
+await idle();
+const homeIds = await page.evaluate(() => window.__TAURI__.core.invoke('search_ids', { query: '', opts: { folder: 4 } }));
+await row(0).click();
+await page.focus('#list');
+await page.keyboard.press('Control+x');
+await row(1).click();
+await page.keyboard.press('Control+v');
+await idle();
+check('Ctrl+V in the list pastes right after the selected bookmark (FLD-03)',
+  await lastMove() === JSON.stringify({ folders: [], bookmarks: [homeIds[0]], to: 4, beside: { folder: false, id: homeIds[1], after: true } }), `${await lastMove()} ${homeIds}`);
 
 await page.reload();
 await idle();
@@ -533,12 +544,15 @@ check('the menu item is off for the folder that already is it', await page.isDis
 await page.keyboard.press('Escape');
 await item('Work').click();
 await idle();
+await row(0).click();
+const selId = (await page.evaluate(() => window.__TAURI__.core.invoke('search_ids', { query: '', opts: { folder: 2 } })))[0];
 await page.focus('#list');
 await page.keyboard.press('Insert');
 await page.fill('#n-url', 'https://here.example/');
 await page.click('#new-form button[type=submit]');
 await idle();
 check('a bookmark added in the app goes to the selected folder, not the inbox', (await calls('add_bookmark')).at(-1)?.folder === 2, JSON.stringify((await calls('add_bookmark')).at(-1)));
+check('it goes right after the selected bookmark (FLD-03)', (await calls('add_bookmark')).at(-1)?.after === selId, `${JSON.stringify((await calls('add_bookmark')).at(-1))} vs ${selId}`);
 // The inbox deleted: the next clipboard add recreates it as "New" and the tree shows it.
 await item('Home').click();
 await idle();

@@ -171,14 +171,15 @@ fn normalize_url(input: &str) -> Result<String, String> {
     reqwest::Url::parse(&s).map(|u| u.to_string()).map_err(|e| format!("Not a valid URL: {e}"))
 }
 
-/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree.
+/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree,
+/// right after the selected bookmark `after` when it's in that folder (FLD-03).
 /// Without a title, the page's own is fetched.
 #[tauri::command]
-fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64) -> Result<ImportReport, String> {
+fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64, after: Option<i64>) -> Result<ImportReport, String> {
     let url = normalize_url(&url)?;
     let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
     let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), notes: String::new(), added: None };
-    let report = db.lock().unwrap().import_bookmarks("Add bookmark", folder, &[item]).map_err(err)?;
+    let report = db.lock().unwrap().add_after("Add bookmark", folder, after, &[item]).map_err(err)?;
     fetch_in_background(app, report.ids.clone());
     Ok(report)
 }
@@ -646,11 +647,11 @@ fn set_folder_folded(db: State<Db>, id: i64, folded: bool) -> Result<(), String>
     db.lock().unwrap().set_folded(id, folded).map(drop).map_err(err)
 }
 
-/// A note item (no URL), last in `folder`. Returns its id.
+/// A note item (no URL), last in `folder` or right after the selected bookmark `after` (FLD-03). Returns its id.
 #[tauri::command]
-fn add_note(db: State<Db>, folder: i64, title: String) -> Result<i64, String> {
+fn add_note(db: State<Db>, folder: i64, title: String, after: Option<i64>) -> Result<i64, String> {
     let title = Some(title.trim()).filter(|t| !t.is_empty()).ok_or("Give the note a title")?;
-    db.lock().unwrap().add_note(folder, title, "").map_err(err)?.ok_or_else(|| GONE.into())
+    db.lock().unwrap().add_note_after(folder, title, "", after).map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 #[tauri::command]

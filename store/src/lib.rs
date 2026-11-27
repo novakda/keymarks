@@ -573,8 +573,14 @@ impl Store {
     /// Merge bookmarks into folder `into` (`NEW_ITEMS`: the New Item Folder), skipping URLs
     /// already stored (see `url_key`). One undoable step called `step` (e.g. "Add bookmark").
     pub fn import_bookmarks(&mut self, step: &str, into: i64, items: &[NewBookmark]) -> Result<ImportReport> {
+        self.add_after(step, into, None, items)
+    }
+
+    /// `import_bookmarks`, the new ones placed right after bookmark `after` when it is in
+    /// that folder, else last (FLD-03: new items land after the selection).
+    pub fn add_after(&mut self, step: &str, into: i64, after: Option<i64>, items: &[NewBookmark]) -> Result<ImportReport> {
         let entries: Vec<Entry> = items.iter().cloned().map(Entry::Bookmark).collect();
-        self.import_tree(step, &entries, into, None, false)
+        self.import_at(step, &entries, into, None, false, after)
     }
 
     /// Import a tree (XFER-03, XFER-10) into folder `into`: inside a new folder `new_folder`
@@ -583,6 +589,10 @@ impl Store {
     /// With `folder_words`, every folder name on an item's path (below `into`/`new_folder`)
     /// also becomes a keyword (KEY-09, Q4). One undoable step called `step`.
     pub fn import_tree(&mut self, step: &str, entries: &[Entry], into: i64, new_folder: Option<&str>, folder_words: bool) -> Result<ImportReport> {
+        self.import_at(step, entries, into, new_folder, folder_words, None)
+    }
+
+    fn import_at(&mut self, step: &str, entries: &[Entry], into: i64, new_folder: Option<&str>, folder_words: bool, after: Option<i64>) -> Result<ImportReport> {
         self.record_created(step.to_string(), |s| {
             let tx = s.conn.transaction()?;
             let mut report = ImportReport::default();
@@ -670,6 +680,9 @@ impl Store {
                         }
                     }
                 }
+            }
+            if let Some(a) = after {
+                folders::put_after(&tx, a, &report.ids)?;
             }
             tx.commit()?;
             report.folders = created.len();
