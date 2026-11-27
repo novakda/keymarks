@@ -53,11 +53,16 @@ So this project is two things:
   shows them, and the list shows the chosen folder. Create, rename and delete folders in
   place, **Move to folder** or drag and drop, and **Sort folder** by title, URL, last visit
   or date added. Every change is one undo step.
+- **Multi-folder selection and Explorer-style Cut/Paste.** Select several folders at once
+  (Ctrl/Shift click), cut them with Ctrl+X and paste with Ctrl+V; cut items are dimmed
+  and nothing moves until you paste, and Esc cancels. Deleting a folder deletes its subtree, and the confirmation shows the
+  count. Tree tracking (F10) keeps the tree on the folder of the selected bookmark.
 - **Notes.** A note can be an item of its own with no URL, and a folder can carry a note;
   words in a folder note find what is filed below it.
 - **Editing.** A properties panel with a tag-style keyword editor and autocomplete,
   multi-select, delete, and **undo/redo** with named steps (Ctrl+Z / Ctrl+Y).
-- **Cards or table view.** Choose from 11 columns, sort by up to two keys (as the
+- **Cards or table view.** Choose from 11 columns, including a sortable **Folder** column;
+  double-click a column divider to fit it. Sort by up to two keys (as the
   original did), and scroll through all your bookmarks without a cap.
 - **Browser extension** (Chrome, Edge, Firefox). One click adds the current page,
   prefilled with its title, description and keywords. On a page you already have, it
@@ -65,6 +70,8 @@ So this project is two things:
   marked as it), and the popup can pick another. **Fast add** (Alt+Shift+K, or right-click a page or link)
   adds without a popup and tags the bookmark `new` for later review. The app's list
   updates live.
+- **Folder field with a picker.** Every bookmark has a Folder field with a folder picker, and
+  a new bookmark can be inserted right after the selected one.
 - **Quick adding in the app.** Insert opens New bookmark, and Alt+Insert adds every link on
   the clipboard. Titles and descriptions are fetched from the pages in the background.
 - **Always at hand.** A global hotkey brings the window up, the tray menu lists the top
@@ -75,8 +82,14 @@ So this project is two things:
   permanently, as an undoable step. Checks only run when you ask. The **Dead Links** view
   (Ctrl+L) lists every bookmark found gone, across folders.
 - **One duplicate-URL rule everywhere.** Adds, the extension and imports all match URLs the
-  same way. Each import ends with a merge report (added, updated, skipped), and the
+  same way (**Settings > Duplicates** has a switch for each URL rule: protocol, www., trailing slash, case, port). Each import ends with a merge report (added, updated, skipped), and the
   **Duplicate URLs** view (Ctrl+D) merges or keeps copies, undoably.
+- **Settings > Folders.** Tree tracking, the New Item Folder, and whether imports also add
+  folder names as keywords.
+- **Strict browser messages.** The native-messaging host validates every field of every
+  message from the extension and rejects anything malformed.
+- **Fast on big collections.** Measured on generated collections of 13k and 42k bookmarks
+  (`cargo run --release -p store --example bench`); the UI draws 42k in well under 100 ms.
 - **Safe with your data.** It backs up on every start and keeps a copy of your largest
   collection so far, which survives an accidental mass delete. It also backs up before any
   cleanup or restore, and you can restore from inside the app. A database from an older
@@ -191,7 +204,7 @@ A few decisions worth noting:
 - **Real-data tests** (optional, `PM35_REAL=…\pm35.htm cargo test -- --ignored`): import,
   round-trip and timing on a real collection, an exact-undo check after a full cleanup, and
   both export formats read back field by field.
-- **End-to-end** (`e2e/`: `npm run smoke`, 86 checks, and `npm run folders`, 33): starts the real app with WebView2's
+- **End-to-end** (`e2e/`: `npm run smoke`, 86 checks, and `npm run folders`, 47): starts the real app with WebView2's
   debugging port open and drives it with Playwright. It types queries, switches modes,
   sorts, scrolls to the last row, edits, deletes, undoes, checks single-instance, and runs
   a link check against a local test server (it never contacts real sites).
