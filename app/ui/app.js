@@ -562,8 +562,41 @@ async function select(i, { ctrlKey = false, metaKey = false, shiftKey = false } 
   folderPanel = false;
   revealCursor();
   await fetchRows([id]); // the properties panel needs it
+  if (!(ctrlKey || metaKey || shiftKey)) track(id);
   render();
 }
+
+// Tracking (FLD-14, Compass F10 "Track Both Panes"): off by default. On, the tree follows
+// the selected bookmark's folder without changing the list. Skipped during a folder-scoped
+// search, where the tree's folder is the scope and moving it would change the results.
+let tracking = false;
+try { tracking = localStorage.getItem('trackTree') === '1'; } catch {}
+function setTracking(on) {
+  tracking = on;
+  $('track-tree').setAttribute('aria-checked', String(on));
+  try { localStorage.setItem('trackTree', on ? '1' : '0'); savePrefs(); } catch {}
+  say(`Tree tracking ${on ? 'on: the tree follows the selected bookmark' : 'off'}`);
+}
+function track(id) {
+  const b = cache.get(id);
+  if (!tracking || !b || b.folder_id === folder || (opts.in_folder && searching())) return;
+  openAbove(b.folder_id);
+  setFolder(b.folder_id, { load: false });
+}
+/** Expand the folders above a folder so it shows in the tree. */
+function openAbove(id) {
+  for (let f = folders.find((x) => x.id === id); f?.parent_id; f = folders.find((x) => x.id === f.parent_id)) {
+    const p = folders.find((x) => x.id === f.parent_id);
+    if (p.id !== ROOT && p.folded) setFolded(p, false);
+  }
+}
+$('track-tree').onclick = () => setTracking(!tracking);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'F10') return;
+  e.preventDefault(); // F10 would otherwise focus the webview's menu
+  setTracking(!tracking);
+});
+$('track-tree').setAttribute('aria-checked', String(tracking));
 
 function onListKeys(e) {
   const page = Math.max(1, Math.floor(scroller().clientHeight / ROW_H[view]) - 1);
@@ -2233,12 +2266,7 @@ async function reveal(id, { inFolder = false } = {}) {
   if (inFolder || !ids.includes(id)) {
     q.value = '';
     const [b] = await invoke('get_bookmarks', { ids: [id] }).catch(() => []);
-    if (b && inFolder) {
-      for (let f = folders.find((x) => x.id === b.folder_id); f?.parent_id; f = folders.find((x) => x.id === f.parent_id)) {
-        const p = folders.find((x) => x.id === f.parent_id);
-        if (p.id !== ROOT && p.folded) setFolded(p, false);
-      }
-    }
+    if (b && inFolder) openAbove(b.folder_id);
     if (b && (inFolder || b.folder_id !== folder)) setFolder(b.folder_id, { load: false });
   }
   await refresh({ keepSelection: false });

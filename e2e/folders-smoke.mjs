@@ -696,6 +696,26 @@ try {
     check('29b Ctrl+V on a folder moves the cut bookmark there; one Ctrl+Z puts it back', moved && sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home,
       `moved ${moved}`);
   }
+
+  // 30. Tree tracking (FLD-14, F10): off, selecting a search result leaves the tree; F10 on,
+  // the tree selects the result's folder and the search stays; F10 again turns it off.
+  {
+    const [t] = hostSend({ type: 'add', url: 'https://kmzq-e2e-track.example/', title: 'Kmzq track', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', t.id)[0].folder_id;
+    await openFolder(ROOT);
+    await search('kmzq track');
+    const at = () => "#table-body tr.vrow >> nth=0";
+    await page.click(at());
+    await idle();
+    const stayed = (await treeSelected()) === ROOT;
+    await key('F10');
+    await page.click(at());
+    await idle();
+    const followed = (await treeSelected()) === home && (await page.inputValue('#q')) === 'kmzq track';
+    await key('F10');
+    const off = (await page.getAttribute('#track-tree', 'aria-checked')) === 'false';
+    check('30 F10 tracking: the tree follows the selected result only while on', stayed && followed && off, `stayed ${stayed}, followed ${followed}, off ${off}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

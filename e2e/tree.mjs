@@ -222,6 +222,22 @@ await idle();
 const found = await titles();
 check('a search covers the whole collection', found.length === 2 && found.includes('Wiki') && found.includes('Client wiki'), JSON.stringify(found));
 check('the status bar drops the folder while searching', /^2 matching ·/.test(await status()), await status());
+// FLD-14 F10 (Compass "Track Both Panes"): off by default; on, the tree follows the selected item.
+const treeSel = () => page.textContent('#tree li[aria-selected=true] .name');
+await page.click('#list li.vrow >> nth=' + found.indexOf('Wiki'));
+await idle();
+check('tracking is off by default: selecting a result leaves the tree alone', (await treeSel()) === 'Clients', await treeSel());
+await page.keyboard.press('F10');
+check('F10 turns tracking on and says so', /tracking on/i.test(await status()) && (await page.getAttribute('#track-tree', 'aria-checked')) === 'true', await status());
+await page.click('#list li.vrow >> nth=' + found.indexOf('Wiki'));
+await idle();
+check('with tracking on, the tree selects the item\'s folder; the search and list stay', (await treeSel()) === 'Work'
+  && (await page.inputValue('#q')) === 'wiki' && (await titles()).length === 2, `${await treeSel()} ${JSON.stringify(await titles())}`);
+await page.keyboard.press('ArrowDown');
+await idle();
+check('moving with the keys tracks too', (await treeSel()) === ((await titles())[1] === 'Client wiki' ? 'Clients' : 'Work'), await treeSel());
+await page.keyboard.press('F10');
+check('F10 again turns it off', /tracking off/i.test(await status()) && (await page.getAttribute('#track-tree', 'aria-checked')) === 'false', await status());
 await item('Home').click();
 await idle();
 check('choosing a folder clears the search and shows the folder', (await page.inputValue('#q')) === '' && (await titles()).length === 0);
