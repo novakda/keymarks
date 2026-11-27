@@ -737,6 +737,15 @@ try {
     await idle();
     check('31 Folder column sorts by path; divider double-click fits it', paths.length > 1 && inOrder && fits, `${paths.length} rows, in order ${inOrder}, fits ${fits}`);
   }
+
+  // 32. Popup lookup names the existing bookmark's folder (ITEM-02): the host's reply carries
+  // the path of the folder the Fast Add put it in (the New Item Folder, at the root).
+  {
+    const [t] = hostSend({ type: 'lookup', url: 'https://kmzq-e2e-track.example/' });
+    const id = sql('SELECT id FROM bookmark WHERE url = ?', 'https://kmzq-e2e-track.example/')[0]?.id;
+    const name = sql('SELECT f.name FROM folder f JOIN bookmark b ON b.folder_id = f.id WHERE b.id = ?', id)[0]?.name;
+    check('32 the popup lookup returns the existing bookmark\'s folder path', t?.found === true && t.folder === name, `${t?.folder} vs ${name}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

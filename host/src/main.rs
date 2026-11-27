@@ -130,7 +130,13 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
             Err(e) => json!({ "ok": false, "error": format!("could not start Keymarks: {e}") }),
         },
         Request::Lookup { url } => match store.find_url(&url) {
-            Ok(Some(b)) => json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description }),
+            Ok(Some(b)) => {
+                // Its folder's path, as the picker shows it (ITEM-02); empty if the list fails.
+                let folder = store.folders().ok().and_then(|all| {
+                    folder_paths(&all).into_iter().find(|f| f["id"] == b.folder_id).map(|f| f["path"].clone())
+                });
+                json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description, "folder": folder.unwrap_or_default() })
+            }
             Ok(None) => json!({ "ok": true, "found": false }),
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         },
@@ -281,6 +287,7 @@ mod tests {
         // Lookup, then update the existing bookmark from the popup.
         let found = h(br#"{"type":"lookup","url":"https://a.example/"}"#);
         assert_eq!((found["found"].as_bool(), found["title"].as_str()), (Some(true), Some("A")));
+        assert_eq!(found["folder"], "New", "the popup shows the existing item's folder path (ITEM-02)");
         assert_eq!(h(br#"{"type":"lookup","url":"https://none.example/"}"#)["found"], false);
         let up = h(br#"{"type":"add","url":"https://a.example/","title":"A2","keywords":"k2","update":true}"#);
         assert_eq!(up["updated"], true);
