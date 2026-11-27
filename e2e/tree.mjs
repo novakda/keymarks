@@ -40,6 +40,15 @@ function fakeTauri() {
   window.__setStatus = (title, st) => { const b = items.find((x) => x.title === title); b.check_status = st; };
   window.__addItem = (folderId, title, url) => items.push(bm(nextId++, folderId, 99, title, url));
   let nextId = 100;
+  // What the browser host does through its own connection: the store's data_version moves.
+  // `fresh`: the New Item Folder was deleted, so the add makes a new one.
+  window.__extensionAdd = (title, url, fresh = false) => {
+    if (fresh) for (const f of folders) f.new_items = false;
+    let inbox = folders.find((f) => f.new_items);
+    if (!inbox) folders.push((inbox = { id: nextId++, parent_id: 1, name: 'New', position: 99, folded: true, new_items: true }));
+    items.push(bm(nextId++, inbox.id, 99, title, url));
+    window.__version = (window.__version ?? 1) + 1;
+  };
   const byPos = (a, b) => a.position - b.position;
   // A one-stack undo like the store's: each filing command saves the whole fake state.
   const steps = [];
@@ -55,7 +64,7 @@ function fakeTauri() {
     get_bookmarks: ({ ids }) => ids.map((id) => items.find((b) => b.id === id)).filter(Boolean),
     count: () => items.length,
     keywords: () => [],
-    data_version: () => 1,
+    data_version: () => window.__version ?? 1,
     history: () => ({ undo: steps.at(-1)?.[0] ?? null, redo: null }),
     undo: () => {
       const step = steps.pop();
@@ -85,14 +94,23 @@ function fakeTauri() {
       return id;
     },
     rename_folder: ({ id, name }) => { snap('Rename'); folders.find((f) => f.id === id).name = name.trim(); },
-    delete_folder: ({ id }) => {
-      snap('Delete');
-      const f = folders.find((x) => x.id === id);
-      for (const c of folders) if (c.parent_id === id) c.parent_id = f.parent_id;
-      for (const b of items) if (b.folder_id === id) b.folder_id = f.parent_id;
-      folders.splice(folders.indexOf(f), 1);
+    delete_counts: ({ ids }) => {
+      const sub = new Set(ids);
+      for (let grew = true; grew;) { grew = false; for (const f of folders) if (sub.has(f.parent_id) && !sub.has(f.id)) { sub.add(f.id); grew = true; } }
+      return [sub.size, items.filter((b) => sub.has(b.folder_id)).length];
     },
-    get_settings: () => ({ folder_keywords: true, autostart: false }),
+    delete_folders: ({ ids }) => {
+      snap('Delete');
+      const sub = new Set(ids);
+      for (let grew = true; grew;) { grew = false; for (const f of folders) if (sub.has(f.parent_id) && !sub.has(f.id)) { sub.add(f.id); grew = true; } }
+      const n = [sub.size, items.filter((b) => sub.has(b.folder_id)).length];
+      for (let i = items.length - 1; i >= 0; i--) if (sub.has(items[i].folder_id)) items.splice(i, 1);
+      for (let i = folders.length - 1; i >= 0; i--) if (sub.has(folders[i].id)) folders.splice(i, 1);
+      return n;
+    },
+    get_settings: () => ({ folder_keywords: true, autostart: false, schedules: '', url_rules: { protocol: true, trailing_slash: true, www: true, host_case: true, port: false } }),
+    save_settings: () => null,
+    refresh_schedule_names: () => [],
     browser_sources: () => [{ browser: 'Chrome', profile: 'Default', count: 2 }],
     import_browser: ({ newFolder }) => {
       snap('Import from Chrome (Default)');
@@ -145,6 +163,11 @@ function fakeTauri() {
       return 1;
     },
     set_folder_note: ({ id, note }) => { snap('Note on folder'); folders.find((f) => f.id === id).note = note.trim(); },
+    // Smart selection (FLD-06): items in the folders and below, once each (the store's own is unit-tested).
+    selection_bookmarks: ({ folders: fs }) => {
+      const under = (id, of) => id === of || (id != null && id !== 1 && under(folders.find((f) => f.id === id)?.parent_id, of));
+      return items.filter((b) => fs.some((f) => under(b.folder_id, f))).map((b) => b.id);
+    },
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -175,7 +198,9 @@ const titles = () => page.$$eval('#list li.vrow .title', (els) => els.map((e) =>
 const status = () => page.textContent('#status');
 const calls = (cmd) => page.evaluate((c) => window.__calls.filter(([n]) => n === c).map(([, a]) => a), cmd);
 const item = (name) => page.locator('#tree li', { has: page.locator('.name', { hasText: new RegExp(`^${name}$`) }) });
-const answer = (text) => page.once('dialog', (d) => d.accept(text));
+let asked = '';
+const answer = (text) => page.once('dialog', (d) => { asked = d.message(); d.accept(text); });
+const lastAsk = () => asked;
 
 await idle();
 check('the tree shows the root and its folders; collapsed ones hide their children', JSON.stringify(await tree()) === '["Bookmarks","Work","Home"]', JSON.stringify(await tree()));
@@ -208,6 +233,22 @@ await idle();
 const found = await titles();
 check('a search covers the whole collection', found.length === 2 && found.includes('Wiki') && found.includes('Client wiki'), JSON.stringify(found));
 check('the status bar drops the folder while searching', /^2 matching ·/.test(await status()), await status());
+// FLD-14 F10 (Compass "Track Both Panes"): off by default; on, the tree follows the selected item.
+const treeSel = () => page.textContent('#tree li[aria-selected=true] .name');
+await page.click('#list li.vrow >> nth=' + found.indexOf('Wiki'));
+await idle();
+check('tracking is off by default: selecting a result leaves the tree alone', (await treeSel()) === 'Clients', await treeSel());
+await page.keyboard.press('F10');
+check('F10 turns tracking on and says so', /tracking on/i.test(await status()) && (await page.getAttribute('#track-tree', 'aria-checked')) === 'true', await status());
+await page.click('#list li.vrow >> nth=' + found.indexOf('Wiki'));
+await idle();
+check('with tracking on, the tree selects the item\'s folder; the search and list stay', (await treeSel()) === 'Work'
+  && (await page.inputValue('#q')) === 'wiki' && (await titles()).length === 2, `${await treeSel()} ${JSON.stringify(await titles())}`);
+await page.keyboard.press('ArrowDown');
+await idle();
+check('moving with the keys tracks too', (await treeSel()) === ((await titles())[1] === 'Client wiki' ? 'Clients' : 'Work'), await treeSel());
+await page.keyboard.press('F10');
+check('F10 again turns it off', /tracking off/i.test(await status()) && (await page.getAttribute('#track-tree', 'aria-checked')) === 'false', await status());
 await item('Home').click();
 await idle();
 check('choosing a folder clears the search and shows the folder', (await page.inputValue('#q')) === '' && (await titles()).length === 0);
@@ -238,10 +279,11 @@ await idle();
 answer();
 await page.keyboard.press('Delete');
 await idle();
-check('Del deletes the folder after asking; its contents move up', JSON.stringify((await calls('delete_folder')).at(-1)) === '{"id":2}'
+check('Del deletes the folder and its subtree after a confirm with the count', JSON.stringify((await calls('delete_folders')).at(-1)) === '{"ids":[2]}'
+  && /^Delete \d+ folders? and \d+ bookmarks?\?/.test(lastAsk())
   && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks'
-  && (await titles()).includes('Wiki') && (await titles()).includes('Root page'), JSON.stringify(await titles()));
-check('the moved-up folders appear under the parent', (await tree()).includes('Clients'));
+  && !(await titles()).includes('Wiki') && (await titles()).includes('Root page'), `${lastAsk()} | ${JSON.stringify(await titles())}`);
+check('its subfolders are gone too', !(await tree()).includes('Clients'));
 
 await item('Home').click();
 await idle();
@@ -300,6 +342,57 @@ await page.keyboard.press('Enter');
 await idle();
 check('Enter moves both in one call', await lastMove() === '{"folders":[],"bookmarks":[12,13],"to":3,"beside":null}' && (await titles()).length === 0, await lastMove());
 
+// ---- Explorer-style Cut (ITEM-15): Ctrl+X marks, Paste moves, Esc clears ----
+if (!(await tree()).includes('Clients')) await item('Work').locator('.twisty').click();
+await item('Clients').click();
+await idle();
+await row(0).click();
+await page.focus('#list');
+const movesBefore = await moves();
+const clientTitles = JSON.stringify(await titles());
+await page.keyboard.press('Control+x');
+await idle();
+check('Ctrl+X dims the bookmark and removes nothing', (await row(0).getAttribute('class')).includes('cut') && JSON.stringify(await titles()) === clientTitles
+  && (await calls('delete_bookmarks')).length === 0 && (await moves()) === movesBefore, await row(0).getAttribute('class'));
+await page.keyboard.press('Escape');
+await idle();
+check('Esc clears the cut mark', !(await row(0).getAttribute('class')).includes('cut'), await row(0).getAttribute('class'));
+await page.keyboard.press('Control+x');
+await item('Home').click();
+await idle();
+await page.focus('#tree');
+await page.keyboard.press('Control+v');
+await idle();
+check('Ctrl+V on a tree folder moves the cut bookmark there in one call', await lastMove() === '{"folders":[],"bookmarks":[14],"to":4,"beside":null}'
+  && (await titles()).includes('Client wiki'), `${await lastMove()} ${JSON.stringify(await titles())}`);
+await page.locator('#list li.vrow', { hasText: 'Client wiki' }).click();
+await idle();
+check('the properties panel shows the bookmark\'s folder path (ITEM-11)', (await page.textContent('#f-folder')) === 'Bookmarks › Home', await page.textContent('#f-folder'));
+await page.click('#f-folder-pick');
+check('its Change… button opens the folder picker for that bookmark', await page.isVisible('#move-dlg') && (await page.textContent('#move-title')) === 'Move “Client wiki” to', await page.textContent('#move-title'));
+await page.keyboard.press('Escape');
+await item('Clients').click();
+await page.focus('#tree');
+await page.keyboard.press('Control+x');
+await idle();
+check('Ctrl+X in the tree dims the folder', (await item('Clients').getAttribute('class')).includes('cut'), await item('Clients').getAttribute('class'));
+await item('Home').click();
+await item('Home').click({ button: 'right' });
+await page.click('#fctx [data-act=paste]');
+await idle();
+check('folder menu Paste here moves the cut folder', await lastMove() === '{"folders":[3],"bookmarks":[],"to":4,"beside":null}', await lastMove());
+await item('Home').click();
+await idle();
+const homeIds = await page.evaluate(() => window.__TAURI__.core.invoke('search_ids', { query: '', opts: { folder: 4 } }));
+await row(0).click();
+await page.focus('#list');
+await page.keyboard.press('Control+x');
+await row(1).click();
+await page.keyboard.press('Control+v');
+await idle();
+check('Ctrl+V in the list pastes right after the selected bookmark (FLD-03)',
+  await lastMove() === JSON.stringify({ folders: [], bookmarks: [homeIds[0]], to: 4, beside: { folder: false, id: homeIds[1], after: true } }), `${await lastMove()} ${homeIds}`);
+
 await page.reload();
 await idle();
 const before = await moves();
@@ -338,6 +431,11 @@ await page.evaluate(() => document.getElementById('import').click());
 await page.waitForSelector('#import-sources button');
 check('the import dialog pre-fills "folder names as keywords" from Options', await page.isChecked('#import-folder-words'));
 check('a new folder named after the source is the default destination', await page.isChecked('input[name=import-into][value=new]'));
+check('"replace an empty collection" is offered but off while the collection has items (XFER-05)',
+  (await page.isDisabled('input[name=import-into][value=replace]')) && /empty/i.test(await page.textContent('#import-replace-label')));
+await page.click('#import-pm35');
+await idle();
+check('a Powermarks import follows the dialog: into a new folder by default', (await calls('import_pm35')).at(-1)?.newFolder === true, JSON.stringify((await calls('import_pm35')).at(-1)));
 await page.uncheck('#import-folder-words');
 await page.click('#import-sources button');
 await idle();
@@ -405,6 +503,24 @@ await page.check('#cols-menu input[value=folder]');
 await idle();
 const folderCells = await page.$$eval('#table-body tr.vrow', (trs) => trs.map((tr) => tr.lastElementChild.textContent));
 check('the Folder column shows each result\'s folder path', folderCells.includes('Bookmarks › Work › Clients') && folderCells.includes('Bookmarks › Work'), JSON.stringify(folderCells));
+// VIEW-02: the Folder column sorts by path; double-clicking its divider fits it to the widest cell.
+await page.evaluate(() => { document.getElementById('cols').open = false; });
+await page.click('#table-head th[data-col=folder] button');
+await idle();
+check('clicking the Folder header sorts by folder path', JSON.stringify((await calls('search_ids')).at(-1).opts.sort[0]) === '{"column":"folder","desc":false}'
+  && (await page.getAttribute('#table-head th[data-col=folder]', 'aria-sort')) === 'ascending', JSON.stringify((await calls('search_ids')).at(-1).opts.sort));
+await page.dblclick('#table-head th[data-col=folder] .grip');
+const fit = await page.evaluate(() => {
+  const n = [...document.querySelectorAll('#table-head th')].findIndex((th) => th.dataset.col === 'folder');
+  const widest = Math.max(...[...document.querySelectorAll('#table-body tr.vrow')].map((tr) => tr.children[n].scrollWidth));
+  const th = document.querySelectorAll('#table-head th')[n];
+  return { widest, col: th.offsetWidth, cellsFit: [...document.querySelectorAll('#table-body tr.vrow')].every((tr) => tr.children[n].scrollWidth <= tr.children[n].clientWidth) };
+});
+check('double-clicking the Folder divider fits the column to its widest cell', fit.cellsFit && fit.col >= fit.widest && fit.col < fit.widest + 40, JSON.stringify(fit));
+await page.click('#table-head th[data-col=folder] button');
+await page.click('#table-head th[data-col=folder] button');
+await idle();
+check('(sort cleared again)', (await calls('search_ids')).at(-1).opts.sort.length === 0);
 await page.click('#view-cards');
 
 await item('Work').locator('.twisty').click();
@@ -439,12 +555,15 @@ check('the menu item is off for the folder that already is it', await page.isDis
 await page.keyboard.press('Escape');
 await item('Work').click();
 await idle();
+await row(0).click();
+const selId = (await page.evaluate(() => window.__TAURI__.core.invoke('search_ids', { query: '', opts: { folder: 2 } })))[0];
 await page.focus('#list');
 await page.keyboard.press('Insert');
 await page.fill('#n-url', 'https://here.example/');
 await page.click('#new-form button[type=submit]');
 await idle();
 check('a bookmark added in the app goes to the selected folder, not the inbox', (await calls('add_bookmark')).at(-1)?.folder === 2, JSON.stringify((await calls('add_bookmark')).at(-1)));
+check('it goes right after the selected bookmark (FLD-03)', (await calls('add_bookmark')).at(-1)?.after === selId, `${JSON.stringify((await calls('add_bookmark')).at(-1))} vs ${selId}`);
 // The inbox deleted: the next clipboard add recreates it as "New" and the tree shows it.
 await item('Home').click();
 await idle();
@@ -520,6 +639,113 @@ await page.focus('#list');
 await page.keyboard.press('Escape');
 await idle();
 check('Esc leaves the Dead Links view', !(await page.textContent('#status')).startsWith('Dead Links'), await page.textContent('#status'));
+
+// ---- Smart selection in the tree (FLD-06) and folder menu Open all (VIEW-16) ----
+await item('Bookmarks').click();
+await idle();
+await item('Work').click();
+await idle();
+if (!(await tree()).includes('Clients')) await item('Work').locator('.twisty').click();
+await item('New').click({ modifiers: ['Control'] });
+const newId = Number(await item('New').getAttribute('data-id'));
+const chosen = () => page.$$eval('#tree li[aria-selected=true] .name', (els) => els.map((e) => e.textContent));
+check('Ctrl+click adds a folder to the tree selection; the list keeps the folder', JSON.stringify(await chosen()) === '["Work","New"]'
+  && (await titles()).includes('Wiki'), `${JSON.stringify(await chosen())} ${JSON.stringify(await titles())}`);
+await item('New').click({ button: 'right' });
+check('the folder menu names the selection and hides single-folder commands', (await page.textContent('#fctx-title')) === '2 folders'
+  && await page.isHidden('#fctx [data-act=rename]') && await page.isVisible('#fctx [data-act=openall]'), await page.textContent('#fctx-title'));
+await page.click('#fctx [data-act=openall]');
+await idle();
+const opened = (await calls('open_bookmark')).map((a) => a.id).sort();
+const expect = await page.evaluate((id) => window.__TAURI__.core.invoke('selection_bookmarks', { folders: [2, id], bookmarks: [] }), newId);
+const links = (await page.evaluate((ids) => window.__TAURI__.core.invoke('get_bookmarks', { ids }), expect)).filter((b) => b.kind !== 'note').map((b) => b.id).sort();
+check('Open all asks for the bookmarks under both folders and opens each link once, notes skipped', JSON.stringify((await calls('selection_bookmarks'))[0]) === JSON.stringify({ folders: [2, newId], bookmarks: [] })
+  && opened.length > 0 && JSON.stringify(opened) === JSON.stringify(links) && opened.includes(14), `${JSON.stringify(opened)} vs ${JSON.stringify(links)}`);
+await page.focus('#tree');
+await page.keyboard.press('Control+m');
+check('Ctrl+M in the tree moves the whole selection', (await page.textContent('#move-title')) === 'Move 2 folders to', await page.textContent('#move-title'));
+await page.keyboard.press('Escape');
+await item('Bookmarks').click({ modifiers: ['Shift'] });
+check('Shift+click selects the shown range from the selected folder', JSON.stringify(await chosen()) === '["Bookmarks","Work"]', JSON.stringify(await chosen()));
+await item('New').click();
+await idle();
+check('a plain click goes back to one folder', JSON.stringify(await chosen()) === '["New"]', JSON.stringify(await chosen()));
+await item('Work').click({ modifiers: ['Control'] });
+answer();
+await page.focus('#tree');
+await page.keyboard.press('Delete');
+await idle();
+check('Del on two selected folders deletes both after one confirm with the total (FLD-06)',
+  JSON.stringify((await calls('delete_folders')).at(-1)?.ids?.sort()) === JSON.stringify([2, newId].sort())
+  && /^Delete \d+ folders and \d+ bookmarks?\?/.test(lastAsk()) && !(await tree()).includes('Work'), lastAsk());
+
+// Settings > Duplicates (SYS-12): the switches show the stored rules and save back as url_rules.
+await page.evaluate(() => document.getElementById('settings-open').click());
+await page.waitForSelector('#settings[open]');
+const boxes = await page.$$eval('#s-dups input[type=checkbox]', (els) => els.map((e) => e.checked));
+check('Settings shows the duplicate rules: four ignored, port kept', JSON.stringify(boxes) === '[true,true,true,true,false]', JSON.stringify(boxes));
+await page.setChecked('#s-url-protocol', false);
+await page.setChecked('#s-url-port', true);
+await page.click('#s-save');
+await idle();
+const saved = (await calls('save_settings')).at(-1)?.settings?.url_rules;
+check('Save sends every switch as url_rules', JSON.stringify(saved) === '{"protocol":false,"www":true,"trailing_slash":true,"host_case":true,"port":true}', JSON.stringify(saved));
+
+// Settings > Folders (SYS-12, Q19): tree tracking, the New Item Folder and folder-name
+// keywords in one place; Save applies only what changed.
+{
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  const shown = await page.evaluate(() => ({
+    track: document.querySelector('#s-folders #s-track').checked,
+    inbox: document.querySelector('#s-folders #s-newitems').value,
+    label: document.querySelector('#s-newitems').selectedOptions[0]?.textContent,
+    kw: document.querySelector('#s-folders #s-folderkw').checked,
+  }));
+  check('Settings > Folders shows tracking off, the New Item Folder and the folder-keywords switch', JSON.stringify(shown) === '{"track":false,"inbox":"","label":"(none yet: a “New” folder is made at the top on the first add)","kw":true}', JSON.stringify(shown));
+  const before = (await calls('set_new_item_folder')).length;
+  await page.click('#s-save');
+  await idle();
+  check('Save with the New Item Folder unchanged does not set it again', (await calls('set_new_item_folder')).length === before);
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  await page.setChecked('#s-track', true);
+  await page.selectOption('#s-newitems', '1');
+  await page.click('#s-save');
+  await idle();
+  check('Save sets the chosen New Item Folder', JSON.stringify((await calls('set_new_item_folder')).at(-1)) === '{"id":1}');
+  check('Save turns tree tracking on (as F10)', (await page.getAttribute('#track-tree', 'aria-checked')) === 'true');
+  await page.evaluate(() => document.getElementById('settings-open').click());
+  await page.waitForSelector('#settings[open]');
+  check('Settings then shows that folder and tracking on', (await page.inputValue('#s-newitems')) === '1' && (await page.isChecked('#s-track')), await page.inputValue('#s-newitems'));
+  const n = (await calls('set_new_item_folder')).length;
+  await page.click('#s-save');
+  await idle();
+  check('Save again leaves the New Item Folder alone', (await calls('set_new_item_folder')).length === n);
+  await page.keyboard.press('F10');
+}
+
+// Live refresh (WEB-10): an extension add shows in the open list and tree, no manual refresh.
+{
+  await page.click('#tree li:has-text("Bookmarks") .name');
+  await idle();
+  const before = JSON.stringify(await tree());
+  await page.evaluate(() => window.__extensionAdd('From the browser', 'https://ext.example/'));
+  await page.evaluate(() => window.__extensionAdd('Second add', 'https://ext2.example/', true));
+  const inList = await page.waitForFunction(() => [...document.querySelectorAll('#list li.vrow .title')].some((e) => e.textContent === 'From the browser'), null, { timeout: 4000 }).then(() => true, () => false);
+  await idle();
+  check('an extension add shows in the open list without a refresh', inList, JSON.stringify(await titles()));
+  const made = await page.waitForFunction(() => [...document.querySelectorAll('#tree li .name')].some((e) => e.textContent === 'New'), null, { timeout: 4000 }).then(() => true, () => false);
+  check('a New Item Folder the add made shows in the tree', made, `${before} -> ${JSON.stringify(await tree())}`);
+}
+
+// F1 list (SYS-09, Q18): every folder key that works now is listed.
+{
+  const keys = await page.$$eval('#keys-dlg td:first-child', (els) => els.map((e) => e.textContent));
+  const want = ['Ctrl+Shift+N', 'F2 / Del', 'Ctrl+M', 'Ctrl+X', 'Ctrl+V', 'F10', 'Ctrl+Shift+F', 'Ctrl+Shift+L', 'Ctrl+D', 'Ctrl+L'];
+  const missing = want.filter((k) => !keys.includes(k));
+  check('the F1 list names every built folder key', !missing.length, `missing ${missing.join(', ')}`);
+}
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

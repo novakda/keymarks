@@ -1,4 +1,4 @@
-// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8, 25 for step 9, 26-27 for step 10), driven through the
+// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8, 25 for step 9, 26-27 for step 10, 28+ for the rest of P1), driven through the
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
@@ -91,7 +91,8 @@ const env = { ...debugEnv(PORT, webviewData), KEYMARKS_DATA_DIR: work, KEYMARKS_
 // window.__e2eAnswer). Async like the plugin's, so `!confirm()` never waits for it.
 const fakeConfirm = () => {
   window.__e2eConfirms = [];
-  window.confirm = () => new Promise((resolve) => {
+  window.confirm = (message) => new Promise((resolve) => {
+    window.__e2eLastConfirm = message;
     const a = window.__e2eConfirms.shift();
     if (a === 'hold') window.__e2eAnswer = resolve;
     else { if (a === undefined) console.warn('E2E unexpected confirm'); resolve(a === true); }
@@ -389,23 +390,33 @@ try {
     && s19.selected.join() === String(target) && s19.ids[s19.cursor] === target && curRow === s19.cursor,
     `tree ${await treeSelected()} (want ${alpha.id}), ${s19.selected.length} selected, cursor ${s19.cursor}, row ${curRow}`);
 
-  // 4. Del on a folder with items: it asks, and nothing happens until the answer (4b);
-  // Cancel keeps the folder, OK moves its items up.
-  const contents = itemsIn(alpha.id);
+  // 4. Del on a folder with items (ITEM-14): it asks with the count of folders and bookmarks
+  // in the subtree, and nothing happens until the answer (4b); Cancel keeps it all, OK
+  // deletes the folder and everything below it, and one Ctrl+Z brings it all back.
+  const subtree = `WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT f.id FROM folder f JOIN t ON f.parent_id = t.id)`;
+  const nFolders = sql(`${subtree} SELECT count(*) AS n FROM t`, alpha.id)[0].n;
+  const under = sql(`${subtree} SELECT b.id FROM bookmark b WHERE b.folder_id IN (SELECT id FROM t)`, alpha.id).map((r) => r.id);
+  const p = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   await openFolder(alpha.id);
   await expectConfirm('hold');
   await page.focus('#tree');
   await page.keyboard.press('Delete');
   await sleep(700);
   const waited = !!folderRow('Kmzqalpha') && (await page.evaluate(() => typeof window.__e2eAnswer === 'function'));
+  const asked = await page.evaluate(() => window.__e2eLastConfirm);
   await page.evaluate(() => window.__e2eAnswer(false));
   await idle();
-  check('4b Del asks and waits for the answer; Cancel keeps the folder', waited && !!folderRow('Kmzqalpha') && contents.every((id) => itemsIn(alpha.id).includes(id)),
-    waited ? 'held until answered' : 'deleted before any answer');
+  check('4b Del asks with the subtree count and waits for the answer; Cancel keeps it all', waited && !!folderRow('Kmzqalpha')
+    && asked?.startsWith(`Delete ${p(nFolders, 'folder')} and ${p(under.length, 'bookmark')}?`) && under.every((id) => sql('SELECT 1 FROM bookmark WHERE id = ?', id).length),
+    waited ? asked : 'deleted before any answer');
   await expectConfirm(true);
   await key('Delete', '#tree');
-  check('4 Del on a folder with items moves them up', !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
-    && contents.every((id) => itemsIn(ROOT).includes(id)) && (await treeSelected()) === ROOT, `${contents.length} items moved up`);
+  const allGone = !folderRow('Kmzqalpha') && !folderRow('Kmzqbeta renamed') && under.every((id) => !sql('SELECT 1 FROM bookmark WHERE id = ?', id).length);
+  const rootSel = (await treeSelected()) === ROOT;
+  await key('Control+z', '#list');
+  check('4 Del on a folder with items deletes the subtree; one Ctrl+Z restores it all', allGone && rootSel && folderRow('Kmzqalpha')?.parent_id === ROOT
+    && folderRow('Kmzqbeta renamed')?.parent_id === alpha.id && under.every((id) => sql('SELECT 1 FROM bookmark WHERE id = ?', id).length),
+    `${nFolders} folders, ${under.length} bookmarks; gone ${allGone}, root selected ${rootSel}`);
 
   // 12. Import a Netscape file with nested folders: under a new folder named after the file.
   await menu('import');
@@ -485,15 +496,15 @@ try {
     && inInbox.length === 2 && inInbox[0].keywords.split(' ').includes('new') && replies[2].new_items === inbox.id && (await waitInboxShown(inbox.id)),
     `${replies.length} replies, ${inboxRows().length} inbox folders, ${inInbox.length} in it`);
 
-  // 21. The inbox deleted (contents move up, nothing lost), then the next Fast Add makes it again.
+  // 21. The inbox deleted (with what was in it, ITEM-14), then the next Fast Add makes it again.
   await openFolder(inbox.id);
   await expectConfirm(true);
   await key('Delete', '#tree');
   const goneOk = !sql('SELECT 1 FROM folder WHERE id = ?', inbox.id).length && inboxRows().length === 0
-    && sql("SELECT count(*) AS n FROM bookmark WHERE folder_id = ? AND url LIKE 'https://kmzq-e2e-inbox.example/%'", ROOT)[0].n === 2;
+    && sql("SELECT count(*) AS n FROM bookmark WHERE url LIKE 'https://kmzq-e2e-inbox.example/%'")[0].n === 0;
   const [again] = hostSend({ type: 'add', url: 'https://kmzq-e2e-inbox.example/again', title: 'Kmzq again', fast: true });
   const [made] = inboxRows();
-  check('21 the inbox deleted: its items move up; the next extension add recreates "New"',
+  check('21 the inbox deleted with its items; the next extension add recreates "New"',
     goneOk && again?.ok && made?.name === 'New' && made.parent_id === ROOT
     && sql('SELECT folder_id FROM bookmark WHERE id = ?', again.id)[0]?.folder_id === made.id && (await waitInboxShown(made.id))
     && JSON.stringify(await inboxMarked()) === JSON.stringify([made.id]), `deleted ${goneOk}, remade ${!!made}`);
@@ -635,6 +646,228 @@ try {
     check('27 Ctrl+L lists the dead link with the Folder column', deadIds.includes(one.id) && (await status()).startsWith('Dead Links') && folderCol, `${deadIds.length} ${folderCol}`);
     await key('Escape');
     check('27b Esc leaves the Dead Links view', !(await status()).startsWith('Dead Links'), await status());
+  }
+
+  // 28. Smart selection (FLD-06): Ctrl+click picks a folder, a folder inside it and a second
+  // folder; Ctrl+M moves the selection as one undo step, the inner folder staying inside its parent.
+  {
+    const named = (n) => sql('SELECT id, parent_id FROM folder WHERE name = ?', n)[0];
+    for (const n of ['Kmzq sel target', 'Kmzq sel A', 'Kmzq sel B']) { await openFolder(1); await newFolderHere(n); }
+    await openFolder(named('Kmzq sel A').id);
+    await newFolderHere('Kmzq sel A1');
+    const [a, a1, b, target] = ['Kmzq sel A', 'Kmzq sel A1', 'Kmzq sel B', 'Kmzq sel target'].map(named);
+    await openFolder(a.id);
+    await page.click(treeLi(a1.id), { modifiers: ['Control'] });
+    await page.click(treeLi(b.id), { modifiers: ['Control'] });
+    const marked = await page.$$eval('#tree li[aria-selected=true]', (lis) => lis.map((li) => Number(li.dataset.id)));
+    await key('Control+m', '#tree');
+    const title = await page.textContent('#move-title');
+    await page.keyboard.type('Kmzq sel target');
+    await page.keyboard.press('Enter');
+    await idle();
+    const [a2, a12, b2] = ['Kmzq sel A', 'Kmzq sel A1', 'Kmzq sel B'].map(named);
+    check('28 Ctrl+click selects three folders; Ctrl+M moves them, the inner one stays in its parent',
+      marked.length === 3 && title === 'Move 3 folders to' && a2.parent_id === target.id && b2.parent_id === target.id && a12.parent_id === a.id,
+      `${marked.length} ${title} ${JSON.stringify([a2, a12, b2])}`);
+    await key('Control+z');
+    check('28b one Ctrl+Z puts both back in the top folder', named('Kmzq sel A').parent_id === 1 && named('Kmzq sel B').parent_id === 1, JSON.stringify([named('Kmzq sel A'), named('Kmzq sel B')]));
+  }
+
+  // 29. Explorer-style Cut (ITEM-15): Ctrl+X dims the row and removes nothing; Esc clears it;
+  // Ctrl+X again, then Ctrl+V on another tree folder moves it there; one Ctrl+Z puts it back.
+  {
+    const [c] = hostSend({ type: 'add', url: 'https://kmzq-e2e-cut.example/', title: 'Kmzq cut', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0].folder_id;
+    const target = sql('SELECT id FROM folder WHERE name = ?', 'Kmzq sel target')[0].id;
+    await openFolder(home);
+    const rowSel = async () => `#table-body tr.vrow >> nth=${(await shown()).ids.indexOf(c.id)}`;
+    await page.click(await rowSel());
+    await key('Control+x');
+    // The list redraws after Ctrl+X (and the live refresh may redraw it too): wait for the mark.
+    const dimmed = await page.waitForFunction((id) => {
+      const i = ids.indexOf(id);
+      const tr = document.querySelectorAll('#table-body tr.vrow')[i];
+      return !!tr && tr.classList.contains('cut');
+    }, c.id, { timeout: 3000 }).then(() => true, () => false);
+    const kept = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home;
+    await key('Escape');
+    const cleared = await page.waitForFunction(() => !document.querySelector('#table-body tr.vrow.cut'), null, { timeout: 3000 }).then(() => true, () => false);
+    check('29 Ctrl+X dims the row and removes nothing; Esc clears the mark', dimmed && kept && cleared, `dimmed ${dimmed}, kept ${kept}, cleared ${cleared}`);
+    await key('Control+x');
+    await openFolder(target);
+    await key('Control+v', '#tree');
+    const moved = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === target;
+    await key('Control+z');
+    check('29b Ctrl+V on a folder moves the cut bookmark there; one Ctrl+Z puts it back', moved && sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home,
+      `moved ${moved}`);
+  }
+
+  // 30. Tree tracking (FLD-14, F10): off, selecting a search result leaves the tree; F10 on,
+  // the tree selects the result's folder and the search stays; F10 again turns it off.
+  {
+    const [t] = hostSend({ type: 'add', url: 'https://kmzq-e2e-track.example/', title: 'Kmzq track', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', t.id)[0].folder_id;
+    await openFolder(ROOT);
+    await search('kmzq track');
+    const at = () => "#table-body tr.vrow >> nth=0";
+    await page.click(at());
+    await idle();
+    const stayed = (await treeSelected()) === ROOT;
+    await key('F10');
+    await page.click(at());
+    await idle();
+    const followed = (await treeSelected()) === home && (await page.inputValue('#q')) === 'kmzq track';
+    await key('F10');
+    const off = (await page.getAttribute('#track-tree', 'aria-checked')) === 'false';
+    check('30 F10 tracking: the tree follows the selected result only while on', stayed && followed && off, `stayed ${stayed}, followed ${followed}, off ${off}`);
+  }
+
+  // 31. Folder column (VIEW-02): the header sorts by path (root items first); double-clicking
+  // its divider fits it so no shown path is cut off. Sort cleared after.
+  {
+    await openFolder(ROOT);
+    await search('kmzq');
+    await page.click('#cols summary');
+    if (!(await page.isChecked('#cols-menu input[value=folder]'))) await page.check('#cols-menu input[value=folder]');
+    await page.evaluate(() => { document.getElementById('cols').open = false; });
+    await page.click('#table-head th[data-col=folder] button');
+    await idle();
+    const n = await page.$$eval('#table-head th', (ths) => ths.findIndex((th) => th.dataset.col === 'folder'));
+    const paths = await page.$$eval('#table-body tr.vrow', (trs, i) => trs.map((tr) => tr.children[i].textContent), n);
+    const inOrder = paths.every((p, i) => !i || paths[i - 1].localeCompare(p, undefined, { sensitivity: 'base' }) <= 0);
+    await page.dblclick('#table-head th[data-col=folder] .grip');
+    const fits = await page.$$eval('#table-body tr.vrow', (trs, i) => trs.every((tr) => tr.children[i].scrollWidth <= tr.children[i].clientWidth), n);
+    await page.click('#table-head th[data-col=folder] button');
+    await page.click('#table-head th[data-col=folder] button');
+    await idle();
+    check('31 Folder column sorts by path; divider double-click fits it', paths.length > 1 && inOrder && fits, `${paths.length} rows, in order ${inOrder}, fits ${fits}`);
+  }
+
+  // 32. Popup lookup names the existing bookmark's folder (ITEM-02): the host's reply carries
+  // the path of the folder the Fast Add put it in (the New Item Folder, at the root).
+  {
+    const [t] = hostSend({ type: 'lookup', url: 'https://kmzq-e2e-track.example/' });
+    const id = sql('SELECT id FROM bookmark WHERE url = ?', 'https://kmzq-e2e-track.example/')[0]?.id;
+    const name = sql('SELECT f.name FROM folder f JOIN bookmark b ON b.folder_id = f.id WHERE b.id = ?', id)[0]?.name;
+    check('32 the popup lookup returns the existing bookmark\'s folder path', t?.found === true && t.folder === name, `${t?.folder} vs ${name}`);
+  }
+
+  // 33. Import dialog (XFER-05): "Replace the collection" is shown but disabled while the
+  // collection has items; a new folder stays the default. (pm35 into a new folder needs an
+  // empty collection and the native file dialog: covered by store's pm35_import_into_a_new_folder.)
+  {
+    await page.evaluate(() => document.getElementById('import').click());
+    await page.waitForSelector('#import-dlg[open]');
+    const off = await page.isDisabled('input[name=import-into][value=replace]');
+    const dflt = await page.isChecked('input[name=import-into][value=new]');
+    await page.click('#import-dlg button[value=close]');
+    check('33 Import offers "replace an empty collection", disabled while not empty', off && dflt, `disabled ${off}, new folder default ${dflt}`);
+  }
+
+  // 34. New items land after the selection (FLD-03): Insert adds right after the selected
+  // bookmark, and a cut bookmark pasted with Ctrl+V in the list lands right after it too.
+  {
+    const [a] = hostSend({ type: 'add', url: 'https://kmzq-e2e-after-a.example/', title: 'Kmzq after A', fast: true });
+    const [b] = hostSend({ type: 'add', url: 'https://kmzq-e2e-after-b.example/', title: 'Kmzq after B', fast: true });
+    const home = sql('SELECT folder_id FROM bookmark WHERE id = ?', a.id)[0].folder_id;
+    const order = () => sql('SELECT id FROM bookmark WHERE folder_id = ? ORDER BY position', home).map((r) => r.id);
+    const rowOf = async (id) => `#table-body tr.vrow >> nth=${(await shown()).ids.indexOf(id)}`;
+    await openFolder(home);
+    await page.click(await rowOf(a.id));
+    await key('Insert');
+    await page.fill('#n-url', 'https://kmzq-e2e-after-new.example/');
+    await page.fill('#n-title', 'Kmzq after new');
+    await page.click('#new-form button[type=submit]');
+    await idle();
+    const added = sql('SELECT id FROM bookmark WHERE url = ?', 'https://kmzq-e2e-after-new.example/')[0]?.id;
+    const addOk = order().indexOf(added) === order().indexOf(a.id) + 1;
+    await openFolder(home);
+    await page.click(await rowOf(b.id));
+    await key('Control+x');
+    await page.click(await rowOf(a.id));
+    await key('Control+v');
+    const pasteOk = order().indexOf(b.id) === order().indexOf(a.id) + 1;
+    check('34 Insert and Ctrl+V put the new item right after the selected bookmark', addOk && pasteOk, `add ${addOk}, paste ${pasteOk}: ${order()}`);
+  }
+
+  // 35. Settings > Duplicates (SYS-12): with "Protocol" unticked, the host no longer finds the
+  // https bookmark for its http URL; ticked again (the default), it does.
+  {
+    const setProtocol = async (on) => {
+      await menu('settings-open');
+      await page.waitForSelector('#settings[open]');
+      await page.setChecked('#s-url-protocol', on);
+      await page.click('#s-save');
+      await idle();
+    };
+    const lookup = () => hostSend({ type: 'lookup', url: 'http://kmzq-e2e-track.example/' })[0]?.found;
+    const before = lookup();
+    await setProtocol(false);
+    const strict = lookup();
+    await setProtocol(true);
+    const back = lookup();
+    check('35 the Protocol switch decides whether http and https are the same link', before === true && strict === false && back === true,
+      `before ${before}, off ${strict}, on ${back}`);
+  }
+
+  // 36. F1 lists the folder keys that work now (SYS-09, Q18).
+  {
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('F1');
+    await page.waitForSelector('#keys-dlg[open]');
+    const keys = await page.$$eval('#keys-dlg td:first-child', (els) => els.map((e) => e.textContent));
+    const missing = ['Ctrl+Shift+N', 'F2 / Del', 'Ctrl+M', 'Ctrl+X', 'Ctrl+V', 'F10', 'Ctrl+Shift+F', 'Ctrl+Shift+L', 'Ctrl+D', 'Ctrl+L'].filter((k) => !keys.includes(k));
+    await page.keyboard.press('Escape');
+    check('36 F1 lists every built folder key', !missing.length, `missing ${missing.join(', ') || 'none'}`);
+  }
+
+  // 37. Settings > Folders (SYS-12, Q19): tracking, the New Item Folder (from the database)
+  // and folder-name keywords; choosing another folder there marks it in the database.
+  {
+    await menu('settings-open');
+    await page.waitForSelector('#settings[open]');
+    const inbox = inboxRows()[0];
+    const has = await page.evaluate(() => ['s-track', 's-newitems', 's-folderkw'].every((id) => document.querySelector(`#s-folders #${id}`)));
+    const shown = await page.inputValue('#s-newitems');
+    const target = await page.$$eval('#s-newitems option', (os, cur) => os.map((o) => o.value).find((v) => v && v !== cur), shown);
+    await page.selectOption('#s-newitems', target);
+    await page.click('#s-save');
+    await idle();
+    const marked = inboxRows()[0]?.id;
+    await page.keyboard.press('Control+z');
+    await idle();
+    check('37 Settings > Folders shows and sets the New Item Folder (Ctrl+Z undoes)',
+      has && shown === String(inbox?.id ?? '') && marked === Number(target) && inboxRows()[0]?.id === inbox?.id,
+      `controls ${has}, shown ${shown} vs ${inbox?.id}, set ${marked} vs ${target}`);
+  }
+
+  // 38. The real host refuses malformed folder-list and folder-pick messages (SYS-23).
+  {
+    const replies = hostSend(
+      { type: 'folders', folder: '../x' },
+      ['folders'],
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: 999999 },
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: '1' },
+      { type: 'add', url: 'https://kmzq-e2e-badpick.example/', title: 'x', folder: 0 },
+      { type: 'folders' },
+    );
+    const stored = sql("SELECT count(*) AS n FROM bookmark WHERE url LIKE '%kmzq-e2e-badpick%'")[0].n;
+    check('38 the host refuses bad folder-list and folder-pick messages, stores nothing',
+      replies.length === 6 && replies.slice(0, 5).every((r) => r.ok === false) && replies[5].ok === true && stored === 0,
+      JSON.stringify(replies.map((r) => r.ok)) + ` stored ${stored}`);
+  }
+
+  // 39. Live refresh (WEB-10): an extension add (through the real host, another process) shows
+  // in the open app's tree and list without a manual refresh.
+  {
+    const first = hostSend({ type: 'add', url: 'https://kmzq-e2e-live.example/', title: 'Kmzq live add' })[0];
+    const inbox = inboxRows()[0];
+    const inTree = await page.waitForFunction((n) => [...document.querySelectorAll('#tree li .name')].some((e) => e.textContent === n), inbox?.name, { timeout: 6000 }).then(() => true, () => false);
+    await page.click(`#tree li[data-id="${inbox?.id}"] .name`).catch(() => {});
+    await idle();
+    hostSend({ type: 'add', url: 'https://kmzq-e2e-live2.example/', title: 'Kmzq live add 2' });
+    const inList = await page.waitForFunction(() => [...document.querySelectorAll('#list .title, #table td')].some((e) => e.textContent.includes('Kmzq live add 2')), null, { timeout: 6000 }).then(() => true, () => false);
+    check('39 an extension add shows in the open tree and list without a refresh', first?.ok && inTree && inList, `add ${first?.ok}, tree ${inTree}, list ${inList}`);
   }
 } catch (e) {
   log(e.stack);

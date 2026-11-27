@@ -228,6 +228,22 @@ fn place(tx: &Connection, item: Item, folder: i64, at: Option<i64>) -> Result<()
     set_order(tx, folder, &order)
 }
 
+/// FLD-03: move `ids` that sit in bookmark `after`'s folder to right after it, in their
+/// order. Anything else (anchor gone, items elsewhere) stays where it is.
+pub(crate) fn put_after(tx: &Connection, after: i64, ids: &[i64]) -> Result<()> {
+    let Some(folder) = tx.query_row("SELECT folder_id FROM bookmark WHERE id = ?1", [after], |r| r.get::<_, i64>(0)).optional()? else {
+        return Ok(());
+    };
+    let (new, mut order): (Vec<Item>, Vec<Item>) =
+        siblings(tx, folder)?.into_iter().partition(|i| matches!(i, Item::Bookmark(b) if ids.contains(b) && *b != after));
+    if new.is_empty() {
+        return Ok(());
+    }
+    let at = order.iter().position(|i| *i == Item::Bookmark(after)).expect("anchor is a sibling") + 1;
+    order.splice(at..at, new);
+    set_order(tx, folder, &order)
+}
+
 pub(crate) const FOLDER_COLS: &str = "id, parent_id, name, position, note, added, modified, folded, coalesce(role = 'new_items', 0)";
 
 pub(crate) fn folder_row(r: &rusqlite::Row) -> Result<Folder> {
@@ -428,25 +444,65 @@ impl Store {
         )
     }
 
-    /// Delete a folder, one undo step. Nothing in it is deleted: its contents move up to the
-    /// parent, in their order, where the folder was. The root can't be deleted (false).
+    /// Delete a folder and everything below it, one undo step (ITEM-14). The root can't be
+    /// deleted (false).
     pub fn delete_folder(&mut self, id: i64) -> Result<bool> {
-        let Some(gone) = self.folder(id)? else { return Ok(false) };
-        let Some(parent) = gone.parent_id else { return Ok(false) }; // the root
-        self.record_tree(
-            &[parent, id],
-            |s| {
-                let tx = s.conn.transaction()?;
-                let kids = siblings(&tx, id)?;
-                let order: Vec<Item> =
-                    siblings(&tx, parent)?.into_iter().flat_map(|i| if i == Item::Folder(id) { kids.clone() } else { vec![i] }).collect();
-                set_order(&tx, parent, &order)?;
-                tx.execute("DELETE FROM folder WHERE id = ?1", [id])?;
-                tx.commit()?;
-                Ok(true)
-            },
-            |_, _| format!("Delete folder \u{201c}{}\u{201d}", gone.name),
-        )
+        Ok(self.delete_items(&[id], &[])?.is_some())
+    }
+
+    /// The folders and bookmarks (and notes) a delete of this selection removes, counting
+    /// the chosen folders and everything below them once each (FLD-06): for the confirm.
+    pub fn delete_counts(&self, folders: &[i64], bookmarks: &[i64]) -> Result<(usize, usize)> {
+        let (fs, _) = self.cover(folders, bookmarks)?;
+        Ok((self.subtree_folders(&fs)?.len(), self.bookmarks_under(folders, bookmarks)?.len()))
+    }
+
+    /// The chosen folders and every folder below them.
+    fn subtree_folders(&self, folders: &[i64]) -> Result<Vec<i64>> {
+        let mut subs = self.conn.prepare("SELECT id FROM folder WHERE parent_id = ?1")?;
+        let mut out = Vec::new();
+        let mut stack: Vec<i64> = folders.iter().copied().filter(|&f| exists(&self.conn, f).unwrap_or(false)).collect();
+        while let Some(f) = stack.pop() {
+            out.push(f);
+            stack.extend(subs.query_map([f], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(out)
+    }
+
+    /// Delete a selection (ITEM-14, FLD-06): the chosen folders with everything below them,
+    /// and the chosen bookmarks, as one undo step that brings it all back. None (nothing
+    /// deleted) if the root is chosen. Returns (folders, bookmarks) deleted.
+    pub fn delete_items(&mut self, folders: &[i64], bookmarks: &[i64]) -> Result<Option<(usize, usize)>> {
+        if folders.contains(&ROOT) {
+            return Ok(None);
+        }
+        let (fs, _) = self.cover(folders, bookmarks)?;
+        let gone = self.subtree_folders(&fs)?;
+        let ids = self.bookmarks_under(folders, bookmarks)?;
+        if gone.is_empty() && ids.is_empty() {
+            return Ok(None);
+        }
+        let mut parents = gone.clone();
+        for &f in &fs {
+            parents.extend(self.parent_of(Item::Folder(f))?);
+        }
+        let name = match (fs.as_slice(), ids.len()) {
+            ([one], _) => format!("Delete folder \u{201c}{}\u{201d}", self.folder(*one)?.map(|f| f.name).unwrap_or_default()),
+            ([], n) => format!("Delete {n} bookmark{}", if n == 1 { "" } else { "s" }),
+            (many, _) => format!("Delete {} folders", many.len()),
+        };
+        let counts = (gone.len(), ids.len());
+        self.record_with_tree(name, &ids, &parents, |s| {
+            let tx = s.conn.transaction()?;
+            let json = serde_json::to_string(&ids).expect("ids serialize");
+            tx.execute("DELETE FROM bookmark WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+            // One statement, so a subfolder and its parent go together.
+            let json = serde_json::to_string(&gone).expect("ids serialize");
+            tx.execute("DELETE FROM folder WHERE id IN (SELECT value FROM json_each(?1))", [&json])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        Ok(Some(counts))
     }
 
     /// Move a bookmark (or note) into `folder` at index `at` (None: last), one undo step.
@@ -472,9 +528,12 @@ impl Store {
     /// Move folders and bookmarks (or notes) into `to`, in the order given (folders first),
     /// at the end or next to `beside` (a child of `to`), as one undo step: Move to folder,
     /// drag and drop, reorder (ITEM-16, FLD-07). Refused (0) if `to` is missing, or a folder
-    /// is the root, missing, or would go inside itself. Bookmarks gone meanwhile are skipped.
+    /// is the root, missing, or would go inside itself. Bookmarks gone meanwhile are skipped;
+    /// items inside another moved folder stay where they are in it (FLD-06).
     /// Returns how many items moved.
     pub fn move_items(&mut self, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<Beside>) -> Result<usize> {
+        let (folders, bookmarks) = self.cover(folders, bookmarks)?;
+        let (folders, bookmarks) = (folders.as_slice(), bookmarks.as_slice());
         let mut parents = vec![to];
         for item in folders.iter().map(|&f| Item::Folder(f)).chain(bookmarks.iter().map(|&b| Item::Bookmark(b))) {
             parents.extend(self.parent_of(item)?);
@@ -527,6 +586,47 @@ impl Store {
         Ok(moved.len())
     }
 
+    /// Smart selection (FLD-06): drop each folder that sits inside another chosen folder,
+    /// and each bookmark inside a chosen folder, so a selected folder stands for its
+    /// subtree and nothing is counted twice. Order is kept.
+    pub fn cover(&self, folders: &[i64], bookmarks: &[i64]) -> Result<(Vec<i64>, Vec<i64>)> {
+        let mut fs: Vec<i64> = Vec::new();
+        for &f in folders {
+            if !fs.contains(&f) && !folders.iter().any(|&g| g != f && inside(&self.conn, g, f).unwrap_or(false)) {
+                fs.push(f);
+            }
+        }
+        let mut bs: Vec<i64> = Vec::new();
+        for &b in bookmarks {
+            let home = self.parent_of(Item::Bookmark(b))?;
+            let covered = match home {
+                Some(h) => fs.iter().any(|&f| inside(&self.conn, f, h).unwrap_or(false)),
+                None => false,
+            };
+            if !covered && !bs.contains(&b) {
+                bs.push(b);
+            }
+        }
+        Ok((fs, bs))
+    }
+
+    /// Every bookmark (and note) a selection stands for (FLD-06): those in the chosen
+    /// folders and below, in tree order, then the chosen bookmarks not already counted.
+    /// For check, keyword and open commands on a mixed selection.
+    pub fn bookmarks_under(&self, folders: &[i64], bookmarks: &[i64]) -> Result<Vec<i64>> {
+        let (fs, bs) = self.cover(folders, bookmarks)?;
+        let mut out = Vec::new();
+        let mut kids = self.conn.prepare("SELECT id FROM bookmark WHERE folder_id = ?1 ORDER BY position")?;
+        let mut subs = self.conn.prepare("SELECT id FROM folder WHERE parent_id = ?1 ORDER BY position DESC")?;
+        let mut stack: Vec<i64> = fs.into_iter().rev().collect();
+        while let Some(f) = stack.pop() {
+            out.extend(kids.query_map([f], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+            stack.extend(subs.query_map([f], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        out.extend(bs);
+        Ok(out)
+    }
+
     /// The folder an item sits in (None if it's missing or is the root).
     fn parent_of(&self, item: Item) -> Result<Option<i64>> {
         let (sql, id) = match item {
@@ -560,14 +660,25 @@ impl Store {
 
     /// A note item without a URL (NOTE-03), last in `folder`. None if the folder is missing.
     pub fn add_note(&self, folder: i64, title: &str, notes: &str) -> Result<Option<i64>> {
+        self.add_note_after(folder, title, notes, None)
+    }
+
+    /// `add_note`, right after bookmark `after` if it is in `folder` (FLD-03).
+    pub fn add_note_after(&self, folder: i64, title: &str, notes: &str, after: Option<i64>) -> Result<Option<i64>> {
         if !exists(&self.conn, folder)? {
             return Ok(None);
         }
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO bookmark (kind, url, title, notes, folder_id, added) VALUES ('note', '', ?1, ?2, ?3, unixepoch())",
             params![title, notes, folder],
         )?;
-        Ok(Some(self.conn.last_insert_rowid()))
+        let id = tx.last_insert_rowid();
+        if let Some(a) = after {
+            put_after(&tx, a, &[id])?;
+        }
+        tx.commit()?;
+        Ok(Some(id))
     }
 
 }
@@ -774,28 +885,38 @@ mod tests {
     }
 
     #[test]
-    fn delete_moves_contents_to_the_parent_in_its_place() {
+    fn delete_removes_the_subtree_and_one_undo_brings_it_back() {
         let mut s = Store::open(":memory:").unwrap();
         let (a, _) = s.add("https://a.example/", "A", "", "").unwrap();
         let d = s.create_folder(ROOT, "D", None).unwrap().unwrap();
-        s.add("https://z.example/", "Z", "", "").unwrap();
-        let (b, _) = s.add("https://b.example/", "B", "", "").unwrap();
+        s.add("https://z.example/", "Z", "keep", "").unwrap();
+        let (b, _) = s.add("https://b.example/", "B", "kw", "").unwrap();
         let sub = s.create_folder(d, "Sub", None).unwrap().unwrap();
-        s.move_bookmark(b, d, Some(0)).unwrap();
-        let n = s.add_note(d, "N", "").unwrap().unwrap();
-        assert_eq!(names(&s, d), [("b", "B".into()), ("f", "Sub".into()), ("b", "N".into())]);
-        assert!(s.delete_folder(d).unwrap());
-        assert_eq!(s.folder(d).unwrap(), None);
-        assert_eq!(names(&s, ROOT), [("b", "A".into()), ("b", "B".into()), ("f", "Sub".into()), ("b", "N".into()), ("b", "Z".into())]);
-        assert_eq!(s.folder(sub).unwrap().unwrap().parent_id, Some(ROOT));
-        assert_eq!(s.get(n).unwrap().unwrap().folder_id, ROOT);
-        assert_eq!(s.count().unwrap(), 4, "nothing deleted but the folder");
-        assert!(!s.delete_folder(ROOT).unwrap(), "the root can't be deleted");
-        assert!(!s.delete_folder(9999).unwrap());
-        // A bookmark brought back by undo into a folder that's gone lands in the root.
-        s.delete(&[a]).unwrap();
+        let deep = s.create_folder(sub, "Deep", None).unwrap().unwrap();
+        s.move_bookmark(b, deep, None).unwrap();
+        s.add_note(d, "N", "").unwrap().unwrap();
+        let before = (names(&s, ROOT), names(&s, d), names(&s, sub), names(&s, deep));
+        assert_eq!(s.delete_counts(&[d, sub], &[b]).unwrap(), (3, 2), "inside a chosen folder counts once");
+        assert_eq!(s.delete_items(&[d], &[]).unwrap(), Some((3, 2)));
+        assert_eq!((s.folder(d).unwrap(), s.folder(deep).unwrap(), s.get(b).unwrap()), (None, None, None));
+        assert_eq!(names(&s, ROOT), [("b", "A".into()), ("b", "Z".into())]);
+        assert_eq!(s.count().unwrap(), 2);
+        assert_eq!(s.undo().unwrap().unwrap(), "Delete folder \u{201c}D\u{201d}");
+        assert_eq!((names(&s, ROOT), names(&s, d), names(&s, sub), names(&s, deep)), before);
+        assert_eq!(s.search("kw", 10).unwrap().len(), 1, "keywords come back indexed");
+        s.redo().unwrap();
+        assert_eq!(s.count().unwrap(), 2);
         s.undo().unwrap();
-        assert_eq!(s.get(a).unwrap().unwrap().folder_id, ROOT);
+        // Several folders and a bookmark at once (FLD-06), one step.
+        let e = s.create_folder(ROOT, "E", None).unwrap().unwrap();
+        assert_eq!(s.delete_items(&[d, e], &[a]).unwrap(), Some((4, 3)));
+        assert_eq!(s.undo().unwrap().unwrap(), "Delete 2 folders");
+        assert_eq!(s.count().unwrap(), 4);
+        assert!(s.folder(e).unwrap().is_some());
+        assert_eq!(s.delete_items(&[ROOT], &[]).unwrap(), None, "the root can't be deleted");
+        assert!(!s.delete_folder(9999).unwrap());
+        assert!(s.delete_folder(sub).unwrap());
+        assert_eq!(names(&s, d), [("b", "N".into())]);
     }
 
     #[test]
@@ -830,6 +951,26 @@ mod tests {
     }
 
     #[test]
+    fn smart_selection_covers_subtrees_once() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.create_folder(ROOT, "A", None).unwrap().unwrap();
+        let b = s.create_folder(a, "B", None).unwrap().unwrap();
+        let c = s.create_folder(ROOT, "C", None).unwrap().unwrap();
+        let ids: Vec<i64> = ["1", "2", "3", "4"].iter().map(|t| s.add(&format!("https://{t}.example/"), t, "", "").unwrap().0).collect();
+        s.move_items(&[], &[ids[0]], a, None).unwrap();
+        s.move_items(&[], &[ids[1]], b, None).unwrap();
+        s.move_items(&[], &[ids[2]], c, None).unwrap();
+        // A covers B and both bookmarks under it; the root-level bookmark stays.
+        assert_eq!(s.cover(&[b, a], &[ids[1], ids[3], ids[0]]).unwrap(), (vec![a], vec![ids[3]]));
+        // Every bookmark under the selection, once each, in tree order then the loose ones.
+        assert_eq!(s.bookmarks_under(&[a, b], &[ids[1], ids[3]]).unwrap(), vec![ids[0], ids[1], ids[3]]);
+        // A move of A plus B plus a bookmark inside B keeps B inside A.
+        assert_eq!(s.move_items(&[a, b], &[ids[1]], c, None).unwrap(), 1);
+        assert_eq!(names(&s, c), [("b", "3".into()), ("f", "A".into())]);
+        assert_eq!(names(&s, b), [("b", "2".into())]);
+    }
+
+    #[test]
     fn filing_is_undone_and_redone_step_by_step() {
         let mut s = Store::open(":memory:").unwrap();
         let ids: Vec<i64> = ["1", "2", "3"].iter().map(|t| s.add(&format!("https://{t}.example/"), t, "", "").unwrap().0).collect();
@@ -839,11 +980,11 @@ mod tests {
         s.move_items(&[], &[ids[2], ids[0]], f, None).unwrap();
         let g = s.create_folder(ROOT, "G", Some(0)).unwrap().unwrap();
         s.move_items(&[f], &[], g, None).unwrap();
-        assert!(s.delete_folder(g).unwrap());
-        let end = (names(&s, ROOT), names(&s, f));
         // Changes the history doesn't own survive an undo of a move: a visit, the expand state.
         s.conn.execute("UPDATE bookmark SET visits = 7 WHERE id = ?1", [ids[0]]).unwrap();
         s.set_folded(f, false).unwrap();
+        assert!(s.delete_folder(g).unwrap());
+        let end = (names(&s, ROOT), names(&s, f));
 
         let undo = |s: &mut Store| s.undo().unwrap().unwrap();
         assert_eq!(undo(&mut s), "Delete folder \u{201c}G\u{201d}");
@@ -979,6 +1120,18 @@ mod tests {
     fn sorted(mut v: Vec<i64>) -> Vec<i64> {
         v.sort();
         v
+    }
+
+    #[test]
+    fn folder_column_sorts_by_path() {
+        use crate::query::{SearchOptions, SortKey};
+        let mut s = Store::open(":memory:").unwrap();
+        let (_, _, [g, d, e, r]) = search_tree(&mut s);
+        let by = |desc| SearchOptions { sort: vec![SortKey { column: "folder".into(), desc }], ..Default::default() };
+        // Root items have no path and come first; "Search engines" before "Search engines › Web" (VIEW-02).
+        assert_eq!(s.search_ids("", &by(false)).unwrap(), [r, d, g, e]);
+        assert_eq!(s.search_ids("", &by(true)).unwrap(), [e, g, d, r]);
+        assert_eq!(s.search_ids("red", &by(false)).unwrap(), [r, d, g], "with a search (ranked CTE) too");
     }
 
     #[test]
@@ -1183,5 +1336,30 @@ mod tests {
         s.sort_folder(f, SortBy::LastVisit, true, FoldersAt::Mixed, false).unwrap();
         assert_eq!(names(&s, f)[..2], n(&[("b", "Bravo"), ("b", "charlie")])[..], "most recently visited first");
         assert_eq!(s.sort_folder(9999, SortBy::Title, false, FoldersAt::First, true).unwrap(), None, "missing folder");
+    }
+
+    #[test]
+    fn new_items_land_after_the_selection() {
+        // FLD-03: an add, a note or a paste lands right after the selected item; an anchor
+        // elsewhere (or none) leaves it last in the folder.
+        let mut s = Store::open(":memory:").unwrap();
+        let f = s.create_folder(ROOT, "F", None).unwrap().unwrap();
+        let a = s.add_after("Add", f, None, &[link("https://a.example/")]).unwrap().ids[0];
+        let b = s.add_after("Add", f, None, &[link("https://b.example/")]).unwrap().ids[0];
+        let ids = |s: &Store| siblings(&s.conn, f).unwrap().into_iter().map(|i| match i { Item::Folder(x) | Item::Bookmark(x) => x }).collect::<Vec<_>>();
+        let c = s.add_after("Add", f, Some(a), &[link("https://c.example/")]).unwrap().ids[0];
+        assert_eq!(ids(&s), [a, c, b], "after the selected one");
+        let n = s.add_note_after(f, "N", "", Some(a)).unwrap().unwrap();
+        assert_eq!(ids(&s), [a, n, c, b], "a note too");
+        let elsewhere = s.add_after("Add", ROOT, None, &[link("https://x.example/")]).unwrap().ids[0];
+        let d = s.add_after("Add", f, Some(elsewhere), &[link("https://d.example/")]).unwrap().ids[0];
+        assert_eq!(ids(&s), [a, n, c, b, d], "an anchor in another folder: last");
+        s.undo().unwrap();
+        s.undo().unwrap();
+        s.redo().unwrap();
+        assert_eq!(ids(&s), [a, n, c, b], "undo and redo keep the place");
+        // Paste is a move beside the selection (ITEM-15 with FLD-03).
+        s.move_items(&[], &[elsewhere], f, Some(Beside { folder: false, id: a, after: true })).unwrap();
+        assert_eq!(ids(&s)[..2], [a, elsewhere]);
     }
 }

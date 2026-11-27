@@ -604,7 +604,7 @@ mod tests {
         let sample: &[u8] = b"<HTML><BODY><DL>\r\n\
 <DT><A HREF=\"http://example.com/?a=1&amp;b=2\">Caf\xe9 &amp; Bar</A>\r\n<DD><!--keywords-->food paris\r\n<!--notes-->n1\r\n<!--mdata=[Monthly][634DF1F5][0][0][0][65DAAC26][C][1][1][ABCD][2][A][x][y][1]-->\r\n<BR>\r\n\
 </DL><p>\r\n</BODY>\r\n</HTML>";
-        s.import_pm35(&pm35::parse(sample).unwrap()).unwrap();
+        s.import_pm35(&pm35::parse(sample).unwrap(), None).unwrap();
         s.add("https://new.example/\u{4e2d}", "Emoji \u{1f600} title", "tag1 tag2", "a \"quoted\" <desc>").unwrap();
         s
     }
@@ -698,7 +698,7 @@ mod tests {
 
         // And it imports back into an empty Keymarks with the same text.
         let mut again = Store::open(":memory:").unwrap();
-        again.import_pm35(&db).unwrap();
+        again.import_pm35(&db, None).unwrap();
         let titles: Vec<_> = again.search("", 10).unwrap().into_iter().map(|b| b.title).collect();
         assert!(titles.contains(&"Emoji \u{1f600} title".to_string()), "{titles:?}");
     }
@@ -716,7 +716,7 @@ mod tests {
         }
         let db = pm35::parse(&s.export_pm35(&s.export_rows(None).unwrap()).unwrap()).unwrap();
         let mut again = Store::open(":memory:").unwrap();
-        again.import_pm35(&db).unwrap();
+        again.import_pm35(&db, None).unwrap();
         let back = again.saved_items().unwrap();
         assert_eq!(back.iter().map(|i| (i.name.as_str(), i.kind.as_str(), i.query.as_str(), i.url.as_str())).collect::<Vec<_>>(),
             [("Docs", "link", "", "https://docs.example/"), ("Rusty", "search", "rust ! old", ""), ("Exact", "search", "Caf\u{e9}", "")]);

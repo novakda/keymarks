@@ -87,6 +87,30 @@ impl Store {
         Ok(out)
     }
 
+    /// A step that both deletes bookmarks `ids` and changes the tree under `parents`
+    /// (folder delete, ITEM-14): undo puts the folders back first, then the bookmarks.
+    pub(crate) fn record_with_tree<T>(
+        &mut self,
+        name: String,
+        ids: &[i64],
+        parents: &[i64],
+        change: impl FnOnce(&mut Store) -> Result<T>,
+    ) -> Result<T> {
+        let mut before = self.tree_snapshot(parents)?;
+        before.rows = rows(&self.conn, ids)?;
+        let out = change(self)?;
+        let mut after = self.tree_snapshot(parents)?;
+        after.rows = rows(&self.conn, ids)?;
+        let folder_ids = [&before, &after]
+            .iter()
+            .flat_map(|t| t.tree.as_ref().unwrap().folders.iter().map(|r| match r[0] { Value::Integer(id) => id, _ => unreachable!() }))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.push(Step { name, ids: ids.to_vec(), folder_ids, before, after });
+        Ok(out)
+    }
+
     fn push(&mut self, step: Step) {
         let h = &mut self.history;
         h.redo.clear();

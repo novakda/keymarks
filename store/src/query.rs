@@ -55,6 +55,8 @@ impl SortKey {
         let expr = match self.column.as_str() {
             "title" | "url" | "keywords" | "description" | "notes" => format!("b.{} COLLATE NOCASE", self.column),
             "check_status" | "schedule" => format!("b.{} COLLATE NOCASE", self.column),
+            // The Folder column (VIEW-02): the path, from CTE `fp` joined by the search; root items have none.
+            "folder" => "coalesce(fp.path, '') COLLATE NOCASE".to_string(),
             "added" | "last_visited" | "last_modified" | "last_checked" | "visits" | "rating" | "status" | "changed" => {
                 format!("b.{}", self.column)
             }
@@ -131,6 +133,10 @@ fn exact(query: &str, opts: &SearchOptions) -> Result<Option<Filter>, String> {
 /// Every folder below the root with its path ("Search engines › Web"), as CTE `p(id, path)`.
 const FOLDER_PATHS: &str = "WITH RECURSIVE p(id, path) AS (SELECT id, name FROM folder WHERE parent_id = 1 \
     UNION ALL SELECT f.id, p.path || ' › ' || f.name FROM folder f JOIN p ON f.parent_id = p.id)";
+
+/// The same paths as CTE `fp(id, path)`, for the Folder column sort (joined, not one subquery per row).
+pub(crate) const FOLDER_PATH_CTE: &str = "fp(id, path) AS (SELECT id, name FROM folder WHERE parent_id = 1 \
+    UNION ALL SELECT f.id, fp.path || ' › ' || f.name FROM folder f JOIN fp ON f.parent_id = fp.id)";
 
 /// Folders whose path has a word matching `?` (an FTS5 query): a folder whose own name
 /// matches, and every folder below it. Moves need no re-index; renames re-index one row.

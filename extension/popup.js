@@ -22,7 +22,7 @@ let existing = false;
     $('desc').value = found.description;
     $('add').textContent = 'Update in Keymarks';
     $('folder').hidden = $('folder-label').hidden = true; // an update doesn't move it
-    show('Already in Keymarks: edit it here.');
+    show(found.folder ? `Already in Keymarks, in ${found.folder}: edit it here.` : 'Already in Keymarks: edit it here.');
   } else {
     $('title').value = tab?.title ?? '';
     const meta = await readPage(tab.id);

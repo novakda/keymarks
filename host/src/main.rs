@@ -21,16 +21,19 @@ const CHROMIUM_KEYS: [&str; 2] = [
 const FIREFOX_KEY: &str = r"HKCU\Software\Mozilla\NativeMessagingHosts";
 const MAX_FIELD: usize = 8 * 1024;
 
+/// Every message is checked the same way (SYS-23): a known `type`, only its own fields, each of
+/// its type; an add's URL and sizes and its picked folder are checked in `handle`.
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 enum Request {
-    Ping,
+    // `{}` rather than unit variants: serde only refuses unknown fields on struct variants.
+    Ping {},
     /// Bring up the app (starting it if needed): Powermarks' "Show PM" toolbar button.
-    Show,
+    Show {},
     /// Is this URL already bookmarked? (The popup then shows and edits that bookmark.)
     Lookup { url: String },
     /// The popup's folder picker: every folder's path, and the New Item Folder (null until made).
-    Folders,
+    Folders {},
     Add {
         url: String,
         title: String,
@@ -74,14 +77,23 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(appdata).join("com.pattern158.keymarks").join("bookmarks.db"))
 }
 
-/// The app's fast-add keywords (settings.json beside the database), default "new".
-fn fast_keywords() -> String {
+/// The app's settings.json beside the database (Null if missing or unreadable).
+fn app_settings() -> Value {
     db_path()
         .ok()
         .and_then(|p| std::fs::read(p.with_file_name("settings.json")).ok())
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v["fast_add_keywords"].as_str().map(String::from))
-        .unwrap_or_else(|| "new".into())
+        .unwrap_or_default()
+}
+
+/// The app's fast-add keywords, default "new".
+fn fast_keywords(settings: &Value) -> String {
+    settings["fast_add_keywords"].as_str().map_or_else(|| "new".into(), String::from)
+}
+
+/// The app's duplicate rules (SYS-12), default LINK-18's.
+fn url_rules(settings: &Value) -> store::UrlRules {
+    serde_json::from_value(settings["url_rules"].clone()).unwrap_or_default()
 }
 
 fn serve() -> io::Result<()> {
@@ -92,7 +104,12 @@ fn serve() -> io::Result<()> {
     let (mut stdin, mut stdout) = (io::stdin().lock(), io::stdout().lock());
     while let Some(msg) = read_message(&mut stdin)? {
         let reply = match &mut store {
-            Ok(store) => handle(store, &msg, &fast_keywords()),
+            Ok(store) => {
+                // Read per message: the app may change Settings while the browser keeps the host open.
+                let settings = app_settings();
+                store.set_url_rules(url_rules(&settings));
+                handle(store, &msg, &fast_keywords(&settings))
+            }
             Err(e) => json!({ "ok": false, "error": e }),
         };
         write_message(&mut stdout, &reply)?;
@@ -117,24 +134,36 @@ fn start_app() -> io::Result<()> {
 }
 
 fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
-    let request = match serde_json::from_slice::<Request>(msg) {
+    // An object only: serde would also take the tagged-array form `["folders"]`.
+    let request = match serde_json::from_slice::<Value>(msg).and_then(|v| {
+        if !v.is_object() {
+            return Err(serde::de::Error::custom("not a JSON object"));
+        }
+        serde_json::from_value::<Request>(v)
+    }) {
         Ok(r) => r,
         Err(e) => return json!({ "ok": false, "error": format!("bad request: {e}") }),
     };
     match request {
-        Request::Ping => json!({ "ok": true, "count": store.count().unwrap_or(-1) }),
+        Request::Ping {} => json!({ "ok": true, "count": store.count().unwrap_or(-1) }),
         // The app sits next to this host. A second launch hands over to the running one,
         // which shows its window.
-        Request::Show => match start_app() {
+        Request::Show {} => match start_app() {
             Ok(_) => json!({ "ok": true }),
             Err(e) => json!({ "ok": false, "error": format!("could not start Keymarks: {e}") }),
         },
         Request::Lookup { url } => match store.find_url(&url) {
-            Ok(Some(b)) => json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description }),
+            Ok(Some(b)) => {
+                // Its folder's path, as the picker shows it (ITEM-02); empty if the list fails.
+                let folder = store.folders().ok().and_then(|all| {
+                    folder_paths(&all).into_iter().find(|f| f["id"] == b.folder_id).map(|f| f["path"].clone())
+                });
+                json!({ "ok": true, "found": true, "title": b.title, "keywords": b.keywords, "description": b.description, "folder": folder.unwrap_or_default() })
+            }
             Ok(None) => json!({ "ok": true, "found": false }),
             Err(e) => json!({ "ok": false, "error": e.to_string() }),
         },
-        Request::Folders => match (store.folders(), store.new_item_folder()) {
+        Request::Folders {} => match (store.folders(), store.new_item_folder()) {
             (Ok(all), Ok(inbox)) => json!({ "ok": true, "new_items": inbox, "folders": folder_paths(&all) }),
             (Err(e), _) | (_, Err(e)) => json!({ "ok": false, "error": e.to_string() }),
         },
@@ -144,8 +173,15 @@ fn handle(store: &mut Store, msg: &[u8], fast_keywords: &str) -> Value {
             if !scheme_ok || !sizes_ok {
                 return json!({ "ok": false, "error": "only http(s) pages up to 8 KB per field" });
             }
+            let folder = if fast { None } else { folder };
+            // A picked folder must be one that exists (not the NEW_ITEMS sentinel, not a guess).
+            if let Some(id) = folder
+                && !matches!(store.folder(id), Ok(Some(_)))
+            {
+                return json!({ "ok": false, "error": format!("no folder {id}") });
+            }
             let keywords = if fast { format!("{keywords} {fast_keywords}") } else { keywords };
-            let into = if fast { None } else { folder }.unwrap_or(store::NEW_ITEMS);
+            let into = folder.unwrap_or(store::NEW_ITEMS);
             let (id, existed) = match store.add_in(into, &url, title.trim(), keywords.trim(), description.trim()) {
                 Ok(r) => r,
                 Err(e) => return json!({ "ok": false, "error": e.to_string() }),
@@ -281,6 +317,7 @@ mod tests {
         // Lookup, then update the existing bookmark from the popup.
         let found = h(br#"{"type":"lookup","url":"https://a.example/"}"#);
         assert_eq!((found["found"].as_bool(), found["title"].as_str()), (Some(true), Some("A")));
+        assert_eq!(found["folder"], "New", "the popup shows the existing item's folder path (ITEM-02)");
         assert_eq!(h(br#"{"type":"lookup","url":"https://none.example/"}"#)["found"], false);
         let up = h(br#"{"type":"add","url":"https://a.example/","title":"A2","keywords":"k2","update":true}"#);
         assert_eq!(up["updated"], true);
@@ -291,6 +328,48 @@ mod tests {
         assert_eq!(store.search("k2", 5).unwrap()[0].title, "A2");
         assert_eq!(store.find_url("https://f.example/").unwrap().unwrap().keywords, "page new");
         assert!(read_message(&mut [].as_slice()).unwrap().is_none());
+    }
+
+    #[test]
+    fn folder_list_and_pick_messages_are_validated() {
+        // SYS-23: the folder-list and folder-pick messages get the same checks as the others.
+        let mut store = Store::open(":memory:").unwrap();
+        let work = store.create_folder(store::ROOT, "Work", None).unwrap().unwrap();
+        let mut h = |m: &[u8]| handle(&mut store, m, "new");
+        // Folder list: only its own shape; junk fields or a wrong type are refused.
+        assert_eq!(h(br#"{"type":"folders"}"#)["ok"], true);
+        for bad in [&br#"{"type":"folders","folder":"../x"}"#[..], br#"{"type":"Folders"}"#, br#"{"type":["folders"]}"#, br#"["folders"]"#, b"{}", b""] {
+            let r = h(bad);
+            assert_eq!(r["ok"], false, "{}", String::from_utf8_lossy(bad));
+            assert!(r["error"].as_str().unwrap().starts_with("bad request"));
+        }
+        // Folder pick: a folder that exists, or none (the New Item Folder). Anything else is refused
+        // and nothing is stored.
+        let ok = h(format!(r#"{{"type":"add","url":"https://w.example/","title":"W","folder":{work}}}"#).as_bytes());
+        assert_eq!(ok["ok"], true);
+        for bad in [
+            &br#"{"type":"add","url":"https://x.example/","title":"X","folder":999999}"#[..],
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":-1}"#,
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":0}"#,
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":"1"}"#,
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":1.5}"#,
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":99999999999999999999}"#,
+            br#"{"type":"add","url":"https://x.example/","title":"X","folder":1,"parent":2}"#,
+        ] {
+            assert_eq!(h(bad)["ok"], false, "{}", String::from_utf8_lossy(bad));
+        }
+        drop(h);
+        assert!(store.find_url("https://x.example/").unwrap().is_none(), "a refused pick stores nothing");
+        assert_eq!(store.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn duplicate_rules_come_from_the_app_settings() {
+        // SYS-12: the host matches by the app's Settings > Duplicates; missing = LINK-18's defaults.
+        assert_eq!(url_rules(&Value::Null), store::UrlRules::default());
+        let r = url_rules(&json!({ "url_rules": { "protocol": false } }));
+        assert_eq!(r, store::UrlRules { protocol: false, ..Default::default() }, "unset switches keep their defaults");
+        assert_eq!(fast_keywords(&Value::Null), "new");
     }
 
     #[test]

@@ -126,6 +126,7 @@
   .vrow.rated { box-shadow: inset 4px 0 hsl(calc(var(--rating) * 12) 70% 45%); }
   #list li.spacer, #table tr.spacer td { padding: 0; border: 0; }
   #list li.sel { background: var(--sel); }
+  .vrow.cut, #tree li.cut > .name { opacity: .45; }
   #list li.cursor { border-left-color: var(--cursor); }
   .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -157,7 +158,7 @@
   #sctx strong, #ctx strong, #bctx strong, #fctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
   #sctx button, #ctx button, #bctx button, #fctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
   #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible, #fctx button:hover, #fctx button:focus-visible { background: var(--sel); outline: none; }
-  #bctx button[hidden] { display: none; }
+  #bctx button[hidden], #fctx button[hidden] { display: none; }
   #settings fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 10px; display: grid; gap: 6px; }
   #settings legend { font-weight: 600; padding: 0 4px; }
   #settings .settings-body { max-height: 70vh; overflow-y: auto; }
@@ -265,6 +266,7 @@
       <button id="check-all" type="button" role="menuitem" title="F8">Check all links…</button>
       <button id="backups-open" type="button" role="menuitem">Backups…</button>
       <button id="settings-open" type="button" role="menuitem">Settings…</button>
+      <button id="track-tree" type="button" role="menuitemcheckbox" aria-checked="false" title="F10">Track the folder tree</button>
       <button id="keys-open" type="button" role="menuitem" title="F1">Keyboard shortcuts</button>
     </div>
   </details>
@@ -335,15 +337,20 @@
       <tr><td>Ctrl+M</td><td>Move the selected bookmarks (in the list) or folder (in the tree) to a folder</td></tr>
       <tr><td>Drag</td><td>Bookmarks onto a folder to move them; folders onto or between folders; within a folder's list to reorder (when the list isn't sorted)</td></tr>
       <tr><td>↑ ↓ ← →</td><td>In the folder tree: move, collapse, expand</td></tr>
-      <tr><td>F2 / Del</td><td>In the folder tree: rename / delete the folder (its contents move up)</td></tr>
+      <tr><td>F10</td><td>Track on / off: the tree follows the selected bookmark's folder (off while searching in a folder)</td></tr>
+      <tr><td>F2 / Del</td><td>In the folder tree: rename / delete the selected folders and everything in them (asks first; Ctrl+Z undoes)</td></tr>
+      <tr><td>Enter</td><td>In the folder tree: go to the folder's list</td></tr>
+      <tr><td>Ctrl+D</td><td>Duplicates view on / off: bookmarks with the same link, from every folder (Merge or Keep)</td></tr>
+      <tr><td>Ctrl+L</td><td>Dead Links view on / off: broken links from every folder (Esc leaves)</td></tr>
       <tr><th colspan="2">Bookmarks</th></tr>
       <tr><td>Enter</td><td>Open</td></tr>
       <tr><td>Shift+Enter</td><td>Open in a new browser window</td></tr>
       <tr><td>Insert</td><td>New bookmark</td></tr>
       <tr><td>Alt+Insert</td><td>Add the links on the clipboard</td></tr>
       <tr><td>Ctrl+S</td><td>Save the edited bookmark</td></tr>
-      <tr><td>Ctrl+C / Ctrl+X</td><td>Copy / cut the selected bookmarks (URLs, and links with titles)</td></tr>
-      <tr><td>Ctrl+V</td><td>Add the links on the clipboard (as Alt+Insert)</td></tr>
+      <tr><td>Ctrl+C</td><td>Copy the selected bookmarks (URLs, and links with titles)</td></tr>
+      <tr><td>Ctrl+X</td><td>Cut: mark (dim) the selected bookmarks, or folders in the tree, to move; Esc cancels. Nothing is removed until a Paste</td></tr>
+      <tr><td>Ctrl+V</td><td>After a Cut: move the marked items into the selected folder (one undo step). Otherwise add the links on the clipboard (as Alt+Insert)</td></tr>
       <tr><td>Ctrl+Plus / Ctrl+Minus</td><td>Raise / lower the rating</td></tr>
       <tr><td>Del</td><td>Delete</td></tr>
       <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
@@ -405,8 +412,14 @@
   <button role="menuitem" data-act="rename">Rename… (F2)</button>
   <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
   <button role="menuitem" data-act="sort">Sort folder…</button>
+  <button role="menuitem" data-act="openall">Open all</button>
+  <button role="menuitem" data-act="check">Check links</button>
+  <button role="menuitem" data-act="addkw">Add keywords…</button>
+  <button role="menuitem" data-act="rmkw">Remove keywords…</button>
   <button role="menuitem" data-act="inbox" title="Bookmarks added from the browser and the clipboard land here">Set as New Item Folder</button>
   <hr>
+  <button role="menuitem" data-act="cut">Cut (Ctrl+X)</button>
+  <button role="menuitem" data-act="paste">Paste here (Ctrl+V)</button>
   <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
 </div>
 <div id="sctx" class="ctxmenu" role="menu" hidden>
@@ -487,6 +500,7 @@
     <fieldset class="plain"><legend>Put it</legend>
       <label><input type="radio" name="import-into" value="new" checked> In a new folder named after the browser or file</label>
       <label><input type="radio" name="import-into" value="tree"> Straight into the tree (folders with the same name are merged)</label>
+      <label id="import-replace-label"><input type="radio" name="import-into" value="replace"> Replace the collection (only while it is empty: the import becomes the tree)</label>
     </fieldset>
     <div id="import-sources"></div>
     <label class="check"><input id="import-folder-words" type="checkbox"> Also add folder names as keywords</label>
@@ -596,10 +610,23 @@
         <label for="s-cliphotkey">Hotkey to add the links on the clipboard, from anywhere</label>
         <input id="s-cliphotkey" placeholder="Press a key combination (empty = none)">
       </fieldset>
+      <fieldset id="s-folders"><legend>Folders</legend>
+        <label><input type="checkbox" id="s-track"> Tree tracking: the tree follows the selected bookmark's folder (F10)</label>
+        <label for="s-newitems">New Item Folder: browser, clipboard and fast adds land in</label>
+        <select id="s-newitems"></select>
+        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
+      </fieldset>
       <fieldset><legend>Adding and importing</legend>
         <label for="s-fast">Keywords for bookmarks added without a dialog (extension fast add, clipboard)</label>
         <input id="s-fast" placeholder="e.g. new">
-        <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
+      </fieldset>
+      <fieldset id="s-dups"><legend>Duplicates</legend>
+        <p class="help">Two URLs are the same link (so an add or import doesn’t make a second copy, and Duplicate URLs groups them) when they differ only in what is ticked here. Stored URLs are never changed.</p>
+        <label><input type="checkbox" id="s-url-protocol"> Protocol (<code>http://</code> and <code>https://</code>)</label>
+        <label><input type="checkbox" id="s-url-www"> A leading <code>www.</code></label>
+        <label><input type="checkbox" id="s-url-slash"> A trailing <code>/</code></label>
+        <label><input type="checkbox" id="s-url-case"> Upper or lower case in the site name</label>
+        <label><input type="checkbox" id="s-url-port"> The port (<code>:8080</code>)</label>
       </fieldset>
       <fieldset><legend>Link checking</legend>
         <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
@@ -644,6 +671,7 @@
   <form id="form">
     <label for="f-title">Title</label><input id="f-title" name="title" required>
     <label for="f-url">URL</label><input id="f-url" name="url" required>
+    <label for="f-folder-pick">Folder</label><div class="folder-field"><span id="f-folder"></span> <button type="button" id="f-folder-pick" title="Move to another folder (Ctrl+M)">Change…</button></div>
     <div class="label-row">
       <label for="f-kw">Keywords</label>
       <button id="kw-sort" type="button" class="secondary icon" title="Sort keywords A→Z" aria-label="Sort keywords A to Z">A→Z</button>

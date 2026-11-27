@@ -51,20 +51,22 @@ fn count(db: State<Db>) -> Result<i64, String> {
 
 /// Pick a pm35.htm and import it. Only into an empty store, so re-importing can't duplicate.
 #[tauri::command]
-async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>) -> Result<Option<ImportReport>, String> {
+async fn import_pm35(app: AppHandle, db: State<'_, Db>, settings: State<'_, SettingsState>, new_folder: bool) -> Result<Option<ImportReport>, String> {
     let picked = app
         .dialog()
         .file()
         .add_filter("Powermarks database", &["htm", "html", "ba0"])
         .blocking_pick_file();
     let Some(path) = picked else { return Ok(None) };
-    let bytes = std::fs::read(path.into_path().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Powermarks".into());
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let parsed = pm35::parse(&bytes)?;
     let mut store = db.lock().unwrap();
     if store.count().map_err(|e| e.to_string())? > 0 {
         return Err("a Powermarks database can only be imported into an empty collection for now".into());
     }
-    let report = store.import_pm35(&parsed).map_err(|e| e.to_string())?;
+    let report = store.import_pm35(&parsed, new_folder.then_some(name.as_str())).map_err(|e| e.to_string())?;
     // The file's check schedules join Settings, so its bookmarks' schedule names mean something.
     let mut current = settings.current.lock().unwrap();
     let known = desktop::parse_schedules(&current.schedules).unwrap_or_default();
@@ -169,14 +171,15 @@ fn normalize_url(input: &str) -> Result<String, String> {
     reqwest::Url::parse(&s).map(|u| u.to_string()).map_err(|e| format!("Not a valid URL: {e}"))
 }
 
-/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree.
+/// Add one bookmark by URL (Insert, Ctrl+N) to `folder`, the one selected in the tree,
+/// right after the selected bookmark `after` when it's in that folder (FLD-03).
 /// Without a title, the page's own is fetched.
 #[tauri::command]
-fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64) -> Result<ImportReport, String> {
+fn add_bookmark(app: AppHandle, db: State<Db>, url: String, title: String, folder: i64, after: Option<i64>) -> Result<ImportReport, String> {
     let url = normalize_url(&url)?;
     let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
     let item = store::NewBookmark { url, title, keywords: String::new(), description: String::new(), notes: String::new(), added: None };
-    let report = db.lock().unwrap().import_bookmarks("Add bookmark", folder, &[item]).map_err(err)?;
+    let report = db.lock().unwrap().add_after("Add bookmark", folder, after, &[item]).map_err(err)?;
     fetch_in_background(app, report.ids.clone());
     Ok(report)
 }
@@ -555,12 +558,13 @@ fn rename(store: &mut Store, id: i64, name: &str) -> Result<(), String> {
     store.rename_folder(id, folder_name(name)?).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
 }
 
-/// Its contents move up to the parent; nothing else is deleted.
-fn remove_folder(store: &mut Store, id: i64) -> Result<(), String> {
-    if id == store::ROOT {
+/// The folders and everything below them, one undo step (ITEM-14, FLD-06).
+/// Returns (folders, bookmarks) deleted.
+fn remove_folders(store: &mut Store, ids: &[i64]) -> Result<(usize, usize), String> {
+    if ids.contains(&store::ROOT) {
         return Err("The top folder can't be deleted".into());
     }
-    store.delete_folder(id).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+    store.delete_items(ids, &[]).map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 /// A new folder, last in `parent`. Returns its id.
@@ -613,6 +617,13 @@ fn move_items(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>, to: i64, be
     file_items(&mut db.lock().unwrap(), &folders, &bookmarks, to, beside)
 }
 
+/// Every bookmark a tree-and-list selection stands for, each once (FLD-06): for check,
+/// keyword and Open all commands on selected folders.
+#[tauri::command]
+fn selection_bookmarks(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>) -> Result<Vec<i64>, String> {
+    db.lock().unwrap().bookmarks_under(&folders, &bookmarks).map_err(err)
+}
+
 /// Folder context menu: Set as New Item Folder (ITEM-04), one undo step.
 #[tauri::command]
 fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
@@ -620,8 +631,14 @@ fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn delete_folder(db: State<Db>, id: i64) -> Result<(), String> {
-    remove_folder(&mut db.lock().unwrap(), id)
+fn delete_folders(db: State<Db>, ids: Vec<i64>) -> Result<(usize, usize), String> {
+    remove_folders(&mut db.lock().unwrap(), &ids)
+}
+
+/// What deleting these folders would remove, for the confirm: (folders, bookmarks).
+#[tauri::command]
+fn delete_counts(db: State<Db>, ids: Vec<i64>) -> Result<(usize, usize), String> {
+    db.lock().unwrap().delete_counts(&ids, &[]).map_err(err)
 }
 
 /// The tree's expand state, kept per folder (FLD-08).
@@ -630,11 +647,11 @@ fn set_folder_folded(db: State<Db>, id: i64, folded: bool) -> Result<(), String>
     db.lock().unwrap().set_folded(id, folded).map(drop).map_err(err)
 }
 
-/// A note item (no URL), last in `folder`. Returns its id.
+/// A note item (no URL), last in `folder` or right after the selected bookmark `after` (FLD-03). Returns its id.
 #[tauri::command]
-fn add_note(db: State<Db>, folder: i64, title: String) -> Result<i64, String> {
+fn add_note(db: State<Db>, folder: i64, title: String, after: Option<i64>) -> Result<i64, String> {
     let title = Some(title.trim()).filter(|t| !t.is_empty()).ok_or("Give the note a title")?;
-    db.lock().unwrap().add_note(folder, title, "").map_err(err)?.ok_or_else(|| GONE.into())
+    db.lock().unwrap().add_note_after(folder, title, "", after).map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 #[tauri::command]
@@ -753,6 +770,7 @@ fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings
     desktop::parse_schedules(&settings.schedules)?;
     let new = Settings { hotkey, clipboard_hotkey, ui: current.ui.clone(), ..settings };
     state.save(&new)?;
+    app.state::<Db>().lock().unwrap().set_url_rules(new.url_rules);
     *current = new;
     Ok(())
 }
@@ -1017,13 +1035,14 @@ fn main() {
             };
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("bookmarks.db");
-            let store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
+            let mut store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
+            let settings = SettingsState::load(dir.join("settings.json"));
+            let current = settings.current.lock().unwrap().clone();
+            store.set_url_rules(current.url_rules);
             app.manage(Mutex::new(store));
             app.manage(DataDir(dir.clone()));
             app.manage(checker::CheckState::default());
 
-            let settings = SettingsState::load(dir.join("settings.json"));
-            let current = settings.current.lock().unwrap().clone();
             app.manage(settings);
             for key in [&current.hotkey, &current.clipboard_hotkey] {
                 if let Err(e) = desktop::apply_hotkey(app.handle(), "", key) {
@@ -1127,9 +1146,11 @@ fn main() {
             set_folder_note,
             sort_folder,
             dead_links,
-            delete_folder,
+            delete_folders,
+            delete_counts,
             set_new_item_folder,
             move_items,
+            selection_bookmarks,
             set_folder_folded,
             add_note
         ])
@@ -1139,7 +1160,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folder, rename};
+    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folders, rename};
     use store::{ROOT, Store};
 
     #[test]
@@ -1153,9 +1174,12 @@ mod tests {
         rename(&mut s, f, "Jobs").unwrap();
         assert_eq!(s.folder(f).unwrap().unwrap().name, "Jobs");
         assert!(rename(&mut s, 9999, "Z").is_err());
-        assert_eq!(remove_folder(&mut s, ROOT).unwrap_err(), "The top folder can't be deleted");
-        remove_folder(&mut s, f).unwrap();
+        assert_eq!(remove_folders(&mut s, &[f, ROOT]).unwrap_err(), "The top folder can't be deleted");
+        let g = new_folder(&mut s, f, "Sub").unwrap();
+        s.add_note(g, "N", "").unwrap();
+        assert_eq!(remove_folders(&mut s, &[f]).unwrap(), (2, 1));
         assert_eq!(s.folder(f).unwrap(), None);
+        assert_eq!(remove_folders(&mut s, &[f]).unwrap_err(), "That folder no longer exists");
     }
 
     #[test]
