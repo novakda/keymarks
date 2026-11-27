@@ -145,6 +145,11 @@ function fakeTauri() {
       return 1;
     },
     set_folder_note: ({ id, note }) => { snap('Note on folder'); folders.find((f) => f.id === id).note = note.trim(); },
+    // Smart selection (FLD-06): items in the folders and below, once each (the store's own is unit-tested).
+    selection_bookmarks: ({ folders: fs }) => {
+      const under = (id, of) => id === of || (id != null && id !== 1 && under(folders.find((f) => f.id === id)?.parent_id, of));
+      return items.filter((b) => fs.some((f) => under(b.folder_id, f))).map((b) => b.id);
+    },
     add_note: ({ folder, title }) => {
       const id = nextId++;
       items.push(bm(id, folder, 99, title.trim(), '', 'note'));
@@ -520,6 +525,37 @@ await page.focus('#list');
 await page.keyboard.press('Escape');
 await idle();
 check('Esc leaves the Dead Links view', !(await page.textContent('#status')).startsWith('Dead Links'), await page.textContent('#status'));
+
+// ---- Smart selection in the tree (FLD-06) and folder menu Open all (VIEW-16) ----
+await item('Bookmarks').click();
+await idle();
+await item('Work').click();
+await idle();
+if (!(await tree()).includes('Clients')) await item('Work').locator('.twisty').click();
+await item('New').click({ modifiers: ['Control'] });
+const newId = Number(await item('New').getAttribute('data-id'));
+const chosen = () => page.$$eval('#tree li[aria-selected=true] .name', (els) => els.map((e) => e.textContent));
+check('Ctrl+click adds a folder to the tree selection; the list keeps the folder', JSON.stringify(await chosen()) === '["Work","New"]'
+  && (await titles()).includes('Wiki'), `${JSON.stringify(await chosen())} ${JSON.stringify(await titles())}`);
+await item('New').click({ button: 'right' });
+check('the folder menu names the selection and hides single-folder commands', (await page.textContent('#fctx-title')) === '2 folders'
+  && await page.isHidden('#fctx [data-act=rename]') && await page.isVisible('#fctx [data-act=openall]'), await page.textContent('#fctx-title'));
+await page.click('#fctx [data-act=openall]');
+await idle();
+const opened = (await calls('open_bookmark')).map((a) => a.id).sort();
+const expect = await page.evaluate((id) => window.__TAURI__.core.invoke('selection_bookmarks', { folders: [2, id], bookmarks: [] }), newId);
+const links = (await page.evaluate((ids) => window.__TAURI__.core.invoke('get_bookmarks', { ids }), expect)).filter((b) => b.kind !== 'note').map((b) => b.id).sort();
+check('Open all asks for the bookmarks under both folders and opens each link once, notes skipped', JSON.stringify((await calls('selection_bookmarks'))[0]) === JSON.stringify({ folders: [2, newId], bookmarks: [] })
+  && opened.length > 0 && JSON.stringify(opened) === JSON.stringify(links) && opened.includes(14), `${JSON.stringify(opened)} vs ${JSON.stringify(links)}`);
+await page.focus('#tree');
+await page.keyboard.press('Control+m');
+check('Ctrl+M in the tree moves the whole selection', (await page.textContent('#move-title')) === 'Move 2 folders to', await page.textContent('#move-title'));
+await page.keyboard.press('Escape');
+await item('Bookmarks').click({ modifiers: ['Shift'] });
+check('Shift+click selects the shown range from the selected folder', JSON.stringify(await chosen()) === '["Bookmarks","Work"]', JSON.stringify(await chosen()));
+await item('New').click();
+await idle();
+check('a plain click goes back to one folder', JSON.stringify(await chosen()) === '["New"]', JSON.stringify(await chosen()));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

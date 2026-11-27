@@ -1,4 +1,4 @@
-// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8, 25 for step 9, 26-27 for step 10), driven through the
+// The folder features in the real app (the folders test plan, 21 checks plus 22-24 for step 8, 25 for step 9, 26-27 for step 10, 28+ for the rest of P1), driven through the
 // WebView2 debugging port with real key and pointer events. It runs on a COPY of the user's
 // last pre-folders database (bookmarks.db.v5.bak, else bookmarks.pre-folders.db, beside the
 // real one), so the upgrade is tested on real data; the original is never opened. The page's
@@ -635,6 +635,31 @@ try {
     check('27 Ctrl+L lists the dead link with the Folder column', deadIds.includes(one.id) && (await status()).startsWith('Dead Links') && folderCol, `${deadIds.length} ${folderCol}`);
     await key('Escape');
     check('27b Esc leaves the Dead Links view', !(await status()).startsWith('Dead Links'), await status());
+  }
+
+  // 28. Smart selection (FLD-06): Ctrl+click picks a folder, a folder inside it and a second
+  // folder; Ctrl+M moves the selection as one undo step, the inner folder staying inside its parent.
+  {
+    const named = (n) => sql('SELECT id, parent_id FROM folder WHERE name = ?', n)[0];
+    for (const n of ['Kmzq sel target', 'Kmzq sel A', 'Kmzq sel B']) { await openFolder(1); await newFolderHere(n); }
+    await openFolder(named('Kmzq sel A').id);
+    await newFolderHere('Kmzq sel A1');
+    const [a, a1, b, target] = ['Kmzq sel A', 'Kmzq sel A1', 'Kmzq sel B', 'Kmzq sel target'].map(named);
+    await openFolder(a.id);
+    await page.click(treeLi(a1.id), { modifiers: ['Control'] });
+    await page.click(treeLi(b.id), { modifiers: ['Control'] });
+    const marked = await page.$$eval('#tree li[aria-selected=true]', (lis) => lis.map((li) => Number(li.dataset.id)));
+    await key('Control+m', '#tree');
+    const title = await page.textContent('#move-title');
+    await page.keyboard.type('Kmzq sel target');
+    await page.keyboard.press('Enter');
+    await idle();
+    const [a2, a12, b2] = ['Kmzq sel A', 'Kmzq sel A1', 'Kmzq sel B'].map(named);
+    check('28 Ctrl+click selects three folders; Ctrl+M moves them, the inner one stays in its parent',
+      marked.length === 3 && title === 'Move 3 folders to' && a2.parent_id === target.id && b2.parent_id === target.id && a12.parent_id === a.id,
+      `${marked.length} ${title} ${JSON.stringify([a2, a12, b2])}`);
+    await key('Control+z');
+    check('28b one Ctrl+Z puts both back in the top folder', named('Kmzq sel A').parent_id === 1 && named('Kmzq sel B').parent_id === 1, JSON.stringify([named('Kmzq sel A'), named('Kmzq sel B')]));
   }
 } catch (e) {
   log(e.stack);

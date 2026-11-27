@@ -27,6 +27,7 @@ let dictionary = [];       // every keyword (autocomplete, tag state)
 const ROOT = 1;
 let folders = [];          // every folder, root first, then by parent and position
 let folder = ROOT;         // the selected folder
+let treeSel = new Set();   // folders Ctrl/Shift-selected in the tree, with `folder` (FLD-06)
 // The Duplicate URLs view (SAVD-10, Ctrl+D): the list shows the store's duplicate groups instead.
 let dupView = false;
 let dupGroup = new Map();  // id -> its group's index, while dupView
@@ -1277,7 +1278,7 @@ function renderTree() {
     const li = document.createElement('li');
     li.role = 'treeitem';
     li.ariaLevel = String(depth + 1);
-    li.ariaSelected = String(f.id === folder);
+    li.ariaSelected = String(f.id === folder || treeSel.has(f.id));
     li.dataset.id = f.id;
     li.style.setProperty('--depth', depth);
     const hasKids = childFolders(f.id).length > 0;
@@ -1293,14 +1294,32 @@ function renderTree() {
     li.title = f.new_items ? `${f.name}: the New Item Folder (browser and clipboard adds land here)` : f.name;
     li.classList.toggle('inbox', !!f.new_items);
     li.append(twisty, name);
-    if (f.id !== ROOT) li.onpointerdown = (e) => startDrag(e, { folders: [f.id] }, f.parent_id, f.name);
-    li.onclick = () => { setFolder(f.id); tree.focus(); };
+    if (f.id !== ROOT) li.onpointerdown = (e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey) startDrag(e, () => ({ folders: treeSel.has(f.id) ? treeChosen() : [f.id] }), f.parent_id); };
+    li.onclick = (e) => { treeClick(f, e); tree.focus(); };
     li.ondblclick = () => { if (hasKids && f.id !== ROOT) setFolded(f, !f.folded); };
-    li.oncontextmenu = async (e) => { e.preventDefault(); await setFolder(f.id); showFolderMenu(e, f); };
+    li.oncontextmenu = async (e) => { e.preventDefault(); if (!treeSel.has(f.id)) await setFolder(f.id); showFolderMenu(e, f); };
     return li;
   }));
   $('tree-head').textContent = `Folders [${folders.length - 1}]`;
   renderScope();
+}
+
+/** The folders the tree selection stands for: the Ctrl/Shift-chosen ones, else the selected one. */
+const treeChosen = () => (treeSel.size > 1 ? visibleFolders(true).map(([f]) => f.id).filter((id) => treeSel.has(id)) : [folder]);
+
+/** Click in the tree: plain selects the folder; Ctrl adds or drops one; Shift takes the
+ *  range of shown folders from the selected one (FLD-06). The list keeps showing `folder`. */
+function treeClick(f, e) {
+  if (e.ctrlKey || e.metaKey) {
+    if (!treeSel.size) treeSel.add(folder);
+    if (treeSel.has(f.id) && treeSel.size > 1) treeSel.delete(f.id); else treeSel.add(f.id);
+  } else if (e.shiftKey) {
+    const shown = visibleFolders().map(([x]) => x.id);
+    const [a, b] = [shown.indexOf(folder), shown.indexOf(f.id)].sort((x, y) => x - y);
+    treeSel = new Set(shown.slice(a, b + 1));
+  } else { setFolder(f.id); return; }
+  renderTree();
+  say(`${treeSel.size} folders selected · right-click for what to do with them`);
 }
 
 /** Select a folder; the list then shows it (a search in progress is cleared, unless it is
@@ -1310,6 +1329,7 @@ async function setFolder(id, { load = true } = {}) {
   const changed = id !== folder || dupView || deadView;
   if (load) dupView = deadView = false;
   folder = id;
+  treeSel.clear();
   try { localStorage.setItem('folder', String(id)); savePrefs(); } catch {}
   renderTree();
   if (folderPanel) renderPanel();
@@ -1348,10 +1368,12 @@ $('tree').addEventListener('keydown', (e) => {
   } else if (e.key === 'F2') {
     renameFolder(f);
   } else if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-    if (f.id === ROOT) say('The top folder can’t move.');
-    else openMovePicker({ folders: [f.id] });
+    const chosen = treeChosen();
+    if (chosen.includes(ROOT)) say('The top folder can’t move.');
+    else openMovePicker({ folders: chosen });
   } else if (e.key === 'Delete') {
-    deleteFolder(f);
+    if (treeSel.size > 1) say('Delete one folder at a time.');
+    else deleteFolder(f);
   } else if (e.key === 'Enter') {
     list.focus();
   } else return;
@@ -1410,7 +1432,7 @@ const inSubtree = (id, of) => {
   return false;
 };
 const describe = ({ folders: fs = [], bookmarks = [] }) => (fs.length
-  ? `folder “${folderName(fs[0])}”`
+  ? (fs.length > 1 ? `${fs.length} folders` : `folder “${folderName(fs[0])}”`)
   : bookmarks.length === 1 ? `“${cache.get(bookmarks[0])?.title || cache.get(bookmarks[0])?.url || 'the bookmark'}”` : `${bookmarks.length} bookmarks`);
 
 /** Move folders or bookmarks into `to` (at the end, or beside a child of it). */
@@ -1606,9 +1628,13 @@ let menuFolder = null;
 function showFolderMenu(e, f) {
   menuFolder = f;
   const ctx = $('fctx');
-  $('fctx-title').textContent = f.name;
+  const many = treeSel.size > 1;
+  $('fctx-title').textContent = many ? `${treeSel.size} folders` : f.name;
   for (const act of ['rename', 'move', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
   ctx.querySelector('[data-act=inbox]').disabled = !!f.new_items;
+  // A multi-selection offers only what applies to all of it (FLD-06).
+  for (const act of ['new', 'note', 'rename', 'sort', 'inbox', 'delete']) ctx.querySelector(`[data-act=${act}]`).hidden = many;
+  ctx.querySelector('[data-act=move]').disabled = treeChosen().includes(ROOT);
   ctx.hidden = false;
   ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
   ctx.style.top = `${Math.min(e.clientY, innerHeight - ctx.offsetHeight - 4)}px`;
@@ -1622,10 +1648,31 @@ $('fctx').addEventListener('click', (e) => {
   if (act === 'new') newFolder(f.id);
   else if (act === 'note') newNote(f.id);
   else if (act === 'rename') renameFolder(f);
-  else if (act === 'move') openMovePicker({ folders: [f.id] });
+  else if (act === 'move') openMovePicker({ folders: treeChosen() });
   else if (act === 'delete') deleteFolder(f);
+  else if (['openall', 'check', 'addkw', 'rmkw'].includes(act)) folderBookmarks(act);
   else if (act === 'inbox') setInbox(f);
   else if (act === 'sort') openSort(f);
+});
+
+/** Open all, Check links, Add or Remove keywords on every bookmark in the chosen folders
+ *  and below, each once (FLD-06, VIEW-16). */
+const folderBookmarks = busyAware(async (act) => {
+  const chosen = treeChosen();
+  let all;
+  try { all = await invoke('selection_bookmarks', { folders: chosen, bookmarks: [] }); } catch (e) { fail('Folder')(e); return; }
+  await fetchRows(all);
+  const where = chosen.length > 1 ? `${chosen.length} folders` : `“${folderName(chosen[0])}”`;
+  if (!all.length) { say(`Nothing in ${where}.`); return; }
+  if (act === 'openall') {
+    const links = all.filter((id) => !isNote(cache.get(id)));
+    if (!links.length) { say(`No links in ${where}.`); return; }
+    if (links.length > 10 && !(await ask(`Open ${links.length} bookmarks from ${where} and its subfolders in the browser?`))) return;
+    for (const id of links) await invoke('open_bookmark', { id }).catch(fail('Open'));
+    say(`Opened ${links.length} bookmark${links.length === 1 ? '' : 's'}.`);
+    refresh();
+  } else if (act === 'check') startCheck(all.filter((id) => !isNote(cache.get(id))));
+  else openAddKeywords(all, act === 'rmkw');
 });
 
 // Sort folder (ORD-01..03): a one-shot rewrite of the stored order, one undo step. The

@@ -157,7 +157,7 @@
   #sctx strong, #ctx strong, #bctx strong, #fctx strong { display: block; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
   #sctx button, #ctx button, #bctx button, #fctx button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; color: var(--fg); padding: 5px 12px; }
   #sctx button:hover, #sctx button:focus-visible, #ctx button:hover, #ctx button:focus-visible, #bctx button:hover, #bctx button:focus-visible, #fctx button:hover, #fctx button:focus-visible { background: var(--sel); outline: none; }
-  #bctx button[hidden] { display: none; }
+  #bctx button[hidden], #fctx button[hidden] { display: none; }
   #settings fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 10px; display: grid; gap: 6px; }
   #settings legend { font-weight: 600; padding: 0 4px; }
   #settings .settings-body { max-height: 70vh; overflow-y: auto; }
@@ -405,6 +405,10 @@
   <button role="menuitem" data-act="rename">Rename… (F2)</button>
   <button role="menuitem" data-act="move">Move to folder… (Ctrl+M)</button>
   <button role="menuitem" data-act="sort">Sort folder…</button>
+  <button role="menuitem" data-act="openall">Open all</button>
+  <button role="menuitem" data-act="check">Check links</button>
+  <button role="menuitem" data-act="addkw">Add keywords…</button>
+  <button role="menuitem" data-act="rmkw">Remove keywords…</button>
   <button role="menuitem" data-act="inbox" title="Bookmarks added from the browser and the clipboard land here">Set as New Item Folder</button>
   <hr>
   <button role="menuitem" data-act="delete">Delete folder… (Del)</button>
