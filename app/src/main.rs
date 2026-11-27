@@ -613,6 +613,13 @@ fn move_items(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>, to: i64, be
     file_items(&mut db.lock().unwrap(), &folders, &bookmarks, to, beside)
 }
 
+/// Every bookmark a tree-and-list selection stands for, each once (FLD-06): for check,
+/// keyword and Open all commands on selected folders.
+#[tauri::command]
+fn selection_bookmarks(db: State<Db>, folders: Vec<i64>, bookmarks: Vec<i64>) -> Result<Vec<i64>, String> {
+    db.lock().unwrap().bookmarks_under(&folders, &bookmarks).map_err(err)
+}
+
 /// Folder context menu: Set as New Item Folder (ITEM-04), one undo step.
 #[tauri::command]
 fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
@@ -1130,6 +1137,7 @@ fn main() {
             delete_folder,
             set_new_item_folder,
             move_items,
+            selection_bookmarks,
             set_folder_folded,
             add_note
         ])

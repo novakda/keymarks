@@ -472,9 +472,12 @@ impl Store {
     /// Move folders and bookmarks (or notes) into `to`, in the order given (folders first),
     /// at the end or next to `beside` (a child of `to`), as one undo step: Move to folder,
     /// drag and drop, reorder (ITEM-16, FLD-07). Refused (0) if `to` is missing, or a folder
-    /// is the root, missing, or would go inside itself. Bookmarks gone meanwhile are skipped.
+    /// is the root, missing, or would go inside itself. Bookmarks gone meanwhile are skipped;
+    /// items inside another moved folder stay where they are in it (FLD-06).
     /// Returns how many items moved.
     pub fn move_items(&mut self, folders: &[i64], bookmarks: &[i64], to: i64, beside: Option<Beside>) -> Result<usize> {
+        let (folders, bookmarks) = self.cover(folders, bookmarks)?;
+        let (folders, bookmarks) = (folders.as_slice(), bookmarks.as_slice());
         let mut parents = vec![to];
         for item in folders.iter().map(|&f| Item::Folder(f)).chain(bookmarks.iter().map(|&b| Item::Bookmark(b))) {
             parents.extend(self.parent_of(item)?);
@@ -525,6 +528,47 @@ impl Store {
             },
         )?;
         Ok(moved.len())
+    }
+
+    /// Smart selection (FLD-06): drop each folder that sits inside another chosen folder,
+    /// and each bookmark inside a chosen folder, so a selected folder stands for its
+    /// subtree and nothing is counted twice. Order is kept.
+    pub fn cover(&self, folders: &[i64], bookmarks: &[i64]) -> Result<(Vec<i64>, Vec<i64>)> {
+        let mut fs: Vec<i64> = Vec::new();
+        for &f in folders {
+            if !fs.contains(&f) && !folders.iter().any(|&g| g != f && inside(&self.conn, g, f).unwrap_or(false)) {
+                fs.push(f);
+            }
+        }
+        let mut bs: Vec<i64> = Vec::new();
+        for &b in bookmarks {
+            let home = self.parent_of(Item::Bookmark(b))?;
+            let covered = match home {
+                Some(h) => fs.iter().any(|&f| inside(&self.conn, f, h).unwrap_or(false)),
+                None => false,
+            };
+            if !covered && !bs.contains(&b) {
+                bs.push(b);
+            }
+        }
+        Ok((fs, bs))
+    }
+
+    /// Every bookmark (and note) a selection stands for (FLD-06): those in the chosen
+    /// folders and below, in tree order, then the chosen bookmarks not already counted.
+    /// For check, keyword and open commands on a mixed selection.
+    pub fn bookmarks_under(&self, folders: &[i64], bookmarks: &[i64]) -> Result<Vec<i64>> {
+        let (fs, bs) = self.cover(folders, bookmarks)?;
+        let mut out = Vec::new();
+        let mut kids = self.conn.prepare("SELECT id FROM bookmark WHERE folder_id = ?1 ORDER BY position")?;
+        let mut subs = self.conn.prepare("SELECT id FROM folder WHERE parent_id = ?1 ORDER BY position DESC")?;
+        let mut stack: Vec<i64> = fs.into_iter().rev().collect();
+        while let Some(f) = stack.pop() {
+            out.extend(kids.query_map([f], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+            stack.extend(subs.query_map([f], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        out.extend(bs);
+        Ok(out)
     }
 
     /// The folder an item sits in (None if it's missing or is the root).
@@ -827,6 +871,26 @@ mod tests {
         assert_eq!(s.move_items(&[g], &[], ROOT, Some(Beside { folder: false, id: ids[3], after: false })).unwrap(), 1);
         assert_eq!(names(&s, ROOT)[0], ("f", "G".into()));
         assert_eq!(s.history_labels().0.as_deref(), Some("Move folder \u{201c}G\u{201d}"));
+    }
+
+    #[test]
+    fn smart_selection_covers_subtrees_once() {
+        let mut s = Store::open(":memory:").unwrap();
+        let a = s.create_folder(ROOT, "A", None).unwrap().unwrap();
+        let b = s.create_folder(a, "B", None).unwrap().unwrap();
+        let c = s.create_folder(ROOT, "C", None).unwrap().unwrap();
+        let ids: Vec<i64> = ["1", "2", "3", "4"].iter().map(|t| s.add(&format!("https://{t}.example/"), t, "", "").unwrap().0).collect();
+        s.move_items(&[], &[ids[0]], a, None).unwrap();
+        s.move_items(&[], &[ids[1]], b, None).unwrap();
+        s.move_items(&[], &[ids[2]], c, None).unwrap();
+        // A covers B and both bookmarks under it; the root-level bookmark stays.
+        assert_eq!(s.cover(&[b, a], &[ids[1], ids[3], ids[0]]).unwrap(), (vec![a], vec![ids[3]]));
+        // Every bookmark under the selection, once each, in tree order then the loose ones.
+        assert_eq!(s.bookmarks_under(&[a, b], &[ids[1], ids[3]]).unwrap(), vec![ids[0], ids[1], ids[3]]);
+        // A move of A plus B plus a bookmark inside B keeps B inside A.
+        assert_eq!(s.move_items(&[a, b], &[ids[1]], c, None).unwrap(), 1);
+        assert_eq!(names(&s, c), [("b", "3".into()), ("f", "A".into())]);
+        assert_eq!(names(&s, b), [("b", "2".into())]);
     }
 
     #[test]
