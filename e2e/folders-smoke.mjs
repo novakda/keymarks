@@ -851,6 +851,19 @@ try {
       replies.length === 6 && replies.slice(0, 5).every((r) => r.ok === false) && replies[5].ok === true && stored === 0,
       JSON.stringify(replies.map((r) => r.ok)) + ` stored ${stored}`);
   }
+
+  // 39. Live refresh (WEB-10): an extension add (through the real host, another process) shows
+  // in the open app's tree and list without a manual refresh.
+  {
+    const first = hostSend({ type: 'add', url: 'https://kmzq-e2e-live.example/', title: 'Kmzq live add' })[0];
+    const inbox = inboxRows()[0];
+    const inTree = await page.waitForFunction((n) => [...document.querySelectorAll('#tree li .name')].some((e) => e.textContent === n), inbox?.name, { timeout: 6000 }).then(() => true, () => false);
+    await page.click(`#tree li[data-id="${inbox?.id}"] .name`).catch(() => {});
+    await idle();
+    hostSend({ type: 'add', url: 'https://kmzq-e2e-live2.example/', title: 'Kmzq live add 2' });
+    const inList = await page.waitForFunction(() => [...document.querySelectorAll('#list .title, #table td')].some((e) => e.textContent.includes('Kmzq live add 2')), null, { timeout: 6000 }).then(() => true, () => false);
+    check('39 an extension add shows in the open tree and list without a refresh', first?.ok && inTree && inList, `add ${first?.ok}, tree ${inTree}, list ${inList}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

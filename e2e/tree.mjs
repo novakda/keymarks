@@ -40,6 +40,15 @@ function fakeTauri() {
   window.__setStatus = (title, st) => { const b = items.find((x) => x.title === title); b.check_status = st; };
   window.__addItem = (folderId, title, url) => items.push(bm(nextId++, folderId, 99, title, url));
   let nextId = 100;
+  // What the browser host does through its own connection: the store's data_version moves.
+  // `fresh`: the New Item Folder was deleted, so the add makes a new one.
+  window.__extensionAdd = (title, url, fresh = false) => {
+    if (fresh) for (const f of folders) f.new_items = false;
+    let inbox = folders.find((f) => f.new_items);
+    if (!inbox) folders.push((inbox = { id: nextId++, parent_id: 1, name: 'New', position: 99, folded: true, new_items: true }));
+    items.push(bm(nextId++, inbox.id, 99, title, url));
+    window.__version = (window.__version ?? 1) + 1;
+  };
   const byPos = (a, b) => a.position - b.position;
   // A one-stack undo like the store's: each filing command saves the whole fake state.
   const steps = [];
@@ -55,7 +64,7 @@ function fakeTauri() {
     get_bookmarks: ({ ids }) => ids.map((id) => items.find((b) => b.id === id)).filter(Boolean),
     count: () => items.length,
     keywords: () => [],
-    data_version: () => 1,
+    data_version: () => window.__version ?? 1,
     history: () => ({ undo: steps.at(-1)?.[0] ?? null, redo: null }),
     undo: () => {
       const step = steps.pop();
@@ -714,6 +723,20 @@ check('Save sends every switch as url_rules', JSON.stringify(saved) === '{"proto
   await idle();
   check('Save again leaves the New Item Folder alone', (await calls('set_new_item_folder')).length === n);
   await page.keyboard.press('F10');
+}
+
+// Live refresh (WEB-10): an extension add shows in the open list and tree, no manual refresh.
+{
+  await page.click('#tree li:has-text("Bookmarks") .name');
+  await idle();
+  const before = JSON.stringify(await tree());
+  await page.evaluate(() => window.__extensionAdd('From the browser', 'https://ext.example/'));
+  await page.evaluate(() => window.__extensionAdd('Second add', 'https://ext2.example/', true));
+  const inList = await page.waitForFunction(() => [...document.querySelectorAll('#list li.vrow .title')].some((e) => e.textContent === 'From the browser'), null, { timeout: 4000 }).then(() => true, () => false);
+  await idle();
+  check('an extension add shows in the open list without a refresh', inList, JSON.stringify(await titles()));
+  const made = await page.waitForFunction(() => [...document.querySelectorAll('#tree li .name')].some((e) => e.textContent === 'New'), null, { timeout: 4000 }).then(() => true, () => false);
+  check('a New Item Folder the add made shows in the tree', made, `${before} -> ${JSON.stringify(await tree())}`);
 }
 
 // F1 list (SYS-09, Q18): every folder key that works now is listed.
