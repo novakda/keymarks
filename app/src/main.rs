@@ -555,12 +555,13 @@ fn rename(store: &mut Store, id: i64, name: &str) -> Result<(), String> {
     store.rename_folder(id, folder_name(name)?).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
 }
 
-/// Its contents move up to the parent; nothing else is deleted.
-fn remove_folder(store: &mut Store, id: i64) -> Result<(), String> {
-    if id == store::ROOT {
+/// The folders and everything below them, one undo step (ITEM-14, FLD-06).
+/// Returns (folders, bookmarks) deleted.
+fn remove_folders(store: &mut Store, ids: &[i64]) -> Result<(usize, usize), String> {
+    if ids.contains(&store::ROOT) {
         return Err("The top folder can't be deleted".into());
     }
-    store.delete_folder(id).map_err(err)?.then_some(()).ok_or_else(|| GONE.into())
+    store.delete_items(ids, &[]).map_err(err)?.ok_or_else(|| GONE.into())
 }
 
 /// A new folder, last in `parent`. Returns its id.
@@ -627,8 +628,14 @@ fn set_new_item_folder(db: State<Db>, id: i64) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn delete_folder(db: State<Db>, id: i64) -> Result<(), String> {
-    remove_folder(&mut db.lock().unwrap(), id)
+fn delete_folders(db: State<Db>, ids: Vec<i64>) -> Result<(usize, usize), String> {
+    remove_folders(&mut db.lock().unwrap(), &ids)
+}
+
+/// What deleting these folders would remove, for the confirm: (folders, bookmarks).
+#[tauri::command]
+fn delete_counts(db: State<Db>, ids: Vec<i64>) -> Result<(usize, usize), String> {
+    db.lock().unwrap().delete_counts(&ids, &[]).map_err(err)
 }
 
 /// The tree's expand state, kept per folder (FLD-08).
@@ -1134,7 +1141,8 @@ fn main() {
             set_folder_note,
             sort_folder,
             dead_links,
-            delete_folder,
+            delete_folders,
+            delete_counts,
             set_new_item_folder,
             move_items,
             selection_bookmarks,
@@ -1147,7 +1155,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folder, rename};
+    use super::{browser_exe, edit_allowed, file_bookmarks, file_items, new_folder, normalize_url, reg_sz, remove_folders, rename};
     use store::{ROOT, Store};
 
     #[test]
@@ -1161,9 +1169,12 @@ mod tests {
         rename(&mut s, f, "Jobs").unwrap();
         assert_eq!(s.folder(f).unwrap().unwrap().name, "Jobs");
         assert!(rename(&mut s, 9999, "Z").is_err());
-        assert_eq!(remove_folder(&mut s, ROOT).unwrap_err(), "The top folder can't be deleted");
-        remove_folder(&mut s, f).unwrap();
+        assert_eq!(remove_folders(&mut s, &[f, ROOT]).unwrap_err(), "The top folder can't be deleted");
+        let g = new_folder(&mut s, f, "Sub").unwrap();
+        s.add_note(g, "N", "").unwrap();
+        assert_eq!(remove_folders(&mut s, &[f]).unwrap(), (2, 1));
         assert_eq!(s.folder(f).unwrap(), None);
+        assert_eq!(remove_folders(&mut s, &[f]).unwrap_err(), "That folder no longer exists");
     }
 
     #[test]

@@ -91,7 +91,8 @@ const env = { ...debugEnv(PORT, webviewData), KEYMARKS_DATA_DIR: work, KEYMARKS_
 // window.__e2eAnswer). Async like the plugin's, so `!confirm()` never waits for it.
 const fakeConfirm = () => {
   window.__e2eConfirms = [];
-  window.confirm = () => new Promise((resolve) => {
+  window.confirm = (message) => new Promise((resolve) => {
+    window.__e2eLastConfirm = message;
     const a = window.__e2eConfirms.shift();
     if (a === 'hold') window.__e2eAnswer = resolve;
     else { if (a === undefined) console.warn('E2E unexpected confirm'); resolve(a === true); }
@@ -389,23 +390,33 @@ try {
     && s19.selected.join() === String(target) && s19.ids[s19.cursor] === target && curRow === s19.cursor,
     `tree ${await treeSelected()} (want ${alpha.id}), ${s19.selected.length} selected, cursor ${s19.cursor}, row ${curRow}`);
 
-  // 4. Del on a folder with items: it asks, and nothing happens until the answer (4b);
-  // Cancel keeps the folder, OK moves its items up.
-  const contents = itemsIn(alpha.id);
+  // 4. Del on a folder with items (ITEM-14): it asks with the count of folders and bookmarks
+  // in the subtree, and nothing happens until the answer (4b); Cancel keeps it all, OK
+  // deletes the folder and everything below it, and one Ctrl+Z brings it all back.
+  const subtree = `WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT f.id FROM folder f JOIN t ON f.parent_id = t.id)`;
+  const nFolders = sql(`${subtree} SELECT count(*) AS n FROM t`, alpha.id)[0].n;
+  const under = sql(`${subtree} SELECT b.id FROM bookmark b WHERE b.folder_id IN (SELECT id FROM t)`, alpha.id).map((r) => r.id);
+  const p = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   await openFolder(alpha.id);
   await expectConfirm('hold');
   await page.focus('#tree');
   await page.keyboard.press('Delete');
   await sleep(700);
   const waited = !!folderRow('Kmzqalpha') && (await page.evaluate(() => typeof window.__e2eAnswer === 'function'));
+  const asked = await page.evaluate(() => window.__e2eLastConfirm);
   await page.evaluate(() => window.__e2eAnswer(false));
   await idle();
-  check('4b Del asks and waits for the answer; Cancel keeps the folder', waited && !!folderRow('Kmzqalpha') && contents.every((id) => itemsIn(alpha.id).includes(id)),
-    waited ? 'held until answered' : 'deleted before any answer');
+  check('4b Del asks with the subtree count and waits for the answer; Cancel keeps it all', waited && !!folderRow('Kmzqalpha')
+    && asked?.startsWith(`Delete ${p(nFolders, 'folder')} and ${p(under.length, 'bookmark')}?`) && under.every((id) => sql('SELECT 1 FROM bookmark WHERE id = ?', id).length),
+    waited ? asked : 'deleted before any answer');
   await expectConfirm(true);
   await key('Delete', '#tree');
-  check('4 Del on a folder with items moves them up', !folderRow('Kmzqalpha') && folderRow('Kmzqbeta renamed')?.parent_id === ROOT
-    && contents.every((id) => itemsIn(ROOT).includes(id)) && (await treeSelected()) === ROOT, `${contents.length} items moved up`);
+  const allGone = !folderRow('Kmzqalpha') && !folderRow('Kmzqbeta renamed') && under.every((id) => !sql('SELECT 1 FROM bookmark WHERE id = ?', id).length);
+  const rootSel = (await treeSelected()) === ROOT;
+  await key('Control+z', '#list');
+  check('4 Del on a folder with items deletes the subtree; one Ctrl+Z restores it all', allGone && rootSel && folderRow('Kmzqalpha')?.parent_id === ROOT
+    && folderRow('Kmzqbeta renamed')?.parent_id === alpha.id && under.every((id) => sql('SELECT 1 FROM bookmark WHERE id = ?', id).length),
+    `${nFolders} folders, ${under.length} bookmarks; gone ${allGone}, root selected ${rootSel}`);
 
   // 12. Import a Netscape file with nested folders: under a new folder named after the file.
   await menu('import');
@@ -485,15 +496,15 @@ try {
     && inInbox.length === 2 && inInbox[0].keywords.split(' ').includes('new') && replies[2].new_items === inbox.id && (await waitInboxShown(inbox.id)),
     `${replies.length} replies, ${inboxRows().length} inbox folders, ${inInbox.length} in it`);
 
-  // 21. The inbox deleted (contents move up, nothing lost), then the next Fast Add makes it again.
+  // 21. The inbox deleted (with what was in it, ITEM-14), then the next Fast Add makes it again.
   await openFolder(inbox.id);
   await expectConfirm(true);
   await key('Delete', '#tree');
   const goneOk = !sql('SELECT 1 FROM folder WHERE id = ?', inbox.id).length && inboxRows().length === 0
-    && sql("SELECT count(*) AS n FROM bookmark WHERE folder_id = ? AND url LIKE 'https://kmzq-e2e-inbox.example/%'", ROOT)[0].n === 2;
+    && sql("SELECT count(*) AS n FROM bookmark WHERE url LIKE 'https://kmzq-e2e-inbox.example/%'")[0].n === 0;
   const [again] = hostSend({ type: 'add', url: 'https://kmzq-e2e-inbox.example/again', title: 'Kmzq again', fast: true });
   const [made] = inboxRows();
-  check('21 the inbox deleted: its items move up; the next extension add recreates "New"',
+  check('21 the inbox deleted with its items; the next extension add recreates "New"',
     goneOk && again?.ok && made?.name === 'New' && made.parent_id === ROOT
     && sql('SELECT folder_id FROM bookmark WHERE id = ?', again.id)[0]?.folder_id === made.id && (await waitInboxShown(made.id))
     && JSON.stringify(await inboxMarked()) === JSON.stringify([made.id]), `deleted ${goneOk}, remade ${!!made}`);

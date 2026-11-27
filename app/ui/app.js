@@ -1372,8 +1372,7 @@ $('tree').addEventListener('keydown', (e) => {
     if (chosen.includes(ROOT)) say('The top folder can’t move.');
     else openMovePicker({ folders: chosen });
   } else if (e.key === 'Delete') {
-    if (treeSel.size > 1) say('Delete one folder at a time.');
-    else deleteFolder(f);
+    deleteFolders(treeChosen());
   } else if (e.key === 'Enter') {
     list.focus();
   } else return;
@@ -1599,18 +1598,28 @@ const renameFolder = busyAware(async (f) => {
   } catch (e) { fail('Rename')(e); }
 });
 
-const deleteFolder = busyAware(async (f) => {
-  if (f.id === ROOT) { say('The top folder can’t be deleted.'); return; }
-  const parent = folderName(f.parent_id);
-  const inbox = f.new_items ? '\n\nIt is the New Item Folder: the next add from the browser or clipboard makes a new “New” folder.' : '';
-  if (!(await ask(`Delete the folder “${f.name}”?\n\nNothing in it is deleted: its bookmarks, notes and folders move up into “${parent}”.${inbox}`))) return;
+const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** Delete the chosen folders and everything below them (ITEM-14, FLD-06): one confirm
+ *  with the count, one undo step. */
+const deleteFolders = busyAware(async (ids) => {
+  if (ids.includes(ROOT)) { say('The top folder can’t be deleted.'); return; }
+  const gone = folders.filter((f) => ids.includes(f.id));
+  if (!gone.length) return;
   try {
-    await invoke('delete_folder', { id: f.id });
-    folder = f.parent_id;
+    const [nf, nb] = await invoke('delete_counts', { ids });
+    const inbox = folders.some((f) => f.new_items && ids.includes(f.id))
+      ? '\n\nThe New Item Folder is among them: the next add from the browser or clipboard makes a new “New” folder.' : '';
+    const what = gone.length === 1 ? `“${gone[0].name}”` : plural(gone.length, 'folder');
+    if (!(await ask(`Delete ${plural(nf, 'folder')} and ${plural(nb, 'bookmark')}?\n\nThat is ${what} and everything in it. Ctrl+Z brings it all back.${inbox}`))) return;
+    await invoke('delete_folders', { ids });
+    const to = gone[0].parent_id;
+    treeSel.clear();
+    folder = to;
     await refreshFolders();
-    setFolder(f.parent_id, { load: false });
+    setFolder(to, { load: false });
     await refresh({ keepSelection: false });
-    say(`Folder “${f.name}” deleted; its contents are now in “${parent}”. (Ctrl+Z undoes)`);
+    say(`Deleted ${plural(nf, 'folder')} and ${plural(nb, 'bookmark')}. (Ctrl+Z undoes)`);
   } catch (e) { fail('Delete folder')(e); }
 });
 
@@ -1630,10 +1639,11 @@ function showFolderMenu(e, f) {
   const ctx = $('fctx');
   const many = treeSel.size > 1;
   $('fctx-title').textContent = many ? `${treeSel.size} folders` : f.name;
-  for (const act of ['rename', 'move', 'delete']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  for (const act of ['rename', 'move']) ctx.querySelector(`[data-act=${act}]`).disabled = f.id === ROOT;
+  ctx.querySelector('[data-act=delete]').disabled = treeChosen().includes(ROOT);
   ctx.querySelector('[data-act=inbox]').disabled = !!f.new_items;
   // A multi-selection offers only what applies to all of it (FLD-06).
-  for (const act of ['new', 'note', 'rename', 'sort', 'inbox', 'delete']) ctx.querySelector(`[data-act=${act}]`).hidden = many;
+  for (const act of ['new', 'note', 'rename', 'sort', 'inbox']) ctx.querySelector(`[data-act=${act}]`).hidden = many;
   ctx.querySelector('[data-act=move]').disabled = treeChosen().includes(ROOT);
   ctx.hidden = false;
   ctx.style.left = `${Math.min(e.clientX, innerWidth - ctx.offsetWidth - 4)}px`;
@@ -1649,7 +1659,7 @@ $('fctx').addEventListener('click', (e) => {
   else if (act === 'note') newNote(f.id);
   else if (act === 'rename') renameFolder(f);
   else if (act === 'move') openMovePicker({ folders: treeChosen() });
-  else if (act === 'delete') deleteFolder(f);
+  else if (act === 'delete') deleteFolders(treeChosen());
   else if (['openall', 'check', 'addkw', 'rmkw'].includes(act)) folderBookmarks(act);
   else if (act === 'inbox') setInbox(f);
   else if (act === 'sort') openSort(f);

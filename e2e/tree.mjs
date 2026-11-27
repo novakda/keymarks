@@ -85,12 +85,19 @@ function fakeTauri() {
       return id;
     },
     rename_folder: ({ id, name }) => { snap('Rename'); folders.find((f) => f.id === id).name = name.trim(); },
-    delete_folder: ({ id }) => {
+    delete_counts: ({ ids }) => {
+      const sub = new Set(ids);
+      for (let grew = true; grew;) { grew = false; for (const f of folders) if (sub.has(f.parent_id) && !sub.has(f.id)) { sub.add(f.id); grew = true; } }
+      return [sub.size, items.filter((b) => sub.has(b.folder_id)).length];
+    },
+    delete_folders: ({ ids }) => {
       snap('Delete');
-      const f = folders.find((x) => x.id === id);
-      for (const c of folders) if (c.parent_id === id) c.parent_id = f.parent_id;
-      for (const b of items) if (b.folder_id === id) b.folder_id = f.parent_id;
-      folders.splice(folders.indexOf(f), 1);
+      const sub = new Set(ids);
+      for (let grew = true; grew;) { grew = false; for (const f of folders) if (sub.has(f.parent_id) && !sub.has(f.id)) { sub.add(f.id); grew = true; } }
+      const n = [sub.size, items.filter((b) => sub.has(b.folder_id)).length];
+      for (let i = items.length - 1; i >= 0; i--) if (sub.has(items[i].folder_id)) items.splice(i, 1);
+      for (let i = folders.length - 1; i >= 0; i--) if (sub.has(folders[i].id)) folders.splice(i, 1);
+      return n;
     },
     get_settings: () => ({ folder_keywords: true, autostart: false }),
     browser_sources: () => [{ browser: 'Chrome', profile: 'Default', count: 2 }],
@@ -180,7 +187,9 @@ const titles = () => page.$$eval('#list li.vrow .title', (els) => els.map((e) =>
 const status = () => page.textContent('#status');
 const calls = (cmd) => page.evaluate((c) => window.__calls.filter(([n]) => n === c).map(([, a]) => a), cmd);
 const item = (name) => page.locator('#tree li', { has: page.locator('.name', { hasText: new RegExp(`^${name}$`) }) });
-const answer = (text) => page.once('dialog', (d) => d.accept(text));
+let asked = '';
+const answer = (text) => page.once('dialog', (d) => { asked = d.message(); d.accept(text); });
+const lastAsk = () => asked;
 
 await idle();
 check('the tree shows the root and its folders; collapsed ones hide their children', JSON.stringify(await tree()) === '["Bookmarks","Work","Home"]', JSON.stringify(await tree()));
@@ -243,10 +252,11 @@ await idle();
 answer();
 await page.keyboard.press('Delete');
 await idle();
-check('Del deletes the folder after asking; its contents move up', JSON.stringify((await calls('delete_folder')).at(-1)) === '{"id":2}'
+check('Del deletes the folder and its subtree after a confirm with the count', JSON.stringify((await calls('delete_folders')).at(-1)) === '{"ids":[2]}'
+  && /^Delete \d+ folders? and \d+ bookmarks?\?/.test(lastAsk())
   && (await page.textContent('#tree li[aria-selected=true] .name')) === 'Bookmarks'
-  && (await titles()).includes('Wiki') && (await titles()).includes('Root page'), JSON.stringify(await titles()));
-check('the moved-up folders appear under the parent', (await tree()).includes('Clients'));
+  && !(await titles()).includes('Wiki') && (await titles()).includes('Root page'), `${lastAsk()} | ${JSON.stringify(await titles())}`);
+check('its subfolders are gone too', !(await tree()).includes('Clients'));
 
 await item('Home').click();
 await idle();
@@ -556,6 +566,14 @@ check('Shift+click selects the shown range from the selected folder', JSON.strin
 await item('New').click();
 await idle();
 check('a plain click goes back to one folder', JSON.stringify(await chosen()) === '["New"]', JSON.stringify(await chosen()));
+await item('Work').click({ modifiers: ['Control'] });
+answer();
+await page.focus('#tree');
+await page.keyboard.press('Delete');
+await idle();
+check('Del on two selected folders deletes both after one confirm with the total (FLD-06)',
+  JSON.stringify((await calls('delete_folders')).at(-1)?.ids?.sort()) === JSON.stringify([2, newId].sort())
+  && /^Delete \d+ folders and \d+ bookmarks?\?/.test(lastAsk()) && !(await tree()).includes('Work'), lastAsk());
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');
