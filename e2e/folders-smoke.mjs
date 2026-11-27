@@ -683,10 +683,15 @@ try {
     const rowSel = async () => `#table-body tr.vrow >> nth=${(await shown()).ids.indexOf(c.id)}`;
     await page.click(await rowSel());
     await key('Control+x');
-    const dimmed = (await page.getAttribute(await rowSel(), 'class')).includes('cut');
+    // The list redraws after Ctrl+X (and the live refresh may redraw it too): wait for the mark.
+    const dimmed = await page.waitForFunction((id) => {
+      const i = ids.indexOf(id);
+      const tr = document.querySelectorAll('#table-body tr.vrow')[i];
+      return !!tr && tr.classList.contains('cut');
+    }, c.id, { timeout: 3000 }).then(() => true, () => false);
     const kept = sql('SELECT folder_id FROM bookmark WHERE id = ?', c.id)[0]?.folder_id === home;
     await key('Escape');
-    const cleared = !(await page.getAttribute(await rowSel(), 'class')).includes('cut');
+    const cleared = await page.waitForFunction(() => !document.querySelector('#table-body tr.vrow.cut'), null, { timeout: 3000 }).then(() => true, () => false);
     check('29 Ctrl+X dims the row and removes nothing; Esc clears the mark', dimmed && kept && cleared, `dimmed ${dimmed}, kept ${kept}, cleared ${cleared}`);
     await key('Control+x');
     await openFolder(target);
