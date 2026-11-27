@@ -784,6 +784,26 @@ try {
     const pasteOk = order().indexOf(b.id) === order().indexOf(a.id) + 1;
     check('34 Insert and Ctrl+V put the new item right after the selected bookmark', addOk && pasteOk, `add ${addOk}, paste ${pasteOk}: ${order()}`);
   }
+
+  // 35. Settings > Duplicates (SYS-12): with "Protocol" unticked, the host no longer finds the
+  // https bookmark for its http URL; ticked again (the default), it does.
+  {
+    const setProtocol = async (on) => {
+      await menu('settings-open');
+      await page.waitForSelector('#settings[open]');
+      await page.setChecked('#s-url-protocol', on);
+      await page.click('#s-save');
+      await idle();
+    };
+    const lookup = () => hostSend({ type: 'lookup', url: 'http://kmzq-e2e-track.example/' })[0]?.found;
+    const before = lookup();
+    await setProtocol(false);
+    const strict = lookup();
+    await setProtocol(true);
+    const back = lookup();
+    check('35 the Protocol switch decides whether http and https are the same link', before === true && strict === false && back === true,
+      `before ${before}, off ${strict}, on ${back}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

@@ -612,6 +612,14 @@
         <input id="s-fast" placeholder="e.g. new">
         <label><input type="checkbox" id="s-folderkw"> Also add folder names as keywords when importing (the Import dialog asks each time)</label>
       </fieldset>
+      <fieldset id="s-dups"><legend>Duplicates</legend>
+        <p class="help">Two URLs are the same link (so an add or import doesn’t make a second copy, and Duplicate URLs groups them) when they differ only in what is ticked here. Stored URLs are never changed.</p>
+        <label><input type="checkbox" id="s-url-protocol"> Protocol (<code>http://</code> and <code>https://</code>)</label>
+        <label><input type="checkbox" id="s-url-www"> A leading <code>www.</code></label>
+        <label><input type="checkbox" id="s-url-slash"> A trailing <code>/</code></label>
+        <label><input type="checkbox" id="s-url-case"> Upper or lower case in the site name</label>
+        <label><input type="checkbox" id="s-url-port"> The port (<code>:8080</code>)</label>
+      </fieldset>
       <fieldset><legend>Link checking</legend>
         <label><input type="checkbox" id="s-repair"> When a link check finds a page has moved permanently, update its URL (undoable)</label>
         <label><input type="checkbox" id="s-scheduled"> Check links on their schedules in the background (up to 200 every 10 minutes, most overdue first)</label>

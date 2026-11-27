@@ -225,17 +225,48 @@ pub fn bookmarks(entries: &[Entry]) -> Vec<&NewBookmark> {
     entries.iter().filter_map(|e| if let Entry::Bookmark(b) = e { Some(b) } else { None }).collect()
 }
 
-/// The one rule set for "same URL" (LINK-18, Q3), used by every add, import, merge and the
-/// Duplicates view: the protocol, a leading `www.`, a trailing `/` on the path and the host's
-/// case don't make a different link; the port, the path's case, the query and the fragment do.
-/// Stored URLs are never rewritten.
+/// What doesn't make a different link (LINK-18, Settings > Duplicates, SYS-12). The
+/// default is Dan's Q3 rule set: protocol, a leading `www.`, a trailing `/` on the path and
+/// the host's case are ignored; the port is kept. The path's case, the query and the
+/// fragment always count. Stored URLs are never rewritten.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct UrlRules {
+    pub protocol: bool,
+    pub trailing_slash: bool,
+    pub www: bool,
+    pub host_case: bool,
+    pub port: bool,
+}
+
+impl Default for UrlRules {
+    fn default() -> Self {
+        UrlRules { protocol: true, trailing_slash: true, www: true, host_case: true, port: false }
+    }
+}
+
+/// `url_key_with` the default rules (deterministic: no settings involved).
 pub fn url_key(url: &str) -> String {
+    url_key_with(url, &UrlRules::default())
+}
+
+/// The one "same URL" key, used by every add, import, merge and the Duplicates view: two
+/// URLs are the same link when their keys are equal.
+pub fn url_key_with(url: &str, rules: &UrlRules) -> String {
     let s = url.trim();
-    let s = s.split_once("://").map_or(s, |(_, rest)| rest);
+    let (scheme, s) = s.split_once("://").map_or(("", s), |(p, rest)| (p, rest));
     let (host, rest) = s.split_at(s.find(['/', '?', '#']).unwrap_or(s.len()));
     let (path, tail) = rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len()));
-    let host = host.to_ascii_lowercase();
-    format!("{}{}{tail}", host.strip_prefix("www.").unwrap_or(&host), path.strip_suffix('/').unwrap_or(path))
+    let mut host = if rules.host_case { host.to_ascii_lowercase() } else { host.to_string() };
+    if rules.www && host.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("www.")) {
+        host.drain(..4);
+    }
+    if let Some(at) = host.rfind(':').filter(|&at| rules.port && at + 1 < host.len() && host[at + 1..].bytes().all(|b| b.is_ascii_digit())) {
+        host.truncate(at);
+    }
+    let path = if rules.trailing_slash { path.strip_suffix('/').unwrap_or(path) } else { path };
+    let scheme = if rules.protocol || scheme.is_empty() { String::new() } else { format!("{}://", scheme.to_ascii_lowercase()) };
+    format!("{scheme}{host}{path}{tail}")
 }
 
 /// XFER-02's "updated" case: an existing bookmark takes each field it has empty (a title
@@ -260,6 +291,7 @@ fn fill_empty(conn: &Connection, id: i64, title: &str, keywords: &str, descripti
 struct Merge {
     /// `url_key` of every link here or added so far, to the bookmark's id.
     seen: std::collections::HashMap<String, i64>,
+    rules: UrlRules,
     /// Bookmarks that were here before the import and took fields from it, and their rows
     /// as they were (for undo).
     touched: Vec<i64>,
@@ -267,14 +299,14 @@ struct Merge {
 }
 
 impl Merge {
-    fn new(conn: &Connection) -> Result<Merge> {
+    fn new(conn: &Connection, rules: UrlRules) -> Result<Merge> {
         let mut seen = std::collections::HashMap::new();
         // ponytail: every stored URL's key in memory (13k is nothing); index a key column if collections reach millions.
         for row in conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' ORDER BY id")?.query_map([], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))? {
             let (id, url) = row?;
-            seen.entry(url_key(&url)).or_insert(id);
+            seen.entry(url_key_with(&url, &rules)).or_insert(id);
         }
-        Ok(Merge { seen, touched: Vec::new(), before: Vec::new() })
+        Ok(Merge { seen, rules, touched: Vec::new(), before: Vec::new() })
     }
 
     /// A link already here (or earlier in the import) fills that bookmark's empty fields
@@ -285,7 +317,7 @@ impl Merge {
             report.skipped += 1;
             return Ok(true);
         }
-        let Some(&id) = self.seen.get(&url_key(url)) else { return Ok(false) };
+        let Some(&id) = self.seen.get(&url_key_with(url, &self.rules)) else { return Ok(false) };
         let was_here = !report.ids.contains(&id) && !self.touched.contains(&id);
         let old = if was_here { history::rows(conn, &[id])? } else { Vec::new() };
         let filled = fill_empty(conn, id, title, keywords, description, notes)?;
@@ -299,7 +331,7 @@ impl Merge {
     }
 
     fn added(&mut self, report: &mut ImportReport, id: i64, url: &str, title: &str) {
-        self.seen.insert(url_key(url), id);
+        self.seen.insert(url_key_with(url, &self.rules), id);
         report.ids.push(id);
         report.added += 1;
         report.items.push(ReportItem { outcome: "added", id, url: url.to_string(), title: title.to_string() });
@@ -397,6 +429,8 @@ fn bookmark(r: &rusqlite::Row) -> Result<Bookmark> {
 pub struct Store {
     conn: Connection,
     history: history::History,
+    /// The duplicate rules every lookup, add and import uses (SYS-12); the app and host set them from Settings.
+    url_rules: UrlRules,
 }
 
 impl Store {
@@ -412,7 +446,7 @@ impl Store {
         if version > 0 && version < SCHEMA_VERSION && path != ":memory:" && !std::path::Path::new(&backup).exists() {
             conn.execute("VACUUM INTO ?1", [&backup])?;
         }
-        let mut store = Store { conn, history: Default::default() };
+        let mut store = Store { conn, history: Default::default(), url_rules: UrlRules::default() };
         store.migrate()?;
         Ok(store)
     }
@@ -541,6 +575,11 @@ impl Store {
         Ok(())
     }
 
+    /// Use these duplicate rules from now on (Settings > Duplicates).
+    pub fn set_url_rules(&mut self, rules: UrlRules) {
+        self.url_rules = rules;
+    }
+
     pub fn count(&self) -> Result<i64> {
         self.conn.query_row("SELECT count(*) FROM bookmark", [], |r| r.get(0))
     }
@@ -597,7 +636,7 @@ impl Store {
             let tx = s.conn.transaction()?;
             let mut report = ImportReport::default();
             // ponytail: every stored URL's key in memory (13k is nothing); index a key column if collections reach millions.
-            let mut merge = Merge::new(&tx)?;
+            let mut merge = Merge::new(&tx, s.url_rules)?;
             let mut created = Vec::new();
             let into = folders::resolve(&tx, into, &mut created)?;
             let into = if folders::exists(&tx, into)? { into } else { ROOT };
@@ -706,7 +745,7 @@ impl Store {
             None => ROOT,
         };
         {
-            let mut merge = Merge::new(&tx)?;
+            let mut merge = Merge::new(&tx, self.url_rules)?;
             let mut insert = tx.prepare(
                 "INSERT INTO bookmark (url, title, keywords, description, notes, user_field,
                     added, last_visited, last_modified, last_checked, visits, rating, status, pm_mdata, schedule, folder_id)
@@ -1170,12 +1209,12 @@ impl Store {
         if url.trim().is_empty() {
             return Ok(None);
         }
-        let key = url_key(url);
+        let key = url_key_with(url, &self.url_rules);
         // ponytail: scans every URL per lookup (13k: about a millisecond); a stored key column with an index if collections reach millions.
         let mut stmt = self.conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' ORDER BY url <> ?1, id")?;
         let mut rows = stmt.query([url])?;
         while let Some(r) = rows.next()? {
-            if url_key(&r.get::<_, String>(1)?) == key {
+            if url_key_with(&r.get::<_, String>(1)?, &self.url_rules) == key {
                 return self.get(r.get(0)?);
             }
         }
@@ -1190,7 +1229,7 @@ impl Store {
         let mut groups: Vec<Vec<i64>> = Vec::new();
         for row in self.conn.prepare("SELECT id, url FROM bookmark WHERE kind = 'bookmark' AND url <> '' ORDER BY added, id")?.query_map([], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))? {
             let (id, url) = row?;
-            let n = *index.entry(url_key(&url)).or_insert_with(|| { groups.push(Vec::new()); groups.len() - 1 });
+            let n = *index.entry(url_key_with(&url, &self.url_rules)).or_insert_with(|| { groups.push(Vec::new()); groups.len() - 1 });
             groups[n].push(id);
         }
         groups.retain(|g| g.len() > 1);
@@ -2290,6 +2329,38 @@ mod tests {
         for (a, b, same) in table {
             assert_eq!(url_key(a) == url_key(b), same, "{a} vs {b}: {} / {}", url_key(a), url_key(b));
         }
+    }
+
+    #[test]
+    fn url_rules_switches() {
+        // SYS-12: each switch turned off makes its difference count again; port is kept by default.
+        let all = UrlRules::default();
+        assert_eq!(all, UrlRules { protocol: true, trailing_slash: true, www: true, host_case: true, port: false });
+        let off = |f: fn(&mut UrlRules)| { let mut r = all; f(&mut r); r };
+        let cases: [(UrlRules, &str, &str); 5] = [
+            (off(|r| r.protocol = false), "http://example.com/a", "https://example.com/a"),
+            (off(|r| r.trailing_slash = false), "https://example.com/a/", "https://example.com/a"),
+            (off(|r| r.www = false), "https://www.example.com/a", "https://example.com/a"),
+            (off(|r| r.host_case = false), "https://EXAMPLE.com/a", "https://example.com/a"),
+            (all, "https://example.com:8080/a", "https://example.com/a"),
+        ];
+        for (rules, a, b) in cases {
+            assert_eq!(url_key_with(a, &all) == url_key_with(b, &all), rules != all, "{a} vs {b} under the defaults");
+            assert_ne!(url_key_with(a, &rules), url_key_with(b, &rules), "{a} vs {b} with {rules:?}");
+        }
+        let port = UrlRules { port: true, ..all };
+        assert_eq!(url_key_with("https://example.com:8080/a", &port), url_key_with("https://example.com/a", &port), "port ignored when on");
+        assert_eq!(url_key_with("HTTPS://WWW.Example.com/a", &UrlRules { host_case: false, ..all }), "Example.com/a", "www. goes in any case");
+        // The store matches by its own rules (set from Settings); the default is LINK-18's.
+        let mut s = Store::open(":memory:").unwrap();
+        let (id, _) = s.add("https://example.com/a", "A", "", "").unwrap();
+        assert_eq!(s.find_url("http://example.com/a").unwrap().map(|b| b.id), Some(id));
+        s.set_url_rules(UrlRules { protocol: false, ..all });
+        assert_eq!(s.find_url("http://example.com/a").unwrap(), None, "protocol now counts");
+        assert!(!s.add("http://example.com/a", "A2", "", "").unwrap().1, "so it is a new bookmark");
+        assert_eq!(s.duplicate_groups().unwrap().len(), 0, "and not a duplicate");
+        s.set_url_rules(all);
+        assert_eq!(s.duplicate_groups().unwrap().len(), 1, "the default rules group them again");
     }
 
     #[test]

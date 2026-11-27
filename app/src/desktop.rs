@@ -43,6 +43,9 @@ pub struct Settings {
     /// Imports that keep the folder tree also add every folder name as keywords (KEY-09, Q4).
     /// The Import dialog starts from this and can change it for one import.
     pub folder_keywords: bool,
+    /// What doesn't make a different URL (LINK-18, SYS-12): every add, import, merge and
+    /// the Duplicate URLs view use these. The browser host reads them too.
+    pub url_rules: store::UrlRules,
     /// View and search preferences (view, columns, widths, panes, search options), kept by
     /// the page in localStorage and copied here so they travel with this file.
     pub ui: std::collections::BTreeMap<String, String>,
@@ -63,6 +66,7 @@ impl Default for Settings {
             hide_after_open: false,
             hide_when_minimized: false,
             folder_keywords: false,
+            url_rules: Default::default(),
             ui: Default::default(),
         }
     }

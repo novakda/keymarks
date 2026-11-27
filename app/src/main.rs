@@ -770,6 +770,7 @@ fn save_settings(app: AppHandle, state: State<SettingsState>, settings: Settings
     desktop::parse_schedules(&settings.schedules)?;
     let new = Settings { hotkey, clipboard_hotkey, ui: current.ui.clone(), ..settings };
     state.save(&new)?;
+    app.state::<Db>().lock().unwrap().set_url_rules(new.url_rules);
     *current = new;
     Ok(())
 }
@@ -1034,13 +1035,14 @@ fn main() {
             };
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("bookmarks.db");
-            let store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
+            let mut store = Store::open(path.to_str().ok_or("data dir path is not UTF-8")?)?;
+            let settings = SettingsState::load(dir.join("settings.json"));
+            let current = settings.current.lock().unwrap().clone();
+            store.set_url_rules(current.url_rules);
             app.manage(Mutex::new(store));
             app.manage(DataDir(dir.clone()));
             app.manage(checker::CheckState::default());
 
-            let settings = SettingsState::load(dir.join("settings.json"));
-            let current = settings.current.lock().unwrap().clone();
             app.manage(settings);
             for key in [&current.hotkey, &current.clipboard_hotkey] {
                 if let Err(e) = desktop::apply_hotkey(app.handle(), "", key) {

@@ -74,14 +74,23 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(appdata).join("com.pattern158.keymarks").join("bookmarks.db"))
 }
 
-/// The app's fast-add keywords (settings.json beside the database), default "new".
-fn fast_keywords() -> String {
+/// The app's settings.json beside the database (Null if missing or unreadable).
+fn app_settings() -> Value {
     db_path()
         .ok()
         .and_then(|p| std::fs::read(p.with_file_name("settings.json")).ok())
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v["fast_add_keywords"].as_str().map(String::from))
-        .unwrap_or_else(|| "new".into())
+        .unwrap_or_default()
+}
+
+/// The app's fast-add keywords, default "new".
+fn fast_keywords(settings: &Value) -> String {
+    settings["fast_add_keywords"].as_str().map_or_else(|| "new".into(), String::from)
+}
+
+/// The app's duplicate rules (SYS-12), default LINK-18's.
+fn url_rules(settings: &Value) -> store::UrlRules {
+    serde_json::from_value(settings["url_rules"].clone()).unwrap_or_default()
 }
 
 fn serve() -> io::Result<()> {
@@ -92,7 +101,12 @@ fn serve() -> io::Result<()> {
     let (mut stdin, mut stdout) = (io::stdin().lock(), io::stdout().lock());
     while let Some(msg) = read_message(&mut stdin)? {
         let reply = match &mut store {
-            Ok(store) => handle(store, &msg, &fast_keywords()),
+            Ok(store) => {
+                // Read per message: the app may change Settings while the browser keeps the host open.
+                let settings = app_settings();
+                store.set_url_rules(url_rules(&settings));
+                handle(store, &msg, &fast_keywords(&settings))
+            }
             Err(e) => json!({ "ok": false, "error": e }),
         };
         write_message(&mut stdout, &reply)?;
@@ -298,6 +312,15 @@ mod tests {
         assert_eq!(store.search("k2", 5).unwrap()[0].title, "A2");
         assert_eq!(store.find_url("https://f.example/").unwrap().unwrap().keywords, "page new");
         assert!(read_message(&mut [].as_slice()).unwrap().is_none());
+    }
+
+    #[test]
+    fn duplicate_rules_come_from_the_app_settings() {
+        // SYS-12: the host matches by the app's Settings > Duplicates; missing = LINK-18's defaults.
+        assert_eq!(url_rules(&Value::Null), store::UrlRules::default());
+        let r = url_rules(&json!({ "url_rules": { "protocol": false } }));
+        assert_eq!(r, store::UrlRules { protocol: false, ..Default::default() }, "unset switches keep their defaults");
+        assert_eq!(fast_keywords(&Value::Null), "new");
     }
 
     #[test]

@@ -99,7 +99,9 @@ function fakeTauri() {
       for (let i = folders.length - 1; i >= 0; i--) if (sub.has(folders[i].id)) folders.splice(i, 1);
       return n;
     },
-    get_settings: () => ({ folder_keywords: true, autostart: false }),
+    get_settings: () => ({ folder_keywords: true, autostart: false, schedules: '', url_rules: { protocol: true, trailing_slash: true, www: true, host_case: true, port: false } }),
+    save_settings: () => null,
+    refresh_schedule_names: () => [],
     browser_sources: () => [{ browser: 'Chrome', profile: 'Default', count: 2 }],
     import_browser: ({ newFolder }) => {
       snap('Import from Chrome (Default)');
@@ -667,6 +669,18 @@ await idle();
 check('Del on two selected folders deletes both after one confirm with the total (FLD-06)',
   JSON.stringify((await calls('delete_folders')).at(-1)?.ids?.sort()) === JSON.stringify([2, newId].sort())
   && /^Delete \d+ folders and \d+ bookmarks?\?/.test(lastAsk()) && !(await tree()).includes('Work'), lastAsk());
+
+// Settings > Duplicates (SYS-12): the switches show the stored rules and save back as url_rules.
+await page.evaluate(() => document.getElementById('settings-open').click());
+await page.waitForSelector('#settings[open]');
+const boxes = await page.$$eval('#s-dups input[type=checkbox]', (els) => els.map((e) => e.checked));
+check('Settings shows the duplicate rules: four ignored, port kept', JSON.stringify(boxes) === '[true,true,true,true,false]', JSON.stringify(boxes));
+await page.setChecked('#s-url-protocol', false);
+await page.setChecked('#s-url-port', true);
+await page.click('#s-save');
+await idle();
+const saved = (await calls('save_settings')).at(-1)?.settings?.url_rules;
+check('Save sends every switch as url_rules', JSON.stringify(saved) === '{"protocol":false,"www":true,"trailing_slash":true,"host_case":true,"port":true}', JSON.stringify(saved));
 
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');

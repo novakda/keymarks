@@ -278,7 +278,7 @@ function render() {
   if (dupView) {
     return say(dupGroup.size
       ? `Duplicate URLs: ${new Set(dupGroup.values()).size} groups, ${ids.length} bookmarks · Merge or Keep resolves the focused one's group · Ctrl+D leaves`
-      : 'Duplicate URLs: none. (http/https, www., a trailing / and the host\'s case don\'t count as different.) Ctrl+D leaves.');
+      : 'Duplicate URLs: none. (Settings › Duplicates says which differences don\'t count.) Ctrl+D leaves.');
   }
   say(total === 0
     ? 'No bookmarks yet. Use Import… to bring them in from your browsers or a Powermarks database.'
@@ -1056,11 +1056,15 @@ $('settings-open').onclick = async () => {
     $('s-hideopen').checked = s.hide_after_open;
     $('s-hidemin').checked = s.hide_when_minimized;
     $('s-folderkw').checked = s.folder_keywords;
+    for (const [k, id] of URL_RULES) $(id).checked = !!s.url_rules?.[k];
     $('s-schedules').value = s.schedules;
     $('s-error').textContent = '';
     $('settings').showModal();
   } catch (e) { fail('Settings')(e); }
 };
+
+// Settings > Duplicates (SYS-12): the store's `UrlRules` switches and their checkboxes.
+const URL_RULES = [['protocol', 's-url-protocol'], ['www', 's-url-www'], ['trailing_slash', 's-url-slash'], ['host_case', 's-url-case'], ['port', 's-url-port']];
 
 // Record the pressed combination instead of free text, e.g. "Ctrl+Alt+P".
 const recordHotkey = (e) => {
@@ -1088,12 +1092,14 @@ $('s-save').onclick = busyAware(async () => {
     hide_after_open: $('s-hideopen').checked,
     hide_when_minimized: $('s-hidemin').checked,
     folder_keywords: $('s-folderkw').checked,
+    url_rules: Object.fromEntries(URL_RULES.map(([k, id]) => [k, $(id).checked])),
     schedules: $('s-schedules').value,
   };
   try {
     await invoke('save_settings', { settings, autostart: $('s-autostart').checked });
     $('settings').close();
     await refreshScheduleNames();
+    if (dupView) await refresh(); // the duplicate rules may have changed
     say('Settings saved.');
   } catch (e) { $('s-error').textContent = String(e); }
 });
