@@ -640,8 +640,8 @@ try {
   await page.reload();
   await idle();
   check('column edge drag resizes and is remembered', Math.abs(c1 - c0 - 50) <= 2 && (await thWidth()) === c1, `${c0} → ${c1}`);
-  await page.dblclick('#table-head th:first-child .grip');
-  check('double-click resets the columns', Math.abs((await thWidth()) - c0) <= 1);
+  await page.dblclick('#table-head th:first-child .grip', { modifiers: ['Control'] });
+  check('Ctrl+double-click resets the columns', Math.abs((await thWidth()) - c0) <= 1);
   const heads = () => page.$$eval('#table-head th', (ths) => ths.map((th) => th.dataset.col));
   const sortsBefore = await page.$$eval('#table-head th', (ths) => ths.map((th) => th.ariaSort).join());
   const order0 = await heads();
