@@ -804,6 +804,17 @@ try {
     check('35 the Protocol switch decides whether http and https are the same link', before === true && strict === false && back === true,
       `before ${before}, off ${strict}, on ${back}`);
   }
+
+  // 36. F1 lists the folder keys that work now (SYS-09, Q18).
+  {
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('F1');
+    await page.waitForSelector('#keys-dlg[open]');
+    const keys = await page.$$eval('#keys-dlg td:first-child', (els) => els.map((e) => e.textContent));
+    const missing = ['Ctrl+Shift+N', 'F2 / Del', 'Ctrl+M', 'Ctrl+X', 'Ctrl+V', 'F10', 'Ctrl+Shift+F', 'Ctrl+Shift+L', 'Ctrl+D', 'Ctrl+L'].filter((k) => !keys.includes(k));
+    await page.keyboard.press('Escape');
+    check('36 F1 lists every built folder key', !missing.length, `missing ${missing.join(', ') || 'none'}`);
+  }
 } catch (e) {
   log(e.stack);
   check('run completed', false, String(e.message).replace(/"[^"]*"/g, '"…"').split('\n')[0]);

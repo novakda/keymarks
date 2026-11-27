@@ -682,6 +682,14 @@ await idle();
 const saved = (await calls('save_settings')).at(-1)?.settings?.url_rules;
 check('Save sends every switch as url_rules', JSON.stringify(saved) === '{"protocol":false,"www":true,"trailing_slash":true,"host_case":true,"port":true}', JSON.stringify(saved));
 
+// F1 list (SYS-09, Q18): every folder key that works now is listed.
+{
+  const keys = await page.$$eval('#keys-dlg td:first-child', (els) => els.map((e) => e.textContent));
+  const want = ['Ctrl+Shift+N', 'F2 / Del', 'Ctrl+M', 'Ctrl+X', 'Ctrl+V', 'F10', 'Ctrl+Shift+F', 'Ctrl+Shift+L', 'Ctrl+D', 'Ctrl+L'];
+  const missing = want.filter((k) => !keys.includes(k));
+  check('the F1 list names every built folder key', !missing.length, `missing ${missing.join(', ')}`);
+}
+
 await browser.close();
 process.stdout.write(failed ? `${failed} failed\n` : 'all passed\n');
 process.exit(failed ? 1 : 0);
